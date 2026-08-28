@@ -5,6 +5,8 @@
     let planningPromise = null;
     let settlingPromise = null;
     let bound = false;
+    let autoInitializeTimer = null;
+    let autoInitializeAttempts = 0;
 
     const safeText = (value) => String(value ?? '').trim();
     function syncIdentities(state, names = WSM.Context.identityNames()) {
@@ -30,6 +32,14 @@
             return `Planner 失败且已启用严格阻止：${safeText(planner.error)}`;
         }
         return '';
+    }
+    function plannerAvailable(settings = WSM.Settings.get()) {
+        if (settings?.useTavernApi !== false) return typeof WSM.Context.context()?.generateRaw === 'function';
+        return !!safeText(settings?.endpoint);
+    }
+    function activeChatAvailable() {
+        const ctx = WSM.Context.context();
+        return (Number.isInteger(ctx?.characterId) && ctx.characterId >= 0) || !!ctx?.groupId || (Array.isArray(ctx?.chat) && ctx.chat.length > 0);
     }
     function turnKey() {
         const message = WSM.Context.latestUserMessage();
@@ -126,11 +136,12 @@
             await setPrompt(current.planner.injection);
             return current.planner;
         }
-        if (!settings.endpoint) {
+        if (!plannerAvailable(settings)) {
             const diceRound = settings.diceEnabled ? WSM.Dice?.createRound?.(key) : null;
             const localPlan = diceRound ? { diceRound } : {};
             const injection = WSM.Injection.compose(current, localPlan, {});
-            current.planner = { lastRunAt: Date.now(), turnKey: key, plan: localPlan, moduleInjections: {}, injection, error: '尚未配置 Planner API' };
+            const error = settings.useTavernApi !== false ? '酒馆默认 API 当前不可用' : '尚未配置 Planner API';
+            current.planner = { lastRunAt: Date.now(), turnKey: key, plan: localPlan, moduleInjections: {}, injection, error };
             if (diceRound) current = await WSM.Storage.save(current, 'local-dice', { snapshot: false });
             await setPrompt(injection);
             return current.planner;
@@ -224,6 +235,25 @@
         planningPromise = plan(options).finally(() => { planningPromise = null; });
         return planningPromise;
     }
+    async function autoInitialize(reason = 'startup') {
+        const settings = WSM.Settings.get();
+        const state = WSM.Storage.load();
+        if (!settings.enabled || settings.autoInitialize === false || state.initialized) return null;
+        if (!activeChatAvailable() || !plannerAvailable(settings)) {
+            if (settings.useTavernApi !== false && autoInitializeAttempts < 30) {
+                autoInitializeAttempts += 1;
+                scheduleAutoInitialize('waiting-for-chat-api', 1000);
+            }
+            return null;
+        }
+        autoInitializeAttempts = 0;
+        console.info(`[WorldStateMachine] 自动读取当前聊天：${reason}`);
+        return ensurePlan({ force: true, initialize: true, reason });
+    }
+    function scheduleAutoInitialize(reason, delay = 800) {
+        window.clearTimeout(autoInitializeTimer);
+        autoInitializeTimer = window.setTimeout(() => autoInitialize(reason), delay);
+    }
     function chatContainsInjection(chat) {
         return Array.isArray(chat) && chat.some((item) => safeText(typeof item === 'string' ? item : (item?.content ?? item?.mes)).includes('<WORLD_STATE>'));
     }
@@ -282,7 +312,7 @@
         const key = assistantKey(assistant);
         if (!assistant?.content || (!options.force && current.runtime?.lastSettledMessageId === key)) return null;
         const settings = WSM.Settings.get();
-        if (!settings.endpoint) return null;
+        if (!plannerAvailable(settings)) return null;
         const recent = (await WSM.Context.buildSource()).chat;
         const payload = {
             phase: 'POST_GENERATION_RECONCILE',
@@ -339,10 +369,15 @@
         const onAssistant = () => window.setTimeout(() => ensureSettle(), 500);
         [events.CHARACTER_MESSAGE_RENDERED, events.MESSAGE_RECEIVED].filter(Boolean).forEach((name) => source.on(name, onAssistant));
         if (events.GENERATION_ENDED) source.on(events.GENERATION_ENDED, () => window.setTimeout(() => ensureSettle(), 250));
-        if (events.CHAT_CHANGED) source.on(events.CHAT_CHANGED, () => window.dispatchEvent(new CustomEvent('wsm-state-changed', { detail: { reason: 'chat-changed' } })));
+        if (events.CHAT_CHANGED) source.on(events.CHAT_CHANGED, () => {
+            autoInitializeAttempts = 0;
+            window.dispatchEvent(new CustomEvent('wsm-state-changed', { detail: { reason: 'chat-changed' } }));
+            scheduleAutoInitialize('chat-changed');
+        });
         return true;
     }
     async function init() {
+        autoInitializeAttempts = 0;
         if (!bindEvents()) {
             let attempts = 0;
             const timer = window.setInterval(() => {
@@ -350,6 +385,7 @@
                 if (bindEvents() || attempts > 30) window.clearInterval(timer);
             }, 1000);
         }
+        scheduleAutoInitialize('startup', 1200);
     }
-    WSM.Engine = { init, plan: ensurePlan, settle: ensureSettle, interceptor, fallbackInjection, _test: { generationBlockReason } };
+    WSM.Engine = { init, plan: ensurePlan, autoInitialize, settle: ensureSettle, interceptor, fallbackInjection, _test: { generationBlockReason, plannerAvailable, activeChatAvailable } };
 })();

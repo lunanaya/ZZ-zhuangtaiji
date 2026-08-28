@@ -492,7 +492,7 @@
         return `<div id="wsm-modal" class="wsm-modal" hidden>
             <div class="wsm-shell">
                 <header class="wsm-header"><div><b>WORLD ENGINE</b><span id="wsm-status">未初始化</span></div><div class="wsm-actions">
-                    <button data-action="initialize">初始化 / 重建</button><button data-action="settings">设置</button><button data-action="history">回滚上一轮</button><button class="wsm-icon-button" data-action="close" aria-label="关闭">${icon('close')}</button>
+                    <button id="wsm-read-current" data-action="read-current">读取当前聊天</button><button id="wsm-rebuild" data-action="initialize">重新读取 / 重建</button><button data-action="settings">设置</button><button data-action="history">回滚上一轮</button><button class="wsm-icon-button" data-action="close" aria-label="关闭">${icon('close')}</button>
                 </div></header>
                 <nav class="wsm-category-bar">${categoryButtons}</nav>
                 <div class="wsm-body"><nav class="wsm-tabs">${tabs}</nav><main class="wsm-main">
@@ -521,6 +521,7 @@
                     <div class="wsm-grid"><label>最大 Tokens<input id="wsm-max-tokens" type="number"></label><label>读取最近正文条数<input id="wsm-recent-messages" type="number" min="2" max="200"></label><label>注入深度<input id="wsm-injection-depth" type="number" min="0"></label><label>注入最大字符<input id="wsm-injection-max" type="number" min="500"></label></div>
                     <p class="wsm-settings-help">Planner 会直接读取酒馆当前聊天的 user/assistant 正文；初始化或重建时读取完整聊天，普通轮次读取这里设置的最近条数。</p>
                     <label class="wsm-check"><input id="wsm-enabled" type="checkbox">启用自动状态机</label>
+                    <label class="wsm-check"><input id="wsm-auto-initialize" type="checkbox">首次打开聊天时自动读取</label>
                     <label class="wsm-check"><input id="wsm-block-on-planner-error" type="checkbox">Planner失败时严格阻止正文生成</label>
                 </section>
                 <section class="wsm-settings-section" data-settings-section="dice">
@@ -555,6 +556,8 @@
         syncWorldbookSections(state);
         const [title] = sectionMap[active] || sectionMap.worldbookEmpty;
         $('#wsm-status').textContent = state.initialized ? `REV ${state.revision} · ${state.world?.time?.display || '时间未定'}` : '等待初始化';
+        $('#wsm-read-current').textContent = state.initialized ? '读取当前聊天' : '读取并初始化';
+        $('#wsm-rebuild').hidden = !state.initialized;
         $('#wsm-section-title').innerHTML = `<h3>${escape(title)}</h3><small>${editMode ? '使用简单中文修改；保存时会自动转换为内部状态。' : '点击卡片可以展开或收起详情。技术字段已自动隐藏或转换成人类可读内容。'}</small>`;
         $('#wsm-game-view').innerHTML = renderGameView(state);
         if (!editMode && sectionHelp[active]) $('#wsm-section-title small').textContent = sectionHelp[active];
@@ -612,6 +615,7 @@
         $('#wsm-injection-depth').value = s.injectionDepth || 0;
         $('#wsm-injection-max').value = s.injectionMaxChars || 3500;
         $('#wsm-enabled').checked = s.enabled !== false;
+        $('#wsm-auto-initialize').checked = s.autoInitialize !== false;
         $('#wsm-block-on-planner-error').checked = s.blockOnPlannerError === true;
         $('#wsm-dice-enabled').checked = s.diceEnabled === true;
         $('#wsm-planner-prompt').value = s.plannerPrompt || '';
@@ -711,6 +715,7 @@
             jailbreakPrompt: $('#wsm-jailbreak-prompt').value,
             ...typographyFromForm(),
             temperature: Number($('#wsm-temperature').value), maxTokens: Number($('#wsm-max-tokens').value), enabled: $('#wsm-enabled').checked,
+            autoInitialize: $('#wsm-auto-initialize').checked,
             blockOnPlannerError: $('#wsm-block-on-planner-error').checked,
             diceEnabled: $('#wsm-dice-enabled').checked,
             recentMessages: Math.max(2, Number($('#wsm-recent-messages').value || 12)),
@@ -720,6 +725,7 @@
         const state = WSM.Storage.load();
         state.planner.injection = WSM.Injection.compose(state, state.planner?.plan || {}, state.planner?.moduleInjections || {});
         await WSM.Storage.save(state, 'injection-settings', { snapshot: false });
+        if ($('#wsm-auto-initialize').checked && !state.initialized) void WSM.Engine.autoInitialize('settings-saved');
         if (closeAfter) $('#wsm-settings-modal').hidden = true;
         notify('设置已保存', 'success');
     }
@@ -751,10 +757,20 @@
         if (action === 'reload') { editMode = false; render(); }
         if (action === 'save-section') await saveSection();
         if (action === 'initialize') {
-            notify('正在读取设定并建立世界状态…');
-            await WSM.Engine.plan({ force: true, initialize: true });
+            if (!window.confirm('确定重新读取完整聊天并重建状态？当前状态会被新的读取结果替换。')) return;
+            notify('正在重新读取角色卡、Persona、世界书和完整聊天…');
+            const planner = await WSM.Engine.plan({ force: true, initialize: true });
             render();
-            notify('初始化完成', 'success');
+            if (planner?.error) notify(`读取失败：${planner.error}`, 'error');
+            else notify('重新读取并重建完成', 'success');
+        }
+        if (action === 'read-current') {
+            const initialized = WSM.Storage.load().initialized;
+            notify(initialized ? '正在读取当前聊天…' : '正在读取并建立初始状态…');
+            const planner = await WSM.Engine.plan({ force: true, initialize: !initialized });
+            render();
+            if (planner?.error) notify(`读取失败：${planner.error}`, 'error');
+            else notify(initialized ? '当前聊天读取完成' : '初始化完成', 'success');
         }
         if (action === 'test-api') {
             await saveSettings(false);
@@ -875,24 +891,36 @@
         root = document.createElement('div');
         root.id = 'wsm-root';
         root.innerHTML = modalHtml();
+        // Run before document/theme bubble handlers. Several mobile themes
+        // stop delegated click events, which otherwise leaves visible controls inert.
         root.addEventListener('click', async (event) => {
-            const category = event.target.closest('[data-category-select]')?.dataset.categorySelect;
+            const target = event.target instanceof Element ? event.target : null;
+            if (!target) return;
+            const consume = () => { event.preventDefault(); };
+            const summary = target.closest('summary');
+            if (summary && root.contains(summary) && summary.parentElement instanceof HTMLDetailsElement) {
+                consume();
+                summary.parentElement.open = !summary.parentElement.open;
+                return;
+            }
+            const category = target.closest('[data-category-select]')?.dataset.categorySelect;
             if (category) {
+                consume();
                 activeCategory = category;
                 if (!categories[category].sections.includes(active)) active = categories[category].sections[0] || (category === 'worldbook' ? 'worldbookEmpty' : 'overview');
                 editMode = false;
                 render();
                 return;
             }
-            const settingsTab = event.target.closest('[data-settings-tab]')?.dataset.settingsTab;
-            if (settingsTab) { activeSettingsTab = settingsTab; renderSettingsTabs(); if (settingsTab === 'worldbook') await renderWorldbookCompilerSettings(); return; }
-            const tab = event.target.closest('[data-tab]');
-            if (tab) { active = tab.dataset.tab; activeCategory = categoryForSection(active); editMode = false; render(); return; }
-            const apiProfileId = event.target.closest('[data-api-profile-id]')?.dataset.apiProfileId;
-            if (apiProfileId) { switchApiProfile(apiProfileId); return; }
-            const action = event.target.closest('[data-action]')?.dataset.action;
-            if (action) { await handleAction(action); return; }
-        });
+            const settingsTab = target.closest('[data-settings-tab]')?.dataset.settingsTab;
+            if (settingsTab) { consume(); activeSettingsTab = settingsTab; renderSettingsTabs(); if (settingsTab === 'worldbook') await renderWorldbookCompilerSettings(); return; }
+            const tab = target.closest('[data-tab]');
+            if (tab) { consume(); active = tab.dataset.tab; activeCategory = categoryForSection(active); editMode = false; render(); return; }
+            const apiProfileId = target.closest('[data-api-profile-id]')?.dataset.apiProfileId;
+            if (apiProfileId) { consume(); switchApiProfile(apiProfileId); return; }
+            const action = target.closest('[data-action]')?.dataset.action;
+            if (action) { consume(); await handleAction(action); return; }
+        }, true);
         root.addEventListener('change', (event) => {
             if (event.target?.id === 'wsm-use-tavern-api') syncApiModeFields();
             if (event.target?.id === 'wsm-follow-tavern-font') syncTypographyFields();

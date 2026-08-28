@@ -227,3 +227,43 @@
 #wsm-root .wsm-readable-row>span,#wsm-root .wsm-activity-trail b,#wsm-root .wsm-dialog>label,#wsm-root .wsm-settings-section>label,#wsm-root .wsm-settings-help,#wsm-root #wsm-custom-api-fields>label,#wsm-root .wsm-grid label { font-size:calc(13px * var(--wsm-font-scale)); }
 #wsm-root .wsm-world-fields b,#wsm-root .wsm-injection-preview pre { font-size:calc(14px * var(--wsm-font-scale)); font-family:var(--wsm-font-family)!important; }
 #wsm-root .wsm-game-card>summary b,#wsm-root #wsm-editor { font-size:calc(15px * var(--wsm-font-scale)); font-family:var(--wsm-font-family)!important; }
+
+/* Do not depend on SillyTavern/theme checkbox skins. Some themes make the
+   native checked state invisible even though the value changes correctly. */
+#wsm-root input[type="checkbox"] {
+    -webkit-appearance:none!important;
+    appearance:none!important;
+    display:inline-grid!important;
+    place-content:center!important;
+    flex:0 0 18px!important;
+    width:18px!important;
+    min-width:18px!important;
+    height:18px!important;
+    margin:0!important;
+    padding:0!important;
+    border:1.5px solid var(--wsm-line)!important;
+    border-radius:4px!important;
+    outline:none!important;
+    background:#fff8ef!important;
+    box-shadow:inset 0 1px 2px #4f58771a!important;
+    cursor:pointer!important;
+    opacity:1!important;
+    visibility:visible!important;
+    pointer-events:auto!important;
+    position:relative!important;
+    z-index:1!important;
+}
+#wsm-root input[type="checkbox"]:checked { border-color:var(--wsm-icon-active)!important; background:var(--wsm-icon-active)!important; }
+#wsm-root input[type="checkbox"]:checked::after { content:"✓"; color:#fff8ef; font:bold 14px/1 sans-serif; transform:translateY(-.5px); }
+#wsm-root input[type="checkbox"]:focus-visible { box-shadow:0 0 0 3px #929ec455!important; }
+#wsm-root input[type="checkbox"]:disabled { cursor:not-allowed!important; opacity:.5!important; }
+#wsm-root label:has(input[type="checkbox"]:not(:disabled)) { cursor:pointer; }
+
+/* Keep every interaction target above decorative layers installed by themes.
+   Scrolling remains available on surrounding containers. */
+#wsm-root button,#wsm-root a,#wsm-root summary,#wsm-root label,#wsm-root input,#wsm-root textarea,#wsm-root select,#wsm-launcher {
+    pointer-events:auto!important;
+    touch-action:manipulation;
+}
+#wsm-launcher { z-index:2147483001!important; }
+#wsm-root button,#wsm-root a,#wsm-root summary { position:relative; z-index:2; }

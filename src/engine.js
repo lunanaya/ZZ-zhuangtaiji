@@ -5,6 +5,7 @@
     let planningPromise = null;
     let settlingPromise = null;
     let bound = false;
+    let settingsBound = false;
     let autoInitializeTimer = null;
     let autoInitializeAttempts = 0;
 
@@ -126,9 +127,21 @@
             await window.setExtensionPrompt(PROMPT_ID, content, 1, Number(WSM.Settings.get().injectionDepth || 0), false, 0);
         }
     }
+    async function syncRegisteredPrompt() {
+        const settings = WSM.Settings.get();
+        if (!settings.enabled) return setPrompt('');
+        const state = WSM.Storage.load();
+        const hasUsableState = state.initialized || !!safeText(state.planner?.injection);
+        if (!hasUsableState) return setPrompt('');
+        state.planner.injection = WSM.Injection.compose(state, state.planner?.plan || {}, state.planner?.moduleInjections || {});
+        return setPrompt(state.planner.injection);
+    }
     async function plan(options = {}) {
         const settings = WSM.Settings.get();
-        if (!settings.enabled) return null;
+        if (!settings.enabled) {
+            await setPrompt('');
+            return null;
+        }
         const key = turnKey();
         let current = syncIdentities(WSM.Storage.load());
         if (!current.runtime?.needsWorldRefresh && !options.force && key && current.planner?.turnKey === key && current.planner?.injection && !current.planner?.error) {
@@ -252,29 +265,18 @@
     }
     function scheduleAutoInitialize(reason, delay = 800) {
         window.clearTimeout(autoInitializeTimer);
-        autoInitializeTimer = window.setTimeout(() => autoInitialize(reason), delay);
-    }
-    function chatContainsInjection(chat) {
-        return Array.isArray(chat) && chat.some((item) => safeText(typeof item === 'string' ? item : (item?.content ?? item?.mes)).includes('<WORLD_STATE>'));
-    }
-    function injectIntoChat(chat, injection) {
-        if (!Array.isArray(chat) || !injection || chatContainsInjection(chat)) return;
-        if (!chat.length || typeof chat[0] === 'string') {
-            chat.push(injection);
-            return;
-        }
-        const hasRoles = chat.some((item) => item && Object.prototype.hasOwnProperty.call(item, 'role'));
-        if (hasRoles) {
-            const lastUser = chat.map((item) => item?.role).lastIndexOf('user');
-            chat.splice(lastUser >= 0 ? lastUser : chat.length, 0, { role: 'system', content: injection });
-            return;
-        }
-        const lastUser = chat.map((item) => !!item?.is_user).lastIndexOf(true);
-        chat.splice(lastUser >= 0 ? lastUser : chat.length, 0, { is_user: false, is_system: true, name: 'World State', mes: injection });
+        autoInitializeTimer = window.setTimeout(async () => {
+            await syncRegisteredPrompt();
+            await autoInitialize(reason);
+        }, delay);
     }
     async function interceptor(chat, _contextSize, abort, type) {
         const settings = WSM.Settings.get();
-        if (!settings.enabled || !isForeground(type)) return;
+        if (!isForeground(type)) return;
+        if (!settings.enabled) {
+            await setPrompt('');
+            return;
+        }
         try {
             const earlyBlock = generationBlockReason(settings, null);
             if (earlyBlock) {
@@ -296,7 +298,9 @@
                 else throw new Error(plannerBlock);
                 return;
             }
-            injectIntoChat(chat, planner?.injection || WSM.Storage.load().planner?.injection);
+            // WORLD_STATE is delivered only through setExtensionPrompt. The
+            // interceptor intentionally does not mutate chat, avoiding duplicate
+            // injection and making injectionDepth authoritative.
         } catch (error) {
             console.error('[WorldStateMachine] 生成拦截失败', error);
             if (typeof abort === 'function' && WSM.Settings.get().blockOnPlannerError) abort(error.message);
@@ -371,13 +375,21 @@
         if (events.GENERATION_ENDED) source.on(events.GENERATION_ENDED, () => window.setTimeout(() => ensureSettle(), 250));
         if (events.CHAT_CHANGED) source.on(events.CHAT_CHANGED, () => {
             autoInitializeAttempts = 0;
+            void setPrompt('');
             window.dispatchEvent(new CustomEvent('wsm-state-changed', { detail: { reason: 'chat-changed' } }));
             scheduleAutoInitialize('chat-changed');
         });
         return true;
     }
+    function bindSettingsEvents() {
+        if (settingsBound) return;
+        settingsBound = true;
+        window.addEventListener('wsm-settings-changed', () => { void syncRegisteredPrompt(); });
+    }
     async function init() {
         autoInitializeAttempts = 0;
+        bindSettingsEvents();
+        await setPrompt('');
         if (!bindEvents()) {
             let attempts = 0;
             const timer = window.setInterval(() => {
@@ -387,5 +399,5 @@
         }
         scheduleAutoInitialize('startup', 1200);
     }
-    WSM.Engine = { init, plan: ensurePlan, autoInitialize, settle: ensureSettle, interceptor, fallbackInjection, _test: { generationBlockReason, plannerAvailable, activeChatAvailable } };
+    WSM.Engine = { init, plan: ensurePlan, autoInitialize, settle: ensureSettle, interceptor, fallbackInjection, _test: { generationBlockReason, plannerAvailable, activeChatAvailable, setPrompt, syncRegisteredPrompt } };
 })();

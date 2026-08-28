@@ -7,9 +7,16 @@
         rulesVersion: RULES_VERSION,
         enabled: true,
         autoInitialize: true,
+        useTavernApi: true,
+        jailbreakPrompt: '',
+        followTavernFont: true,
+        customFontFamily: 'Inter, "Microsoft YaHei", sans-serif',
+        fontScale: 0.9,
         endpoint: '',
         apiKey: '',
         model: '',
+        apiProfiles: [],
+        activeApiProfileId: '',
         temperature: 0.15,
         maxTokens: 5000,
         recentMessages: 12,
@@ -33,6 +40,24 @@
         const root = ctx?.extensionSettings || window.extension_settings;
         const saved = root[KEY] || {};
         root[KEY] = Object.assign({}, defaults, saved);
+        const rawProfiles = Array.isArray(root[KEY].apiProfiles) ? root[KEY].apiProfiles : [];
+        const profiles = rawProfiles.map((profile, index) => ({
+            id: String(profile?.id || `api-${index + 1}`),
+            name: String(profile?.name || `API ${index + 1}`),
+            endpoint: String(profile?.endpoint || ''),
+            apiKey: String(profile?.apiKey || ''),
+            model: String(profile?.model || ''),
+        }));
+        if (!profiles.length) profiles.push({
+            id: 'api-default', name: 'API 1', endpoint: String(root[KEY].endpoint || ''),
+            apiKey: String(root[KEY].apiKey || ''), model: String(root[KEY].model || ''),
+        });
+        root[KEY].apiProfiles = profiles;
+        if (!profiles.some((profile) => profile.id === root[KEY].activeApiProfileId)) root[KEY].activeApiProfileId = profiles[0].id;
+        const activeProfile = profiles.find((profile) => profile.id === root[KEY].activeApiProfileId) || profiles[0];
+        root[KEY].endpoint = activeProfile.endpoint;
+        root[KEY].apiKey = activeProfile.apiKey;
+        root[KEY].model = activeProfile.model;
         if (Number(saved.rulesVersion || 0) < RULES_VERSION) {
             // Old saved prompts otherwise permanently override new built-ins. Keep a
             // recoverable copy, then migrate the complete rule set as one unit.

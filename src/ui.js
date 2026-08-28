@@ -25,6 +25,8 @@
     let editMode = false;
     let activeCategory = 'world';
     let activeSettingsTab = 'api';
+    let apiProfilesDraft = [];
+    let activeApiProfileId = '';
     let worldbookEntriesCache = [];
     let wandMenuClickBound = false;
     const dynamicWorldbookSections = new Set();
@@ -502,8 +504,21 @@
             <div id="wsm-settings-modal" class="wsm-submodal" hidden><div class="wsm-dialog"><header><b>世界状态机设置</b><button class="wsm-icon-button" data-action="close-settings" aria-label="关闭">${icon('close')}</button></header>
                 <nav class="wsm-settings-tabs"><button data-settings-tab="api">${icon('plug')}<span>API</span></button><button data-settings-tab="dice">${icon('event')}<span>骰子</span></button><button data-settings-tab="worldbook">${icon('note')}<span>拆解世界书</span></button><button data-settings-tab="injection">${icon('send')}<span>注入模块</span></button><button data-settings-tab="prompts">${icon('brain')}<span>内置提示词</span></button><button data-settings-tab="history">${icon('history')}<span>上一轮回滚</span></button></nav>
                 <section class="wsm-settings-section" data-settings-section="api">
-                    <label>OpenAI 兼容 API 地址<input id="wsm-endpoint" type="text" placeholder="https://example.com/v1"></label>
-                    <div class="wsm-grid"><label>模型<input id="wsm-model" type="text"></label><label>API Key<input id="wsm-key" type="password"></label><label>温度<input id="wsm-temperature" type="number" step="0.05"></label><label>最大 Tokens<input id="wsm-max-tokens" type="number"></label><label>读取最近正文条数<input id="wsm-recent-messages" type="number" min="2" max="200"></label><label>注入深度<input id="wsm-injection-depth" type="number" min="0"></label><label>注入最大字符<input id="wsm-injection-max" type="number" min="500"></label></div>
+                    <label class="wsm-check"><input id="wsm-use-tavern-api" type="checkbox">使用酒馆默认 API（当前连接与模型）</label>
+                    <p class="wsm-settings-help">启用后无需另填地址、模型或 Key，状态机直接跟随酒馆主界面当前使用的 API；请求只包含状态机所需内容。</p>
+                    <div id="wsm-custom-api-fields">
+                        <div class="wsm-api-profile-toolbar"><div id="wsm-api-profile-buttons"></div><button type="button" data-action="add-api-profile">＋ 新增 API</button><button type="button" data-action="delete-api-profile">删除当前</button></div>
+                        <label>配置名称<input id="wsm-api-profile-name" type="text" placeholder="例如：主线路、备用线路"></label>
+                        <label>OpenAI 兼容 API 地址<input id="wsm-endpoint" type="text" placeholder="https://example.com/v1"></label>
+                        <div class="wsm-grid"><label>模型<input id="wsm-model" type="text" list="wsm-model-options"><datalist id="wsm-model-options"></datalist></label><label>API Key<input id="wsm-key" type="password"></label><label>温度<input id="wsm-temperature" type="number" step="0.05"></label></div>
+                        <div class="wsm-api-profile-actions"><button type="button" data-action="fetch-models">自动拉取模型</button><button type="button" data-action="test-custom-api">测试当前配置</button><small id="wsm-api-profile-status">尚未测试</small></div>
+                    </div>
+                    <label class="wsm-jailbreak-field">破限提示词（可选，可自行输入）<textarea id="wsm-jailbreak-prompt" placeholder="留空则不添加。这里的内容会附加到状态机的系统提示词中。"></textarea></label>
+                    <p class="wsm-settings-help">该内容会发送给 Planner、结算器及需要调用 API 的拆解功能，请勿填写 API Key 等敏感信息。</p>
+                    <label class="wsm-check"><input id="wsm-follow-tavern-font" type="checkbox">字体跟随酒馆</label>
+                    <div class="wsm-grid"><label>自定义字体<input id="wsm-custom-font-family" type="text" placeholder='例如："Microsoft YaHei", sans-serif'></label><label>字体大小（百分比）<input id="wsm-font-scale" type="number" min="60" max="140" step="5"></label></div>
+                    <p class="wsm-settings-help">只调整状态机文字，不改变面板大小和按钮的可点击范围。建议使用 80%–100%。</p>
+                    <div class="wsm-grid"><label>最大 Tokens<input id="wsm-max-tokens" type="number"></label><label>读取最近正文条数<input id="wsm-recent-messages" type="number" min="2" max="200"></label><label>注入深度<input id="wsm-injection-depth" type="number" min="0"></label><label>注入最大字符<input id="wsm-injection-max" type="number" min="500"></label></div>
                     <p class="wsm-settings-help">Planner 会直接读取酒馆当前聊天的 user/assistant 正文；初始化或重建时读取完整聊天，普通轮次读取这里设置的最近条数。</p>
                     <label class="wsm-check"><input id="wsm-enabled" type="checkbox">启用自动状态机</label>
                     <label class="wsm-check"><input id="wsm-block-on-planner-error" type="checkbox">Planner失败时严格阻止正文生成</label>
@@ -583,9 +598,14 @@
     function fillSettings(tabName = 'api') {
         const s = WSM.Settings.get();
         activeSettingsTab = tabName;
-        $('#wsm-endpoint').value = s.endpoint || '';
-        $('#wsm-model').value = s.model || '';
-        $('#wsm-key').value = s.apiKey || '';
+        apiProfilesDraft = WSM.Storage.clone(s.apiProfiles || []);
+        activeApiProfileId = s.activeApiProfileId || apiProfilesDraft[0]?.id || '';
+        $('#wsm-use-tavern-api').checked = s.useTavernApi !== false;
+        $('#wsm-jailbreak-prompt').value = s.jailbreakPrompt || '';
+        $('#wsm-follow-tavern-font').checked = s.followTavernFont !== false;
+        $('#wsm-custom-font-family').value = s.customFontFamily || '';
+        $('#wsm-font-scale').value = Math.round(Number(s.fontScale || 0.9) * 100);
+        loadActiveApiProfile();
         $('#wsm-temperature').value = s.temperature ?? 0.15;
         $('#wsm-max-tokens').value = s.maxTokens || 5000;
         $('#wsm-recent-messages').value = s.recentMessages || 12;
@@ -601,7 +621,75 @@
         void renderWorldbookCompilerSettings(s);
         $('#wsm-settings-history-list').innerHTML = historyHtml();
         renderSettingsTabs();
+        syncApiModeFields();
+        syncTypographyFields();
         $('#wsm-settings-modal').hidden = false;
+    }
+    function typographyFromForm() {
+        return {
+            followTavernFont: $('#wsm-follow-tavern-font')?.checked !== false,
+            customFontFamily: $('#wsm-custom-font-family')?.value.trim() || 'Inter, "Microsoft YaHei", sans-serif',
+            fontScale: Math.min(1.4, Math.max(0.6, Number($('#wsm-font-scale')?.value || 90) / 100)),
+        };
+    }
+    function applyTypographySettings(settings) {
+        if (!root) return;
+        const scale = Math.min(1.4, Math.max(0.6, Number(settings?.fontScale || 0.9)));
+        root.style.setProperty('--wsm-font-scale', String(scale));
+        root.style.setProperty('--wsm-font-family', settings?.followTavernFont !== false ? 'inherit' : (settings?.customFontFamily || 'Inter, "Microsoft YaHei", sans-serif'));
+    }
+    function syncTypographyFields() {
+        const follow = $('#wsm-follow-tavern-font')?.checked !== false;
+        if ($('#wsm-custom-font-family')) $('#wsm-custom-font-family').disabled = follow;
+        applyTypographySettings(typographyFromForm());
+    }
+    function activeApiProfile() {
+        return apiProfilesDraft.find((profile) => profile.id === activeApiProfileId) || apiProfilesDraft[0];
+    }
+    function captureActiveApiProfile() {
+        const profile = activeApiProfile();
+        if (!profile) return;
+        profile.name = $('#wsm-api-profile-name').value.trim() || profile.name || '未命名 API';
+        profile.endpoint = $('#wsm-endpoint').value.trim();
+        profile.model = $('#wsm-model').value.trim();
+        profile.apiKey = $('#wsm-key').value.trim();
+    }
+    function renderApiProfileButtons() {
+        const container = $('#wsm-api-profile-buttons');
+        if (!container) return;
+        container.innerHTML = apiProfilesDraft.map((profile) => `<button type="button" data-api-profile-id="${escape(profile.id)}" class="${profile.id === activeApiProfileId ? 'active' : ''}">${escape(profile.name || '未命名 API')}</button>`).join('');
+    }
+    function loadActiveApiProfile() {
+        const profile = activeApiProfile();
+        if (!profile) return;
+        activeApiProfileId = profile.id;
+        $('#wsm-api-profile-name').value = profile.name || '';
+        $('#wsm-endpoint').value = profile.endpoint || '';
+        $('#wsm-model').value = profile.model || '';
+        $('#wsm-key').value = profile.apiKey || '';
+        renderApiProfileButtons();
+        if ($('#wsm-api-profile-status')) $('#wsm-api-profile-status').textContent = '尚未测试';
+    }
+    function apiProfilePatch() {
+        captureActiveApiProfile();
+        const profile = activeApiProfile();
+        return {
+            apiProfiles: WSM.Storage.clone(apiProfilesDraft), activeApiProfileId,
+            endpoint: profile?.endpoint || '', apiKey: profile?.apiKey || '', model: profile?.model || '',
+        };
+    }
+    function switchApiProfile(id) {
+        if (!apiProfilesDraft.some((profile) => profile.id === id)) return;
+        captureActiveApiProfile();
+        activeApiProfileId = id;
+        loadActiveApiProfile();
+        WSM.Settings.update(apiProfilePatch());
+    }
+    function syncApiModeFields() {
+        const useTavernApi = $('#wsm-use-tavern-api')?.checked !== false;
+        const fields = $('#wsm-custom-api-fields');
+        fields?.classList.toggle('wsm-disabled-fields', useTavernApi);
+        fields?.querySelectorAll('input').forEach((input) => { input.disabled = useTavernApi; });
     }
     async function saveSettings(closeAfter = true) {
         const current = WSM.Settings.get();
@@ -618,7 +706,10 @@
             failClosed: $('#wsm-worldbook-compiler-fail-closed').checked,
         });
         WSM.Settings.update({
-            endpoint: $('#wsm-endpoint').value.trim(), model: $('#wsm-model').value.trim(), apiKey: $('#wsm-key').value.trim(),
+            ...apiProfilePatch(),
+            useTavernApi: $('#wsm-use-tavern-api').checked,
+            jailbreakPrompt: $('#wsm-jailbreak-prompt').value,
+            ...typographyFromForm(),
             temperature: Number($('#wsm-temperature').value), maxTokens: Number($('#wsm-max-tokens').value), enabled: $('#wsm-enabled').checked,
             blockOnPlannerError: $('#wsm-block-on-planner-error').checked,
             diceEnabled: $('#wsm-dice-enabled').checked,
@@ -669,6 +760,46 @@
             await saveSettings(false);
             try { await WSM.Api.test(); notify('API 连接成功', 'success'); }
             catch (error) { notify(`API 测试失败：${error.message}`, 'error'); }
+        }
+        if (action === 'add-api-profile') {
+            captureActiveApiProfile();
+            const id = `api-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+            apiProfilesDraft.push({ id, name: `API ${apiProfilesDraft.length + 1}`, endpoint: '', apiKey: '', model: '' });
+            activeApiProfileId = id;
+            loadActiveApiProfile();
+            WSM.Settings.update(apiProfilePatch());
+        }
+        if (action === 'delete-api-profile') {
+            if (apiProfilesDraft.length <= 1) { notify('至少需要保留一个自定义 API 配置', 'error'); return; }
+            if (!window.confirm(`确定删除“${activeApiProfile()?.name || '当前 API'}”配置？`)) return;
+            const index = apiProfilesDraft.findIndex((profile) => profile.id === activeApiProfileId);
+            if (index >= 0) apiProfilesDraft.splice(index, 1);
+            activeApiProfileId = apiProfilesDraft[Math.max(0, index - 1)]?.id || apiProfilesDraft[0].id;
+            loadActiveApiProfile();
+            WSM.Settings.update(apiProfilePatch());
+            notify('已删除当前 API 配置');
+        }
+        if (action === 'fetch-models') {
+            captureActiveApiProfile();
+            const status = $('#wsm-api-profile-status');
+            status.textContent = '正在拉取模型…';
+            try {
+                const models = await WSM.Api.listModels(activeApiProfile());
+                $('#wsm-model-options').innerHTML = models.map((model) => `<option value="${escape(model)}"></option>`).join('');
+                if (!$('#wsm-model').value && models[0]) $('#wsm-model').value = models[0];
+                captureActiveApiProfile();
+                WSM.Settings.update(apiProfilePatch());
+                status.textContent = `已获取 ${models.length} 个模型，点击模型输入框选择`;
+                notify(`已拉取 ${models.length} 个模型`, 'success');
+            } catch (error) { status.textContent = `拉取失败：${error.message}`; notify(`模型拉取失败：${error.message}`, 'error'); }
+        }
+        if (action === 'test-custom-api') {
+            captureActiveApiProfile();
+            WSM.Settings.update(apiProfilePatch());
+            const status = $('#wsm-api-profile-status');
+            status.textContent = '正在测试…';
+            try { await WSM.Api.test({ forceExternal: true }); status.textContent = '连接可用'; notify('当前自定义 API 可用', 'success'); }
+            catch (error) { status.textContent = `测试失败：${error.message}`; notify(`API 测试失败：${error.message}`, 'error'); }
         }
         if (action === 'refresh-worldbook-entries') {
             await renderWorldbookCompilerSettings(WSM.Settings.get(), true);
@@ -757,10 +888,21 @@
             if (settingsTab) { activeSettingsTab = settingsTab; renderSettingsTabs(); if (settingsTab === 'worldbook') await renderWorldbookCompilerSettings(); return; }
             const tab = event.target.closest('[data-tab]');
             if (tab) { active = tab.dataset.tab; activeCategory = categoryForSection(active); editMode = false; render(); return; }
+            const apiProfileId = event.target.closest('[data-api-profile-id]')?.dataset.apiProfileId;
+            if (apiProfileId) { switchApiProfile(apiProfileId); return; }
             const action = event.target.closest('[data-action]')?.dataset.action;
             if (action) { await handleAction(action); return; }
         });
+        root.addEventListener('change', (event) => {
+            if (event.target?.id === 'wsm-use-tavern-api') syncApiModeFields();
+            if (event.target?.id === 'wsm-follow-tavern-font') syncTypographyFields();
+            if (event.target?.id === 'wsm-api-profile-name') { captureActiveApiProfile(); renderApiProfileButtons(); }
+        });
+        root.addEventListener('input', (event) => {
+            if (event.target?.id === 'wsm-font-scale' || event.target?.id === 'wsm-custom-font-family') applyTypographySettings(typographyFromForm());
+        });
         document.body.appendChild(root);
+        applyTypographySettings(WSM.Settings.get());
         mountButton();
         mountWandMenuItemWhenReady();
         window.addEventListener('wsm-state-changed', () => { if (!$('#wsm-modal')?.hidden) render(); });

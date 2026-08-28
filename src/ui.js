@@ -26,6 +26,7 @@
     let activeCategory = 'world';
     let activeSettingsTab = 'api';
     let worldbookEntriesCache = [];
+    let wandMenuClickBound = false;
     const dynamicWorldbookSections = new Set();
     const categories = {
         world: { icon: 'map', label: '世界', sections: ['overview','map','events','processes','causalEffects'] },
@@ -701,10 +702,12 @@
         const menu = document.getElementById('extensionsMenu');
         if (!(menu instanceof HTMLElement)) return false;
 
-        const container = document.createElement('div');
+        let container = document.getElementById('wsm-wand-container');
+        if (!(container instanceof HTMLElement) || container.parentElement !== menu) container = document.createElement('div');
         container.id = 'wsm-wand-container';
         container.className = 'extension_container interactable';
         container.tabIndex = 0;
+        container.replaceChildren();
 
         const item = document.createElement('a');
         item.id = 'wsm-wand-menu-item';
@@ -712,20 +715,29 @@
         item.href = '#';
         item.title = '打开芝芝状态机系统';
         item.innerHTML = '<i class="fa-solid fa-cubes-stacked"></i><span>芝芝状态机系统</span>';
-        item.addEventListener('click', (event) => {
-            event.preventDefault();
-            open();
-            menu.style.display = 'none';
-        });
         container.appendChild(item);
-        menu.appendChild(container);
+        menu.prepend(container);
         return true;
     }
+    function bindWandMenuClick() {
+        if (wandMenuClickBound) return;
+        wandMenuClickBound = true;
+        document.addEventListener('click', (event) => {
+            const target = event.target instanceof Element ? event.target.closest('#wsm-wand-menu-item') : null;
+            if (!target) return;
+            event.preventDefault();
+            event.stopPropagation();
+            open();
+            const menu = document.getElementById('extensionsMenu');
+            if (menu instanceof HTMLElement) menu.style.display = 'none';
+        }, true);
+    }
     function mountWandMenuItemWhenReady() {
-        if (mountWandMenuItem()) return;
-        const timer = window.setInterval(() => {
-            if (mountWandMenuItem()) window.clearInterval(timer);
-        }, 500);
+        bindWandMenuClick();
+        mountWandMenuItem();
+        // Some UI/theme extensions rebuild the wand menu after startup. Keep
+        // this tiny idempotent check alive so our entry is restored if removed.
+        window.setInterval(mountWandMenuItem, 1000);
     }
     function mount() {
         if (document.getElementById('wsm-root')) return;

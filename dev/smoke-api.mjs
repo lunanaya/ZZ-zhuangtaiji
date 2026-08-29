@@ -55,7 +55,15 @@ SillyTavern.getContext = () => ({
 });
 assert.deepEqual(await WorldStateMachine.Api.complete('BASE-SYSTEM', { task: 'retry' }), { ok: true });
 assert.equal(attempts, 2);
-assert.equal(tavernRequest.jsonSchema.name, 'world_state_machine_result');
+assert.equal('jsonSchema' in tavernRequest, false);
+
+SillyTavern.getContext = () => ({
+    async generateRaw() { throw new Error('Got response status 502'); },
+});
+await assert.rejects(
+    WorldStateMachine.Api.complete('BASE-SYSTEM', { task: 'diagnostic-task' }),
+    /任务 diagnostic-task 最终失败：.*502.*兼容请求.*502.*输入/,
+);
 
 settings.useTavernApi = false;
 settings.endpoint = 'https://example.test/v1';

@@ -128,13 +128,20 @@
             if (!isRetryable(error) || signal?.aborted) throw error;
             const reason = String(error?.message || error || '未知错误').slice(0, 300);
             const elapsed = Date.now() - startedAt;
-            console.warn('[WorldStateMachine] 默认 API 首次请求失败，使用相同结构化请求重试', { ...meta, elapsedMs: elapsed, reason }, error);
-            WSM.Engine?.reportProgress?.('模型首次请求失败，正在自动重试', 'running', `任务 ${meta.task || 'unknown'} · ${reason} · 输入 ${meta.inputChars || 0} 字 · 已等待 ${Math.round(elapsed / 1000)} 秒`);
+            console.warn('[WorldStateMachine] 默认 API 结构化请求失败，切换兼容 JSON 模式重试', { ...meta, elapsedMs: elapsed, reason }, error);
+            WSM.Engine?.reportProgress?.('结构化请求失败，正在切换兼容模式', 'running', `任务 ${meta.task || 'unknown'} · ${reason} · 输入 ${meta.inputChars || 0} 字 · 已等待 ${Math.round(elapsed / 1000)} 秒`);
             // The retry receives a fresh timeout budget instead of inheriting
-            // whatever little time the first gateway used up.
-            const content = await tavernAttempt(context, messages, settings, signal, timeoutMs, true);
-            if (!String(content || '').trim()) throw new Error('酒馆默认 API 重试后仍返回空内容');
-            return extractJson(content);
+            // whatever little time the first gateway used up. Some ST/provider
+            // combinations return 502 when jsonSchema is present, so retry with
+            // prompt-enforced JSON instead of repeating an unsupported option.
+            try {
+                const content = await tavernAttempt(context, messages, settings, signal, timeoutMs, false);
+                if (!String(content || '').trim()) throw new Error('酒馆默认 API 兼容模式仍返回空内容');
+                return extractJson(content);
+            } catch (retryError) {
+                const retryReason = String(retryError?.message || retryError || '未知错误').slice(0, 300);
+                throw new Error(`任务 ${meta.task || 'unknown'} 最终失败：结构化请求 ${reason}；兼容请求 ${retryReason}；输入 ${meta.inputChars || 0} 字`);
+            }
         }
     }
     async function complete(system, payload, options = {}) {

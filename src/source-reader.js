@@ -108,7 +108,7 @@
         const records = sourceRecords(source, partChars);
         const chunks = pack(records, chunkChars);
         const sourceChars = jsonLength(source);
-        if (chunks.length <= 1 && sourceChars <= chunkChars) {
+        if (options.forceDigest !== true && chunks.length <= 1 && sourceChars <= chunkChars) {
             return { source, stats: { chunked: false, sourceChars, chunks: 1, mergePasses: 0 } };
         }
 

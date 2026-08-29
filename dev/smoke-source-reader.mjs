@@ -78,4 +78,16 @@ assert.match(successfulAdaptivePayload, /角色卡资料/);
 assert.match(successfulAdaptivePayload, /Persona资料/);
 assert.match(successfulAdaptivePayload, /世界规则/);
 
+const beforeForced = adaptiveCalls.length;
+const forcedSmall = await WorldStateMachine.SourceReader.prepare({
+    identities: { user: '用户', char: '角色' },
+    character: { name: '角色', description: '短角色卡' },
+    persona: '短Persona',
+    worldbooks: [],
+    chat: [{ id: 'small', role: 'user', content: '短正文也必须先读取' }],
+}, { chunkChars: 4000, forceDigest: true, reduceTargetChars: 12000 });
+assert.equal(forcedSmall.stats.chunked, true);
+assert.ok(adaptiveCalls.slice(beforeForced).some((payload) => payload.task === 'SOURCE_READ_CHUNK'));
+assert.ok(Array.isArray(forcedSmall.source.sourceDigest));
+
 console.log('Source reader smoke tests passed');

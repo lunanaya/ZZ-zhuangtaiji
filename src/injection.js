@@ -209,5 +209,40 @@
         return `<WORLD_STATE>\n${body || '本轮没有需要额外注入的世界状态。'}\n</WORLD_STATE>`;
     }
 
-    WSM.Injection = { compose, fallbackBlocks };
+    function composeByDepth(state, plan = {}, plannerBlocks = {}) {
+        const settings = WSM.Settings.get();
+        const modules = settings.injectionModules || WSM.Defaults.INJECTION_MODULES;
+        const generated = fallbackBlocks(state, plan);
+        const supplied = normalizePlannerBlocks(plannerBlocks, state);
+        const groups = new Map();
+        const seenFacts = [];
+        Object.entries(WSM.Defaults.INJECTION_MODULES).forEach(([id, defaultModule]) => {
+            const config = Object.assign({}, defaultModule, modules[id] || {});
+            if (config.enabled === false) return;
+            const content = dedupeContent(removeRatingNumbers(replaceIdentityTokens(supplied[id] || generated[id], state)), seenFacts);
+            if (!content) return;
+            const fixedInstruction = text(config.instruction);
+            const editablePrompt = text(settings.modulePrompts?.[id]);
+            const instruction = [fixedInstruction, editablePrompt && editablePrompt !== fixedInstruction ? `模块提示词：${editablePrompt}` : ''].filter(Boolean).join('\n');
+            const depth = Math.max(0, Math.min(4, Math.round(Number(config.depth ?? defaultModule.depth ?? 2))));
+            if (!groups.has(depth)) groups.set(depth, []);
+            groups.get(depth).push({ id, label: config.label, content, instruction });
+        });
+        const diceBlock = settings.diceEnabled ? WSM.Dice?.injectionBlock?.(plan.diceRound) : '';
+        const authorityBlock = '[外置状态权威]\n以下按重要性分层注入的 WORLD_STATE 共同构成本轮唯一状态来源。只输出叙事正文及用户明确要求的附加格式；不得另行输出 <INDRS>、<abstract>、<note> 或 GM_STATE。';
+        const configuredMax = Math.max(500, Number(settings.injectionMaxChars || 3500));
+        const totalWeight = [...groups.values()].reduce((sum, items) => sum + items.reduce((size, item) => size + item.content.length + item.instruction.length, 0), 0) || 1;
+        const prompts = {};
+        [...groups.entries()].sort((a, b) => a[0] - b[0]).forEach(([depth, candidates]) => {
+            const weight = candidates.reduce((size, item) => size + item.content.length + item.instruction.length, 0);
+            const budget = Math.max(500, Math.round(configuredMax * weight / totalWeight));
+            const fixed = depth === 0 ? [diceBlock, authorityBlock].filter(Boolean).join('\n\n') : '';
+            const body = composeWithinBudget(fixed, candidates, budget);
+            prompts[depth] = `<WORLD_STATE depth="${depth}">\n${body}\n</WORLD_STATE>`;
+        });
+        if (!prompts[0]) prompts[0] = `<WORLD_STATE depth="0">\n${[diceBlock, authorityBlock].filter(Boolean).join('\n\n')}\n</WORLD_STATE>`;
+        return prompts;
+    }
+
+    WSM.Injection = { compose, composeByDepth, fallbackBlocks };
 })();

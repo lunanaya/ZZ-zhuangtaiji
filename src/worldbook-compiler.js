@@ -2,9 +2,11 @@
     'use strict';
     const WSM = window.WorldStateMachine = window.WorldStateMachine || {};
     const CACHE_KEY = 'wsm_worldbook_compiler_cache_v1';
+    const PROMPT_PREFIX = 'WORLD_STATE_MACHINE_WORLDBOOK_DEPTH_';
     let activeTurn = null;
     let lastDelivery = null;
     let lastStatus = { state: 'idle', message: '尚未运行', at: 0 };
+    let registeredWorldbookDepths = new Set();
 
     const text = (value) => String(value ?? '').trim();
     const clone = (value) => {
@@ -82,6 +84,8 @@
             key: entry.key,
             bookName: entry.bookName,
             label: entry.comment || entry.bookName,
+            depth: Math.max(0, Math.min(100, Math.round(Number(entry.depth ?? 4) || 0))),
+            role: Number(entry.role ?? 0) || 0,
             core: values(item?.core),
             triggers: values(item?.triggers || item?.when),
             rules: values(item?.rules || item?.conditionalRules || item?.rule),
@@ -136,7 +140,11 @@
             });
             saveCache(cache);
         }
-        return entries.map((entry) => cache[entry.key]).filter(Boolean);
+        return entries.map((entry) => {
+            const cached = cache[entry.key];
+            if (!cached?.compiled) return null;
+            return { ...cached, compiled: { ...cached.compiled, depth: Math.max(0, Math.min(100, Math.round(Number(entry.depth ?? cached.compiled.depth ?? 4) || 0))), role: Number(entry.role ?? cached.compiled.role ?? 0) || 0 } };
+        }).filter(Boolean);
     }
     function contentOf(value) {
         if (typeof value === 'string') return value;
@@ -163,6 +171,7 @@
             key: text(compiled.key),
             bookName: text(compiled.bookName),
             label: text(compiled.label),
+            depth: Math.max(0, Math.min(100, Math.round(Number(compiled.depth ?? 4) || 0))),
             core: Array.isArray(compiled.core) ? compiled.core.map(text).filter(Boolean) : [],
             triggers: Array.isArray(compiled.triggers) ? compiled.triggers.map(text).filter(Boolean) : [],
             rules: Array.isArray(compiled.rules) ? compiled.rules.map(text).filter(Boolean) : [],
@@ -183,6 +192,7 @@
             compiledCount: entries.length,
             entries,
             routedText,
+            routedByDepth: clone(prepared?.routedByDepth || extra.routedByDepth || {}),
             routedChars: routedText.length,
             turnAt: Number(prepared?.at || extra.turnAt || 0),
             status: clone(lastStatus),
@@ -190,7 +200,7 @@
             ...extra,
         };
     }
-    async function route(config, compiled, currentContext) {
+    async function routeGroup(config, compiled, currentContext) {
         const rules = compiled.map((item) => item.compiled).filter(Boolean);
         const batches = packByJsonSize(rules, 22000);
         const candidates = [];
@@ -210,18 +220,39 @@
         );
         return text(merged?.text).slice(0, config.budget);
     }
+    async function route(config, compiled, currentContext) {
+        const groups = new Map();
+        compiled.forEach((item) => {
+            const depth = Math.max(0, Math.min(100, Math.round(Number(item?.compiled?.depth ?? 4) || 0)));
+            if (!groups.has(depth)) groups.set(depth, []);
+            groups.get(depth).push(item);
+        });
+        const routedByDepth = {};
+        const perDepthBudget = Math.max(120, Math.floor(config.budget / Math.max(1, groups.size)));
+        for (const [depth, items] of groups.entries()) {
+            const value = await routeGroup({ ...config, budget: perDepthBudget }, items, currentContext);
+            if (value) routedByDepth[depth] = value;
+        }
+        return { text: Object.values(routedByDepth).join('\n').slice(0, config.budget), byDepth: routedByDepth };
+    }
     async function prepare(config, entries, currentContext, options = {}) {
-        const key = hash(JSON.stringify({ entries: entries.map((entry) => [entry.key, hash(entry.content)]), currentContext, budget: config.budget }));
+        const key = hash(JSON.stringify({ entries: entries.map((entry) => [entry.key, hash(entry.content), entry.depth]), currentContext, budget: config.budget }));
         if (!options.force && activeTurn?.key === key) return activeTurn;
         const compiled = await ensureCompiled(config, entries, options);
         let routed;
-        try { routed = await route(config, compiled, currentContext); }
+        let routedByDepth;
+        try {
+            const result = await route(config, compiled, currentContext);
+            routed = result.text;
+            routedByDepth = result.byDepth;
+        }
         catch (error) {
             routed = fallbackText(compiled, config.budget);
             if (!routed) throw error;
+            routedByDepth = Object.fromEntries([...new Set(compiled.map((item) => Number(item?.compiled?.depth ?? 4)))].map((depth) => [depth, fallbackText(compiled.filter((item) => Number(item?.compiled?.depth ?? 4) === depth), config.budget)]).filter(([, value]) => value));
             console.warn('[WorldStateMachine] 世界书逐轮路由失败，使用已拆解核心规则', error);
         }
-        activeTurn = { key, entryKeys: entries.map((entry) => entry.key), routed, compiled, at: Date.now() };
+        activeTurn = { key, entryKeys: entries.map((entry) => entry.key), routed, routedByDepth, compiled, at: Date.now() };
         return activeTurn;
     }
     function expandedOriginals(entries) {
@@ -280,6 +311,20 @@
         }
         return true;
     }
+    async function setWorldbookPrompts(routedByDepth = {}) {
+        const ctx = WSM.Context.context();
+        const setter = typeof ctx?.setExtensionPrompt === 'function' ? ctx.setExtensionPrompt.bind(ctx) : (typeof window.setExtensionPrompt === 'function' ? window.setExtensionPrompt.bind(window) : null);
+        if (!setter) return false;
+        const nextDepths = new Set(Object.keys(routedByDepth).map(Number).filter(Number.isFinite));
+        const depths = new Set([...registeredWorldbookDepths, ...nextDepths]);
+        for (const depth of depths) await setter(`${PROMPT_PREFIX}${depth}`, '', 1, depth, false, 0);
+        for (const depth of nextDepths) {
+            const value = text(routedByDepth[depth]);
+            if (value) await setter(`${PROMPT_PREFIX}${depth}`, `<WORLDBOOK_RULES depth="${depth}">\n${value}\n</WORLDBOOK_RULES>`, 1, depth, false, 0);
+        }
+        registeredWorldbookDepths = nextDepths;
+        return true;
+    }
     function missingKeys(config, entries) {
         const found = new Set(entries.map((entry) => entry.key));
         return config.entryKeys.filter((key) => !found.has(key));
@@ -295,7 +340,7 @@
         source.worldbooks = (source.worldbooks || []).map((book) => ({ ...book, entries: (book.entries || []).filter((entry) => !selected.has(entry.key)) })).filter((book) => book.entries.length);
         try {
             const prepared = await prepare(config, entries, contextFromMessages(source.chat, config.contextMessages));
-            source.compiledWorldbookRules = { text: prepared.routed, selectedEntryKeys: prepared.entryKeys, originalEntriesRemoved: entries.length };
+            source.compiledWorldbookRules = { text: prepared.routed, byDepth: prepared.routedByDepth, selectedEntryKeys: prepared.entryKeys, originalEntriesRemoved: entries.length };
             lastStatus = { state: 'ready', message: `已为 Planner 路由 ${prepared.routed.length} 字世界书规则`, at: Date.now() };
             return { enabled: true, routed: prepared.routed, selected: entries.length, report: buildReport(prepared, { originalEntriesRemoved: entries.length }) };
         } catch (error) {
@@ -305,26 +350,34 @@
     }
     async function processChat(chat) {
         const config = normalizeConfig();
-        if (!config.enabled || !config.entryKeys.length) return { enabled: false };
+        if (!config.enabled || !config.entryKeys.length) {
+            await setWorldbookPrompts({});
+            return { enabled: false };
+        }
         const entries = await resolveSelectedEntries(config);
         const missing = missingKeys(config, entries);
         if (missing.length) {
+            await setWorldbookPrompts({});
             const error = `无法读取 ${missing.length} 条已勾选世界书条目；为避免原文泄漏，已阻止正文请求`;
             lastStatus = { state: 'blocked', message: error, at: Date.now() };
             return { enabled: true, blocked: true, error };
         }
-        if (!entries.length) return { enabled: true, removed: 0, injected: false };
+        if (!entries.length) {
+            await setWorldbookPrompts({});
+            return { enabled: true, removed: 0, injected: false };
+        }
         const removed = redactOriginals(chat, entries);
         try {
             const prepared = await prepare(config, entries, contextFromMessages(chat, config.contextMessages));
-            const injected = injectText(chat, prepared.routed);
+            const injected = await setWorldbookPrompts(prepared.routedByDepth) || injectText(chat, prepared.routed);
             lastStatus = { state: 'ready', message: `已剔除 ${removed} 处原文，注入 ${prepared.routed.length} 字`, at: Date.now() };
             lastDelivery = { at: Date.now(), injected, fallback: false, removedOriginalOccurrences: removed, chars: prepared.routed.length };
             return { enabled: true, removed, injected, length: prepared.routed.length };
         } catch (error) {
             const cached = entries.map((entry) => loadCache()[entry.key]).filter(Boolean);
             const fallback = fallbackText(cached, config.budget);
-            const injected = injectText(chat, fallback);
+            const fallbackByDepth = Object.fromEntries([...new Set(cached.map((item) => Number(item?.compiled?.depth ?? 4)))].map((depth) => [depth, fallbackText(cached.filter((item) => Number(item?.compiled?.depth ?? 4) === depth), config.budget)]).filter(([, value]) => value));
+            const injected = await setWorldbookPrompts(fallbackByDepth) || injectText(chat, fallback);
             const message = text(error?.message || error);
             lastStatus = { state: !fallback ? 'blocked' : 'error', message, at: Date.now() };
             lastDelivery = { at: Date.now(), injected, fallback: !!fallback, removedOriginalOccurrences: removed, chars: fallback.length, error: message };
@@ -366,6 +419,7 @@
         normalizeConfig,
         processSource,
         processChat,
+        setWorldbookPrompts,
         compileConfig,
         getLastStatus: () => clone(lastStatus),
         getReport: (persisted) => {

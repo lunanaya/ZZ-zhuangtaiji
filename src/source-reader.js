@@ -44,7 +44,7 @@
         (source.worldbooks || []).forEach((book, bookIndex) => (book.entries || []).forEach((entry, entryIndex) => {
             addTextRecords(records, {
                 ref: `worldbook:${book.name || bookIndex}:${entry.id || entryIndex}`,
-                kind: 'worldbook', book: book.name || '', title: entry.comment || '', keys: entry.keys || [],
+                kind: 'worldbook', book: book.name || '', title: entry.comment || '', keys: entry.keys || [], depth: entry.depth,
             }, entry.content, partLimit);
         }));
         if (source.compiledWorldbookRules) records.push({ ref: 'compiledWorldbookRules', kind: 'compiled-worldbook-rules', data: source.compiledWorldbookRules });
@@ -78,6 +78,30 @@
         return digest;
     }
 
+    function splitFailedChunk(chunk, minimumChars = 1200) {
+        if (chunk.length > 1) {
+            const middle = Math.ceil(chunk.length / 2);
+            return [chunk.slice(0, middle), chunk.slice(middle)];
+        }
+        const record = chunk[0];
+        if (!record) return null;
+        let field = 'content';
+        let value = typeof record.content === 'string' ? record.content : '';
+        if (!value && record.data && typeof record.data === 'object') {
+            field = 'data';
+            value = JSON.stringify(record.data);
+        }
+        if (value.length <= minimumChars) return null;
+        const parts = splitText(value, Math.max(minimumChars, Math.ceil(value.length / 2)));
+        if (parts.length < 2) return null;
+        return parts.map((content, index) => [{
+            ...record,
+            ...(field === 'data' ? { data: undefined, content, serializedField: 'data' } : { content }),
+            adaptivePart: index + 1,
+            adaptiveParts: parts.length,
+        }]);
+    }
+
     async function prepare(source, options = {}) {
         const chunkChars = Math.max(4000, Number(options.chunkChars || 24000));
         const partChars = Math.max(2000, Math.floor(chunkChars * 0.55));
@@ -89,15 +113,28 @@
         }
 
         const digests = [];
-        for (let index = 0; index < chunks.length; index += 1) {
-            options.onProgress?.({ stage: 'read', current: index + 1, total: chunks.length });
+        const queue = chunks.slice();
+        const initialChunks = chunks.length;
+        let requestAttempts = 0;
+        let adaptiveSplits = 0;
+        for (let index = 0; index < queue.length;) {
+            options.onProgress?.({ stage: 'read', current: index + 1, total: queue.length, attempts: requestAttempts + 1 });
             try {
+                requestAttempts += 1;
                 const result = await WSM.Api.complete(CHUNK_PROMPT, {
-                    task: 'SOURCE_READ_CHUNK', chunkIndex: index + 1, chunkCount: chunks.length, sourceChunk: chunks[index],
+                    task: 'SOURCE_READ_CHUNK', chunkIndex: index + 1, chunkCount: queue.length, sourceChunk: queue[index],
                 }, { maxTokens: 3000 });
                 digests.push(digestValue(result));
+                index += 1;
             } catch (error) {
-                throw new Error(`资料分片 ${index + 1}/${chunks.length} 读取失败：${text(error?.message || error)}`);
+                const children = splitFailedChunk(queue[index]);
+                if (!children) throw new Error(`资料分片 ${index + 1}/${queue.length} 已细分到最小单位仍读取失败：${text(error?.message || error)}`);
+                adaptiveSplits += 1;
+                queue.splice(index, 1, ...children);
+                options.onProgress?.({
+                    stage: 'split', current: index + 1, total: queue.length, splits: adaptiveSplits,
+                    reason: text(error?.message || error),
+                });
             }
         }
 
@@ -140,12 +177,18 @@
                 truncated: false,
                 processedInChunks: true,
                 rawTailMessages: recentChat.length,
-                sourceChunks: chunks.length,
+                sourceChunks: queue.length,
             },
-            sourceRead: { mode: 'chunked-map-reduce', sourceChars, chunks: chunks.length, mergePasses },
+            sourceRead: {
+                mode: 'chunked-map-reduce', sourceChars, records: records.length, initialChunks,
+                chunks: queue.length, requestAttempts, adaptiveSplits, mergePasses,
+            },
         };
-        return { source: prepared, stats: { chunked: true, sourceChars, chunks: chunks.length, mergePasses } };
+        return { source: prepared, stats: {
+            chunked: true, sourceChars, records: records.length, initialChunks,
+            chunks: queue.length, requestAttempts, adaptiveSplits, mergePasses,
+        } };
     }
 
-    WSM.SourceReader = { prepare, _test: { splitText, sourceRecords, pack } };
+    WSM.SourceReader = { prepare, _test: { splitText, sourceRecords, pack, splitFailedChunk } };
 })();

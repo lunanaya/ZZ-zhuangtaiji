@@ -261,20 +261,20 @@ Phantasm 已经内化为本插件的默认事实法则，不是可选择的模�
     };
 
     const INJECTION_MODULES = {
-        world: { label: '世界状态', category: 'world', enabled: true, instruction: '作为当前场景的客观基础；没有充分原因时不要擅自改变。' },
-        ambient: { label: '环境与路人反应', category: 'world', enabled: true, instruction: '只允许由当前正文触发、符合场所与感知条件的轻量反应；临时路人不得升级为持久NPC或强制事件。' },
-        map: { label: '场景地图', category: 'world', enabled: true, instruction: '遵守当前位置、已知地点与可通行路线；路线受阻时不得瞬移。' },
-        characters: { label: '人物状态', category: 'people', enabled: true, instruction: '遵守人物当前位置、当前行动、目标与在场状态。' },
-        npcActivities: { label: 'NPC活动轨迹', category: 'people', enabled: true, instruction: '只作为NPC近期行动连续性；不要逐条复述成流水账。' },
-        relationships: { label: '人物关系', category: 'people', enabled: true, instruction: '只用简单自然语言影响态度与距离，禁止展示任何关系评分。' },
-        knowledge: { label: '知识与秘密', category: 'people', enabled: false, instruction: '严格遵守知情者与不知情者边界，不得让角色无来源获知信息。' },
-        tasks: { label: '当前任务', category: 'affairs', enabled: true, instruction: '只在任务与本轮场景、时间或人物行动相关时体现。' },
-        events: { label: '世界事件', category: 'world', enabled: true, instruction: '只体现已经自然波及当前场景的事件。' },
-        triggers: { label: '可触发事件', category: 'affairs', enabled: true, instruction: '条件未满足时不得提前触发；满足也不代表必须立刻显化。' },
-        threads: { label: '长期线程', category: 'affairs', enabled: false, instruction: '仅作为长期连续性约束，不要求本轮推进。' },
-        processes: { label: '世界进程', category: 'world', enabled: true, instruction: '允许延续、衰减、转向或结束，不默认升级。' },
-        causalEffects: { label: '因果影响', category: 'world', enabled: true, instruction: '只使用有既存起因、寻常路径且已经抵达当前场景的局部结果。' },
-        planner: { label: '本轮后台判断', category: 'system', enabled: true, instruction: '采用合理发展与禁止事项；计划不是已经发生的事实。' },
+        world: { label: '世界状态', category: 'world', depth: 1, enabled: true, instruction: '作为当前场景的客观基础；没有充分原因时不要擅自改变。' },
+        ambient: { label: '环境与路人反应', category: 'world', depth: 0, enabled: true, instruction: '只允许由当前正文触发、符合场所与感知条件的轻量反应；临时路人不得升级为持久NPC或强制事件。' },
+        map: { label: '场景地图', category: 'world', depth: 2, enabled: true, instruction: '遵守当前位置、已知地点与可通行路线；路线受阻时不得瞬移。' },
+        characters: { label: '人物状态', category: 'people', depth: 1, enabled: true, instruction: '遵守人物当前位置、当前行动、目标与在场状态。' },
+        npcActivities: { label: 'NPC活动轨迹', category: 'people', depth: 4, enabled: true, instruction: '只作为NPC近期行动连续性；不要逐条复述成流水账。' },
+        relationships: { label: '人物关系', category: 'people', depth: 2, enabled: true, instruction: '只用简单自然语言影响态度与距离，禁止展示任何关系评分。' },
+        knowledge: { label: '知识与秘密', category: 'people', depth: 2, enabled: false, instruction: '严格遵守知情者与不知情者边界，不得让角色无来源获知信息。' },
+        tasks: { label: '当前任务', category: 'affairs', depth: 3, enabled: true, instruction: '只在任务与本轮场景、时间或人物行动相关时体现。' },
+        events: { label: '世界事件', category: 'world', depth: 3, enabled: true, instruction: '只体现已经自然波及当前场景的事件。' },
+        triggers: { label: '可触发事件', category: 'affairs', depth: 4, enabled: true, instruction: '条件未满足时不得提前触发；满足也不代表必须立刻显化。' },
+        threads: { label: '长期线程', category: 'affairs', depth: 4, enabled: false, instruction: '仅作为长期连续性约束，不要求本轮推进。' },
+        processes: { label: '世界进程', category: 'world', depth: 4, enabled: true, instruction: '允许延续、衰减、转向或结束，不默认升级。' },
+        causalEffects: { label: '因果影响', category: 'world', depth: 3, enabled: true, instruction: '只使用有既存起因、寻常路径且已经抵达当前场景的局部结果。' },
+        planner: { label: '本轮后台判断', category: 'system', depth: 0, enabled: true, instruction: '采用合理发展与禁止事项；计划不是已经发生的事实。' },
     };
 
     const MODULE_OWNERSHIP = {

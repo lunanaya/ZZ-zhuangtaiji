@@ -111,21 +111,27 @@
             removeTuning();
         }
     }
-    async function completeViaTavern(messages, settings, signal, timeoutMs) {
+    async function completeViaTavern(messages, settings, signal, timeoutMs, meta = {}) {
         const context = window.SillyTavern?.getContext?.();
         if (typeof context?.generateRaw !== 'function') {
             throw new Error('当前 SillyTavern 版本不支持默认 API 调用，请更新酒馆或关闭“使用酒馆默认 API”');
         }
+        const startedAt = Date.now();
         try {
-            const content = await tavernAttempt(context, messages, settings, signal, timeoutMs);
+            // State-machine calls always require JSON. Start with ST's native
+            // structured generation instead of spending the first attempt on a
+            // less reliable free-form JSON response.
+            const content = await tavernAttempt(context, messages, settings, signal, timeoutMs, true);
             if (!String(content || '').trim()) throw new Error('酒馆默认 API 返回了空内容');
             return extractJson(content);
         } catch (error) {
             if (!isRetryable(error) || signal?.aborted) throw error;
-            console.warn('[WorldStateMachine] 默认 API 首次请求失败，使用 GPT 兼容的结构化输出重试', error);
-            WSM.Engine?.reportProgress?.('模型首次请求超时，正在自动重试', 'running', '已切换为 GPT 兼容的结构化 JSON 输出；无需重复点击初始化');
-            // The compatibility retry receives a fresh timeout budget instead
-            // of inheriting whatever little time the first gateway used up.
+            const reason = String(error?.message || error || '未知错误').slice(0, 300);
+            const elapsed = Date.now() - startedAt;
+            console.warn('[WorldStateMachine] 默认 API 首次请求失败，使用相同结构化请求重试', { ...meta, elapsedMs: elapsed, reason }, error);
+            WSM.Engine?.reportProgress?.('模型首次请求失败，正在自动重试', 'running', `任务 ${meta.task || 'unknown'} · ${reason} · 输入 ${meta.inputChars || 0} 字 · 已等待 ${Math.round(elapsed / 1000)} 秒`);
+            // The retry receives a fresh timeout budget instead of inheriting
+            // whatever little time the first gateway used up.
             const content = await tavernAttempt(context, messages, settings, signal, timeoutMs, true);
             if (!String(content || '').trim()) throw new Error('酒馆默认 API 重试后仍返回空内容');
             return extractJson(content);
@@ -140,6 +146,11 @@
             { role: 'system', content: systemPrompt(system, settings.jailbreakPrompt) },
             { role: 'user', content: JSON.stringify(payload) },
         ];
+        const meta = {
+            task: String(payload?.task || payload?.phase || 'completion'),
+            inputChars: messages.reduce((sum, message) => sum + String(message.content || '').length, 0),
+            maxTokens,
+        };
         const headers = { 'Content-Type': 'application/json' };
         if (settings.apiKey) headers.Authorization = `Bearer ${settings.apiKey}`;
         const body = {
@@ -158,7 +169,7 @@
             delete body.temperature;
         }
         try {
-            if (settings.useTavernApi !== false && options.forceExternal !== true) return await completeViaTavern(messages, requestSettings, options.signal, timeoutMs);
+            if (settings.useTavernApi !== false && options.forceExternal !== true) return await completeViaTavern(messages, requestSettings, options.signal, timeoutMs, meta);
             const attempt = attemptSignal(options.signal, timeoutMs);
             let response;
             let raw;

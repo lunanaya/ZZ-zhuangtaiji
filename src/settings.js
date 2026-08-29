@@ -6,7 +6,7 @@
     const defaults = {
         rulesVersion: RULES_VERSION,
         enabled: true,
-        autoInitialize: true,
+        autoInitialize: false,
         useTavernApi: true,
         jailbreakPrompt: '',
         followTavernFont: true,
@@ -81,6 +81,9 @@
         root[KEY].modulePrompts = Object.assign({}, WSM.Defaults.MODULE_PROMPTS, root[KEY].modulePrompts || {});
         ['causalLinks', 'causalSeeds', 'scenePressure', 'actorCausality', 'backgroundQueue', 'advanceScheduler'].forEach((id) => { delete root[KEY].modulePrompts[id]; });
         root[KEY].worldbookCompiler = Object.assign({}, defaults.worldbookCompiler, root[KEY].worldbookCompiler || {});
+        // Kept only as a compatibility field for older saved settings. Reading
+        // and initialization are always manual from v0.9.21 onward.
+        root[KEY].autoInitialize = false;
         // maxTokens controls one response, not how much source is read. Keep a
         // sane provider-compatible generation budget; long sources are handled
         // by SourceReader's complete chunk pipeline.

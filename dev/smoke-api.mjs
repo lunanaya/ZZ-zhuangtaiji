@@ -33,6 +33,7 @@ WorldStateMachine.Settings = { get: () => settings };
 
 await import('../src/api.js');
 assert.deepEqual(await WorldStateMachine.Api.complete('BASE-SYSTEM', { task: 'test' }), { ok: true });
+assert.equal(tavernRequest.jsonSchema.name, 'world_state_machine_result');
 assert.equal(tavernRequest.responseLength, 3210);
 assert.equal(tavernRequest.trimNames, false);
 assert.equal(tavernGenerationData.reasoning_effort, 'low');

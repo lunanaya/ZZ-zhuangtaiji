@@ -73,24 +73,27 @@ delete testContext.generateRaw;
 assert.equal(WorldStateMachine.Engine._test.plannerAvailable({ useTavernApi: false, endpoint: 'https://example.test/v1' }), true);
 assert.equal(WorldStateMachine.Engine._test.activeChatAvailable(), false);
 let registeredPromptArgs = null;
-testContext.setExtensionPrompt = (...args) => { registeredPromptArgs = args; };
-WorldStateMachine.Settings.update({ injectionDepth: 4, enabled: true, useTavernApi: true });
-await WorldStateMachine.Engine._test.setPrompt('PROMPT-DELIVERY-MARKER');
-assert.deepEqual(registeredPromptArgs.slice(0, 6), ['WORLD_STATE_MACHINE_CONTEXT', 'PROMPT-DELIVERY-MARKER', 1, 4, false, 0]);
+let registeredPromptCalls = [];
+testContext.setExtensionPrompt = (...args) => { registeredPromptArgs = args; registeredPromptCalls.push(args); };
+WorldStateMachine.Settings.update({ enabled: true, useTavernApi: true });
+await WorldStateMachine.Engine._test.setPrompt({ 0: 'DEPTH-0-MARKER', 4: 'DEPTH-4-MARKER' });
+assert.ok(registeredPromptCalls.some((args) => args[0] === 'WORLD_STATE_MACHINE_CONTEXT_DEPTH_0' && args[1] === 'DEPTH-0-MARKER' && args[3] === 0));
+assert.ok(registeredPromptCalls.some((args) => args[0] === 'WORLD_STATE_MACHINE_CONTEXT_DEPTH_4' && args[1] === 'DEPTH-4-MARKER' && args[3] === 4));
 const outboundChat = [{ role: 'user', content: '本轮正文请求' }];
 await WorldStateMachine.Engine.interceptor(outboundChat, 8192, () => {}, 'normal');
 assert.equal(outboundChat.length, 1);
 assert.doesNotMatch(JSON.stringify(outboundChat), /<WORLD_STATE>/);
-assert.match(String(registeredPromptArgs[1]), /<WORLD_STATE>/);
+assert.equal(registeredPromptArgs[1], '');
 const quotedTagChat = [{ role: 'user', content: '正文只是引用 <WORLD_STATE> 标签' }];
 registeredPromptArgs = null;
 await WorldStateMachine.Engine.interceptor(quotedTagChat, 8192, () => {}, 'normal');
 assert.equal(quotedTagChat.length, 1);
-assert.match(String(registeredPromptArgs[1]), /<WORLD_STATE>/);
+assert.equal(registeredPromptArgs[1], '');
+assert.equal(WorldStateMachine.Settings.get().autoInitialize, false);
 WorldStateMachine.Settings.update({ enabled: false });
 await WorldStateMachine.Engine.interceptor(outboundChat, 8192, () => {}, 'normal');
 assert.equal(registeredPromptArgs[1], '');
-WorldStateMachine.Settings.update({ injectionDepth: 0, enabled: true });
+WorldStateMachine.Settings.update({ enabled: true });
 state.identities = { user: '林知夏', char: '夏以昼' };
 state.world.time.display = '周二 14:30';
 state.world.location.current = '夏家·客厅';
@@ -125,6 +128,15 @@ assert.match(result, /林知夏→夏以昼：相互试探/);
 assert.match(result, /夏以昼：夏家·客厅｜整理会议文件/);
 assert.match(result, /夏家·客厅 → 夏家·玄关：可通行；穿过短廊/);
 assert.doesNotMatch(result, /\b(?:user|char)→|(?:：|>)\s*(?:user|char)\b/i);
+const depthPrompts = WorldStateMachine.Injection.composeByDepth(state, { ambientResponses: [{ actor: '邻座乘客', response: '短暂看了一眼' }] });
+assert.match(depthPrompts[0], /\[外置状态权威\]/);
+assert.match(depthPrompts[0], /\[环境与路人反应\]/);
+assert.match(depthPrompts[1], /\[世界状态\]/);
+assert.match(depthPrompts[1], /\[人物状态\]/);
+assert.match(depthPrompts[2], /\[场景地图\]/);
+assert.match(depthPrompts[2], /\[人物关系\]/);
+assert.match(depthPrompts[3], /\[世界事件\]/);
+assert.match(depthPrompts[4], /\[NPC活动轨迹\]/);
 
 const plannerNamed = WorldStateMachine.Injection.compose(state, {}, { planner: 'user可以继续与<char>交流' });
 assert.match(plannerNamed, /林知夏可以继续与夏以昼交流/);
@@ -208,7 +220,7 @@ testContext.chat = [
 globalThis.selected_world_info = ['分析世界书'];
 testContext.getWorldInfo = async (name) => name === '分析世界书' ? {
     entries: {
-        0: { uid: 0, comment: '公共场所规则', content: '公共场所允许合乎比例的旁观者反应。', disable: false },
+        0: { uid: 0, comment: '公共场所规则', content: '公共场所允许合乎比例的旁观者反应。', depth: 3, disable: false },
         1: { uid: 1, comment: '未勾选规则', content: '这条未勾选原文应保持原样。', disable: false },
     },
 } : { entries: {} };
@@ -234,6 +246,7 @@ const plannerSource = structuredClone(source);
 const compiledSource = await WorldStateMachine.WorldbookCompiler.processSource(plannerSource);
 assert.equal(compiledSource.blocked, undefined);
 assert.equal(compiledSource.report.entries[0].label, '公共场所规则');
+assert.equal(compiledSource.report.entries[0].depth, 3);
 assert.match(compiledSource.report.routedText, /合乎比例/);
 assert.doesNotMatch(JSON.stringify(compiledSource.report), /公共场所允许合乎比例的旁观者反应。/);
 assert.match(plannerSource.compiledWorldbookRules.text, /合乎比例/);
@@ -245,11 +258,13 @@ const foregroundChat = [
     { role: 'system', content: `角色设定\n${source.worldbooks[0].entries[0].content}\n这条未勾选原文应保持原样。` },
     { role: 'user', content: '我和他在飞机上闹起来了。' },
 ];
+registeredPromptCalls = [];
 const foregroundResult = await WorldStateMachine.WorldbookCompiler.processChat(foregroundChat);
 assert.equal(foregroundResult.blocked, undefined);
 assert.equal(foregroundChat.some((message) => String(message.content || '').includes(source.worldbooks[0].entries[0].content)), false);
 assert.equal(foregroundChat.some((message) => String(message.content || '').includes('这条未勾选原文应保持原样。')), true);
-assert.equal(foregroundChat.some((message) => String(message.content || '').includes('【本轮世界书拆解规则】')), true);
+assert.equal(foregroundChat.some((message) => String(message.content || '').includes('【本轮世界书拆解规则】')), false);
+assert.ok(registeredPromptCalls.some((args) => args[0] === 'WORLD_STATE_MACHINE_WORLDBOOK_DEPTH_3' && args[3] === 3 && String(args[1]).includes('合乎比例')));
 const injectionReport = WorldStateMachine.WorldbookCompiler.getReport();
 assert.equal(injectionReport.delivery.injected, true);
 assert.equal(injectionReport.delivery.removedOriginalOccurrences, 1);

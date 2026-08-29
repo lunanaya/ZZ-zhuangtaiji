@@ -2,12 +2,11 @@
     'use strict';
     const WSM = window.WorldStateMachine = window.WorldStateMachine || {};
     const PROMPT_ID = 'WORLD_STATE_MACHINE_CONTEXT';
+    const DEPTH_PROMPT_IDS = Array.from({ length: 5 }, (_, depth) => `${PROMPT_ID}_DEPTH_${depth}`);
     let planningPromise = null;
     let settlingPromise = null;
     let bound = false;
     let settingsBound = false;
-    let autoInitializeTimer = null;
-    let autoInitializeAttempts = 0;
     let operationProgress = { state: 'idle', message: '', details: '', at: 0 };
 
     const safeText = (value) => String(value ?? '').trim();
@@ -129,11 +128,13 @@
     }
     async function setPrompt(content) {
         const ctx = WSM.Context.context();
-        if (typeof ctx?.setExtensionPrompt === 'function') {
-            await ctx.setExtensionPrompt(PROMPT_ID, content, 1, Number(WSM.Settings.get().injectionDepth || 0), false, 0);
-        } else if (typeof window.setExtensionPrompt === 'function') {
-            await window.setExtensionPrompt(PROMPT_ID, content, 1, Number(WSM.Settings.get().injectionDepth || 0), false, 0);
-        }
+        const setter = typeof ctx?.setExtensionPrompt === 'function' ? ctx.setExtensionPrompt.bind(ctx) : (typeof window.setExtensionPrompt === 'function' ? window.setExtensionPrompt.bind(window) : null);
+        if (!setter) return;
+        await setter(PROMPT_ID, '', 1, 0, false, 0);
+        for (let depth = 0; depth <= 4; depth += 1) await setter(DEPTH_PROMPT_IDS[depth], typeof content === 'object' ? (content[depth] || '') : '', 1, depth, false, 0);
+    }
+    async function setStatePrompts(state, plan = {}, moduleInjections = {}) {
+        return setPrompt(WSM.Injection.composeByDepth(state, plan, moduleInjections));
     }
     async function syncRegisteredPrompt() {
         const settings = WSM.Settings.get();
@@ -142,7 +143,7 @@
         const hasUsableState = state.initialized || !!safeText(state.planner?.injection);
         if (!hasUsableState) return setPrompt('');
         state.planner.injection = WSM.Injection.compose(state, state.planner?.plan || {}, state.planner?.moduleInjections || {});
-        return setPrompt(state.planner.injection);
+        return setStatePrompts(state, state.planner?.plan || {}, state.planner?.moduleInjections || {});
     }
     async function plan(options = {}) {
         const settings = WSM.Settings.get();
@@ -152,9 +153,16 @@
         }
         const key = turnKey();
         let current = syncIdentities(WSM.Storage.load());
+        // Initialization is a user-triggered operation. Generation hooks may
+        // update an existing state, but must never read and initialize a new
+        // chat implicitly.
+        if (!current.initialized && options.initialize !== true) {
+            await setPrompt('');
+            return null;
+        }
         if (!current.runtime?.needsWorldRefresh && !options.force && key && current.planner?.turnKey === key && current.planner?.injection && !current.planner?.error) {
             current.planner.injection = WSM.Injection.compose(current, current.planner.plan || {}, current.planner.moduleInjections || {});
-            await setPrompt(current.planner.injection);
+            await setStatePrompts(current, current.planner.plan || {}, current.planner.moduleInjections || {});
             return current.planner;
         }
         if (!plannerAvailable(settings)) {
@@ -164,7 +172,7 @@
             const error = settings.useTavernApi !== false ? '酒馆默认 API 当前不可用' : '尚未配置 Planner API';
             current.planner = { lastRunAt: Date.now(), turnKey: key, plan: localPlan, moduleInjections: {}, injection, error };
             if (diceRound) current = await WSM.Storage.save(current, 'local-dice', { snapshot: false });
-            await setPrompt(injection);
+            await setStatePrompts(current, localPlan, {});
             return current.planner;
         }
 
@@ -219,11 +227,13 @@
             if (initializing || refreshWorld) {
                 const prepared = await WSM.SourceReader.prepare(source, {
                     onProgress(progress) {
-                        if (progress.stage === 'read') {
-                            reportProgress('正在分批读取全部资料', 'running', `资料分片 ${progress.current}/${progress.total} · 每片独立请求，不丢弃旧正文`);
-                        } else {
-                            reportProgress('正在合并分片证据', 'running', `第 ${progress.pass} 轮 · ${progress.current}/${progress.total}`);
-                        }
+                          if (progress.stage === 'read') {
+                              reportProgress('正在分批读取全部资料', 'running', `资料分片 ${progress.current}/${progress.total} · 每片独立请求，不丢弃旧正文`);
+                          } else if (progress.stage === 'split') {
+                              reportProgress('分片请求失败，正在自动细分后继续', 'running', `已细分 ${progress.splits} 次 · 当前共 ${progress.total} 片 · ${progress.reason}`);
+                          } else {
+                              reportProgress('正在合并分片证据', 'running', `第 ${progress.pass} 轮 · ${progress.current}/${progress.total}`);
+                          }
                     },
                 });
                 payload.source = prepared.source;
@@ -260,7 +270,7 @@
                 snapshot: current.initialized && !refreshWorld,
                 snapshotKind: 'generation',
             });
-            await setPrompt(next.planner.injection);
+            await setStatePrompts(next, next.planner.plan || {}, next.planner.moduleInjections || {});
             if (initializing || refreshWorld) reportProgress('读取并初始化完成', 'success', `已建立 REV ${next.revision} · 世界书 ${sourceSummary.loadedWorldbooks.length} 本 · 正文 ${sourceSummary.chatMessages} 条`);
             return next.planner;
         } catch (error) {
@@ -269,7 +279,7 @@
                 lastRunAt: Date.now(), turnKey: key, error: safeText(error?.message || error), moduleInjections: current.planner?.moduleInjections || {}, injection: WSM.Injection.compose(current, current.planner?.plan || {}, current.planner?.moduleInjections || {}),
             });
             await WSM.Storage.save(current, 'planner-error', { snapshot: false });
-            await setPrompt(current.planner.injection);
+            await setStatePrompts(current, current.planner?.plan || {}, current.planner?.moduleInjections || {});
             if (initializing || refreshWorld) reportProgress('读取或初始化失败', 'error', safeText(error?.message || error));
             console.error('[WorldStateMachine] Planner 失败，使用当前状态降级', error);
             return current.planner;
@@ -280,32 +290,14 @@
         planningPromise = plan(options).finally(() => { planningPromise = null; });
         return planningPromise;
     }
-    async function autoInitialize(reason = 'startup') {
-        const settings = WSM.Settings.get();
-        const state = WSM.Storage.load();
-        if (!settings.enabled || settings.autoInitialize === false || state.initialized) return null;
-        if (!activeChatAvailable() || !plannerAvailable(settings)) {
-            if (settings.useTavernApi !== false && autoInitializeAttempts < 30) {
-                autoInitializeAttempts += 1;
-                scheduleAutoInitialize('waiting-for-chat-api', 1000);
-            }
-            return null;
-        }
-        autoInitializeAttempts = 0;
-        console.info(`[WorldStateMachine] 自动读取当前聊天：${reason}`);
-        return ensurePlan({ force: true, initialize: true, reason });
-    }
-    function scheduleAutoInitialize(reason, delay = 800) {
-        window.clearTimeout(autoInitializeTimer);
-        autoInitializeTimer = window.setTimeout(async () => {
-            await syncRegisteredPrompt();
-            await autoInitialize(reason);
-        }, delay);
-    }
     async function interceptor(chat, _contextSize, abort, type) {
         const settings = WSM.Settings.get();
         if (!isForeground(type)) return;
         if (!settings.enabled) {
+            await setPrompt('');
+            return;
+        }
+        if (!WSM.Storage.load().initialized) {
             await setPrompt('');
             return;
         }
@@ -330,9 +322,8 @@
                 else throw new Error(plannerBlock);
                 return;
             }
-            // WORLD_STATE is delivered only through setExtensionPrompt. The
-            // interceptor intentionally does not mutate chat, avoiding duplicate
-            // injection and making injectionDepth authoritative.
+            // WORLD_STATE modules are delivered through separate depth prompts.
+            // The interceptor does not mutate chat, avoiding duplicate injection.
         } catch (error) {
             console.error('[WorldStateMachine] 生成拦截失败', error);
             if (typeof abort === 'function' && WSM.Settings.get().blockOnPlannerError) abort(error.message);
@@ -400,16 +391,15 @@
         bound = true;
         const before = events.GENERATION_AFTER_COMMANDS || 'generation_after_commands';
         source.on(before, async (type) => {
-            if (isForeground(type)) await ensurePlan();
+            if (isForeground(type) && WSM.Storage.load().initialized) await ensurePlan();
         });
         const onAssistant = () => window.setTimeout(() => ensureSettle(), 500);
         [events.CHARACTER_MESSAGE_RENDERED, events.MESSAGE_RECEIVED].filter(Boolean).forEach((name) => source.on(name, onAssistant));
         if (events.GENERATION_ENDED) source.on(events.GENERATION_ENDED, () => window.setTimeout(() => ensureSettle(), 250));
         if (events.CHAT_CHANGED) source.on(events.CHAT_CHANGED, () => {
-            autoInitializeAttempts = 0;
             void setPrompt('');
+            void WSM.WorldbookCompiler?.setWorldbookPrompts?.({});
             window.dispatchEvent(new CustomEvent('wsm-state-changed', { detail: { reason: 'chat-changed' } }));
-            scheduleAutoInitialize('chat-changed');
         });
         return true;
     }
@@ -419,9 +409,9 @@
         window.addEventListener('wsm-settings-changed', () => { void syncRegisteredPrompt(); });
     }
     async function init() {
-        autoInitializeAttempts = 0;
         bindSettingsEvents();
         await setPrompt('');
+        await WSM.WorldbookCompiler?.setWorldbookPrompts?.({});
         if (!bindEvents()) {
             let attempts = 0;
             const timer = window.setInterval(() => {
@@ -429,7 +419,6 @@
                 if (bindEvents() || attempts > 30) window.clearInterval(timer);
             }, 1000);
         }
-        scheduleAutoInitialize('startup', 1200);
     }
-    WSM.Engine = { init, plan: ensurePlan, autoInitialize, settle: ensureSettle, interceptor, fallbackInjection, reportProgress, getProgress, _test: { generationBlockReason, plannerAvailable, activeChatAvailable, setPrompt, syncRegisteredPrompt } };
+    WSM.Engine = { init, plan: ensurePlan, settle: ensureSettle, interceptor, fallbackInjection, reportProgress, getProgress, _test: { generationBlockReason, plannerAvailable, activeChatAvailable, setPrompt, setStatePrompts, syncRegisteredPrompt } };
 })();

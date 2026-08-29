@@ -117,6 +117,8 @@
             keys: Array.isArray(entry.key) ? entry.key : (Array.isArray(entry.keys) ? entry.keys : [entry.key || entry.keys].filter(Boolean)),
             comment: text(entry.comment || entry.name || entry.title),
             content: text(entry.content || entry.text || entry.value),
+            depth: Math.max(0, Math.min(100, Math.round(Number(entry.depth ?? entry.extensions?.depth ?? 4) || 0))),
+            role: Number(entry.role ?? entry.extensions?.role ?? 0) || 0,
             enabled: ![true, 1, 'true', '1'].includes(entry.disable) && ![true, 1, 'true', '1'].includes(entry.disabled) && ![false, 0, 'false', '0'].includes(entry.enabled),
             constant: entry.constant === true,
         })).filter((entry) => entry.enabled && entry.content);

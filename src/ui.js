@@ -444,7 +444,7 @@
         $('#wsm-injection-module-list').innerHTML = Object.entries(categories).map(([categoryId, category]) => {
             const rows = Object.entries(WSM.Defaults.INJECTION_MODULES).filter(([, module]) => module.category === categoryId).map(([id, defaultModule]) => {
                 const config = Object.assign({}, defaultModule, modules[id] || {});
-                return `<label class="wsm-injection-row"><input type="checkbox" data-module-enabled="${id}" ${config.enabled !== false ? 'checked' : ''}><span>${escape(config.label)}</span></label>`;
+                return `<label class="wsm-injection-row"><input type="checkbox" data-module-enabled="${id}" ${config.enabled !== false ? 'checked' : ''}><span>${escape(config.label)}<small>注入深度 ${escape(String(config.depth ?? module.depth ?? 2))}</small></span></label>`;
             }).join('');
             return `<details class="wsm-injection-group" open><summary>${icon(category.icon)}<span>${category.label}类</span></summary>${rows}</details>`;
         }).join('');
@@ -519,10 +519,10 @@
                     <label class="wsm-check"><input id="wsm-follow-tavern-font" type="checkbox">字体跟随酒馆</label>
                     <div class="wsm-grid"><label>自定义字体<input id="wsm-custom-font-family" type="text" placeholder='例如："Microsoft YaHei", sans-serif'></label><label>字体大小（百分比）<input id="wsm-font-scale" type="number" min="60" max="140" step="5"></label></div>
                     <p class="wsm-settings-help">只调整状态机文字，不改变面板大小和按钮的可点击范围。建议使用 80%–100%。</p>
-                    <div class="wsm-grid"><label>单次输出 Tokens<input id="wsm-max-tokens" type="number" min="256" max="16384"></label><label>读取最近正文条数<input id="wsm-recent-messages" type="number" min="2" max="200"></label><label>注入深度<input id="wsm-injection-depth" type="number" min="0"></label><label>注入最大字符<input id="wsm-injection-max" type="number" min="500"></label></div>
+                    <div class="wsm-grid"><label>单次输出 Tokens<input id="wsm-max-tokens" type="number" min="256" max="16384"></label><label>读取最近正文条数<input id="wsm-recent-messages" type="number" min="2" max="200"></label><label>注入最大字符<input id="wsm-injection-max" type="number" min="500"></label></div>
                     <p class="wsm-settings-help">Tokens 是模型单次返回 JSON 的上限，不是资料读取上限。初始化或重建会把完整聊天、角色卡和世界书分片读取并合并证据；普通轮次读取这里设置的最近条数。</p>
                     <label class="wsm-check"><input id="wsm-enabled" type="checkbox">启用自动状态机</label>
-                    <label class="wsm-check"><input id="wsm-auto-initialize" type="checkbox">首次打开聊天时自动读取</label>
+                    <p class="wsm-settings-help">打开插件或切换聊天不会自动读取和初始化。只有点击“读取并初始化”或“重新读取 / 重建”才会读取完整资料。</p>
                     <label class="wsm-check"><input id="wsm-block-on-planner-error" type="checkbox">Planner失败时严格阻止正文生成</label>
                 </section>
                 <section class="wsm-settings-section" data-settings-section="dice">
@@ -538,7 +538,7 @@
                     <div class="wsm-worldbook-compiler-tools"><button type="button" data-action="refresh-worldbook-entries">刷新条目</button><button type="button" data-action="compile-worldbook-entries">立即拆解已勾选条目</button><button type="button" data-action="clear-worldbook-cache">清空拆解缓存</button><small id="wsm-worldbook-compiler-status">尚未运行</small></div>
                     <div id="wsm-worldbook-compiler-list"></div>
                 </section>
-                <section class="wsm-settings-section" data-settings-section="injection"><p class="wsm-settings-help">勾选需要发送给正文模型的状态模块。</p><div id="wsm-injection-module-list"></div></section>
+                <section class="wsm-settings-section" data-settings-section="injection"><p class="wsm-settings-help">勾选需要发送给正文模型的状态模块。状态按重要性固定分配到深度 0–4；已拆解世界书沿用原条目的世界书深度。</p><div id="wsm-injection-module-list"></div></section>
                 <section class="wsm-settings-section" data-settings-section="prompts">
                     <p class="wsm-settings-help">总规则控制整体流程；模块规则会发送给 Planner 和结算器。已勾选且非空的模块还会把自己的模块规则连同状态数据一起注入正文模型。</p>
                     <details class="wsm-prompt-group"><summary>${icon('brain')}<span>全局总规则</span></summary><div>
@@ -621,10 +621,8 @@
         $('#wsm-temperature').value = s.temperature ?? 0.15;
         $('#wsm-max-tokens').value = s.maxTokens || 5000;
         $('#wsm-recent-messages').value = s.recentMessages || 12;
-        $('#wsm-injection-depth').value = s.injectionDepth || 0;
         $('#wsm-injection-max').value = s.injectionMaxChars || 3500;
         $('#wsm-enabled').checked = s.enabled !== false;
-        $('#wsm-auto-initialize').checked = s.autoInitialize !== false;
         $('#wsm-block-on-planner-error').checked = s.blockOnPlannerError === true;
         $('#wsm-dice-enabled').checked = s.diceEnabled === true;
         $('#wsm-planner-prompt').value = s.plannerPrompt || '';
@@ -724,17 +722,16 @@
             jailbreakPrompt: $('#wsm-jailbreak-prompt').value,
             ...typographyFromForm(),
             temperature: Number($('#wsm-temperature').value), maxTokens: Math.max(256, Math.min(16384, Number($('#wsm-max-tokens').value) || 5000)), enabled: $('#wsm-enabled').checked,
-            autoInitialize: $('#wsm-auto-initialize').checked,
+            autoInitialize: false,
             blockOnPlannerError: $('#wsm-block-on-planner-error').checked,
             diceEnabled: $('#wsm-dice-enabled').checked,
             recentMessages: Math.max(2, Number($('#wsm-recent-messages').value || 12)),
-            injectionDepth: Number($('#wsm-injection-depth').value || 0), injectionMaxChars: Number($('#wsm-injection-max').value || 3500), injectionModules, modulePrompts,
+            injectionMaxChars: Number($('#wsm-injection-max').value || 3500), injectionModules, modulePrompts,
             plannerPrompt: $('#wsm-planner-prompt').value, reconcilerPrompt: $('#wsm-reconciler-prompt').value, worldbookCompiler,
         });
         const state = WSM.Storage.load();
         state.planner.injection = WSM.Injection.compose(state, state.planner?.plan || {}, state.planner?.moduleInjections || {});
         await WSM.Storage.save(state, 'injection-settings', { snapshot: false });
-        if ($('#wsm-auto-initialize').checked && !state.initialized) void WSM.Engine.autoInitialize('settings-saved');
         if (closeAfter) $('#wsm-settings-modal').hidden = true;
         notify('设置已保存', 'success');
     }

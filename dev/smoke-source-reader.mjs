@@ -54,4 +54,28 @@ assert.match(readPayload, /角色卡资料/);
 assert.match(readPayload, /Persona资料/);
 assert.match(readPayload, /世界规则/);
 
+const adaptiveCalls = [];
+WorldStateMachine.Api.complete = async (_prompt, payload) => {
+    adaptiveCalls.push(payload);
+    if (payload.task === 'SOURCE_READ_CHUNK') {
+        if (JSON.stringify(payload.sourceChunk).length > 2500) throw new Error('Gateway Timeout');
+        return { digest: { sourceRefs: payload.sourceChunk.map((item) => item.ref), canon: ['adaptive'] } };
+    }
+    if (payload.task === 'SOURCE_MERGE_DIGESTS') {
+        return { digest: { sourceRefs: payload.digestBatch.flatMap((item) => item.sourceRefs || []), canon: ['merged'] } };
+    }
+    throw new Error(`unexpected task ${payload.task}`);
+};
+const adaptive = await WorldStateMachine.SourceReader.prepare(source, { chunkChars: 4000, reduceTargetChars: 12000 });
+assert.ok(adaptive.stats.adaptiveSplits > 0);
+assert.ok(adaptive.stats.requestAttempts > adaptive.stats.chunks);
+assert.ok(adaptive.stats.chunks > adaptive.stats.initialChunks);
+const successfulAdaptivePayload = JSON.stringify(adaptiveCalls.filter((payload) =>
+    payload.task === 'SOURCE_READ_CHUNK' && JSON.stringify(payload.sourceChunk).length <= 2500
+).map((payload) => payload.sourceChunk));
+for (let index = 0; index < chat.length; index += 1) assert.match(successfulAdaptivePayload, new RegExp(`UNIQUE-${index}-`));
+assert.match(successfulAdaptivePayload, /角色卡资料/);
+assert.match(successfulAdaptivePayload, /Persona资料/);
+assert.match(successfulAdaptivePayload, /世界规则/);
+
 console.log('Source reader smoke tests passed');

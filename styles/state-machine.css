@@ -209,6 +209,26 @@
     min-width: 0;
 }
 
+#wsm-root .wsm-worldbook-entry-row b em {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-style: normal;
+    font-weight: 600;
+    color: #dff7e8;
+    background: #26834f;
+}
+
+#wsm-root .wsm-worldbook-entry-row.is-disabled { opacity: .7; }
+#wsm-root .wsm-worldbook-entry-row.is-disabled b em { color: #666; background: #d6d6d6; }
+
+#wsm-worldbook-external-compile {
+    margin-inline-start: 6px;
+    white-space: nowrap;
+}
+
 #wsm-root .wsm-worldbook-entry-row small {
     margin-top: 3px;
     opacity: .68;

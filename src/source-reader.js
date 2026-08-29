@@ -5,7 +5,7 @@
     const text = (value) => String(value ?? '').trim();
     const jsonLength = (value) => JSON.stringify(value).length;
     const CHUNK_PROMPT = `你是资料分片读取器，不是故事续写者。逐项读取 sourceChunk 中的原始资料，提取可供世界状态初始化使用的证据。不得增加原文不存在的设定，不得把角色主张或猜测升级为客观事实。保留姓名、身份、时间顺序、地点、关系、知识边界、任务、伤势、物品、规则、例外和当前场景。每条结论附带 sourceRefs。只输出严格 JSON：{"digest":{"sourceRefs":[],"canon":[],"chronology":[],"characters":[],"relationships":[],"knowledge":[],"locations":[],"tasks":[],"currentScene":[],"uncertainties":[]}}。内容应紧凑但不能因为资料较早就忽略。`;
-    const MERGE_PROMPT = `你是资料证据合并器。合并 digestBatch 中已经逐片读取的证据，去重但不得丢失仍有效的事实、规则、例外、时间顺序、人物关系、知识边界、任务和来源引用。冲突内容并存并放入 uncertainties，不得自行裁决或续写。只输出严格 JSON：{"digest":{"sourceRefs":[],"canon":[],"chronology":[],"characters":[],"relationships":[],"knowledge":[],"locations":[],"tasks":[],"currentScene":[],"uncertainties":[]}}。`;
+    const MERGE_PROMPT = `你是资料证据合并器。合并 digestBatch 中已经逐片读取的证据，去重但不得丢失仍有效的事实、规则、例外、时间顺序、人物关系、知识边界、任务和来源引用。可把同一事项的多条证据合写为一条并保留全部关键 sourceRefs；冲突内容并存并放入 uncertainties，不得自行裁决或续写。若提供 targetChars，应尽量把 JSON 控制在该字符数内。只输出严格 JSON：{"digest":{"sourceRefs":[],"canon":[],"chronology":[],"characters":[],"relationships":[],"knowledge":[],"locations":[],"tasks":[],"currentScene":[],"uncertainties":[]}}。`;
 
     function splitText(value, limit) {
         const input = text(value);
@@ -150,6 +150,7 @@
                 try {
                     const result = await WSM.Api.complete(MERGE_PROMPT, {
                         task: 'SOURCE_MERGE_DIGESTS', pass: mergePasses, batchIndex: index + 1, batchCount: batches.length, digestBatch: batches[index],
+                        targetChars: reduceTarget,
                     }, { maxTokens: 3500 });
                     merged.push(digestValue(result));
                 } catch (error) {
@@ -158,6 +159,18 @@
             }
             if (merged.length >= current.length && jsonLength(merged) >= jsonLength(current)) break;
             current = merged;
+        }
+        if (jsonLength(current) > Math.floor(reduceTarget * 1.15)) {
+            mergePasses += 1;
+            options.onProgress?.({ stage: 'merge', current: 1, total: 1, pass: mergePasses });
+            try {
+                const result = await WSM.Api.complete(MERGE_PROMPT, {
+                    task: 'SOURCE_FINAL_COMPACT', pass: mergePasses, targetChars: reduceTarget, digestBatch: current,
+                }, { maxTokens: 3000 });
+                current = [digestValue(result)];
+            } catch (error) {
+                console.warn('[WorldStateMachine] 最终证据压缩失败，保留已完整读取的分片证据', error);
+            }
         }
 
         const recentChat = (source.chat || []).slice(-8);

@@ -110,9 +110,9 @@
         ];
         return unique(candidates.flatMap(nameCandidates));
     }
-    function normalizeEntries(data) {
+    function normalizeEntries(data, options = {}) {
         const source = data?.entries || data?.data?.entries || data?.worldInfo?.entries || data?.worldInfoData?.entries || data?.world_info?.entries || {};
-        return (Array.isArray(source) ? source : Object.values(source || {})).map((entry, index) => ({
+        const entries = (Array.isArray(source) ? source : Object.values(source || {})).map((entry, index) => ({
             id: text(entry.uid ?? entry.id ?? index),
             keys: Array.isArray(entry.key) ? entry.key : (Array.isArray(entry.keys) ? entry.keys : [entry.key || entry.keys].filter(Boolean)),
             comment: text(entry.comment || entry.name || entry.title),
@@ -121,48 +121,49 @@
             role: Number(entry.role ?? entry.extensions?.role ?? 0) || 0,
             enabled: ![true, 1, 'true', '1'].includes(entry.disable) && ![true, 1, 'true', '1'].includes(entry.disabled) && ![false, 0, 'false', '0'].includes(entry.enabled),
             constant: entry.constant === true,
-        })).filter((entry) => entry.enabled && entry.content);
+        })).filter((entry) => entry.content);
+        return options.includeDisabled === true ? entries : entries.filter((entry) => entry.enabled);
     }
-    async function readWorldbook(name, ctx = context()) {
+    async function readWorldbook(name, ctx = context(), options = {}) {
         try {
             if (typeof ctx?.getWorldInfo === 'function') {
                 const data = await ctx.getWorldInfo(name);
-                const entries = normalizeEntries(data);
+                const entries = normalizeEntries(data, options);
                 if (entries.length) return { name, entries, source: 'context.getWorldInfo' };
             }
         } catch (error) { console.debug('[WorldStateMachine] getWorldInfo failed', name, error); }
         try {
             const module = await loadWorldInfoModule();
             if (typeof module?.loadWorldInfo === 'function') {
-                const entries = normalizeEntries(await module.loadWorldInfo(name));
+                const entries = normalizeEntries(await module.loadWorldInfo(name), options);
                 if (entries.length) return { name, entries, source: 'world-info module' };
             }
             const moduleCache = module?.world_info?.[name] || module?.worldInfo?.[name];
-            const moduleEntries = normalizeEntries(moduleCache);
+            const moduleEntries = normalizeEntries(moduleCache, options);
             if (moduleEntries.length) return { name, entries: moduleEntries, source: 'world-info module cache' };
         } catch (error) { console.debug('[WorldStateMachine] world-info import failed', name, error); }
         const cached = window.world_info?.[name];
-        const cachedEntries = normalizeEntries(cached);
+        const cachedEntries = normalizeEntries(cached, options);
         if (cachedEntries.length) return { name, entries: cachedEntries, source: 'window cache' };
         try {
             const headers = Object.assign({ 'Content-Type': 'application/json' }, typeof window.getRequestHeaders === 'function' ? window.getRequestHeaders() : {});
             const response = await fetch('/api/worldinfo/get', { method: 'POST', headers, body: JSON.stringify({ name }) });
             if (response.ok) {
-                const entries = normalizeEntries(await response.json());
+                const entries = normalizeEntries(await response.json(), options);
                 if (entries.length) return { name, entries, source: '/api/worldinfo/get' };
             }
         } catch (error) { console.debug('[WorldStateMachine] world-info API failed', name, error); }
         return { name, entries: [], source: 'unreadable' };
     }
-    function embeddedCharacterBook(character = currentCharacter()) {
+    function embeddedCharacterBook(character = currentCharacter(), options = {}) {
         const book = (character?.data || character || {})?.character_book;
         if (!book?.entries) return null;
-        return { name: text(book.name) || '角色卡内嵌世界书', entries: normalizeEntries(book), source: 'character card' };
+        return { name: text(book.name) || '角色卡内嵌世界书', entries: normalizeEntries(book, options), source: 'character card' };
     }
-    async function worldbooks(ctx = context()) {
+    async function worldbooks(ctx = context(), options = {}) {
         const requestedNames = await enabledWorldNames(ctx);
-        const books = await Promise.all(requestedNames.map((name) => readWorldbook(name, ctx)));
-        const embedded = embeddedCharacterBook(currentCharacter(ctx));
+        const books = await Promise.all(requestedNames.map((name) => readWorldbook(name, ctx, options)));
+        const embedded = embeddedCharacterBook(currentCharacter(ctx), options);
         if (embedded) books.push(embedded);
         const loaded = books.filter((book) => book.entries.length).map((book) => ({
             ...book,
@@ -183,14 +184,19 @@
             },
         };
     }
-    async function listWorldbookEntries(ctx = context()) {
-        const result = await worldbooks(ctx);
+    async function listWorldbookEntries(options = {}, ctx = context()) {
+        if (options?.bookName) {
+            const book = await readWorldbook(options.bookName, ctx, { includeDisabled: options.includeDisabled === true });
+            return book.entries.map((entry, index) => ({ ...entry, key: worldbookEntryKey(book.name, entry.id || index), bookName: book.name, bookSource: book.source }));
+        }
+        const result = await worldbooks(ctx, { includeDisabled: options?.includeDisabled === true });
         return result.books.flatMap((book) => book.entries.map((entry) => ({
             ...entry,
             bookName: book.name,
             bookSource: book.source,
         })));
     }
+    async function listEnabledWorldNames(ctx = context()) { return enabledWorldNames(ctx); }
     async function buildSource(options = {}) {
         const ctx = context();
         const settings = WSM.Settings.get();
@@ -249,5 +255,5 @@
         for (let i = 0; i < raw.length; i += 1) hash = Math.imul(hash ^ raw.charCodeAt(i), 16777619);
         return (hash >>> 0).toString(16);
     }
-    WSM.Context = { context, chat, latestUserMessage, latestAssistantMessage, identityNames, buildSource, sourceFingerprint, listWorldbookEntries, worldbookEntryKey };
+    WSM.Context = { context, chat, latestUserMessage, latestAssistantMessage, identityNames, buildSource, sourceFingerprint, listWorldbookEntries, listEnabledWorldNames, worldbookEntryKey, _test: { normalizeEntries } };
 })();

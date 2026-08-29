@@ -29,6 +29,7 @@
     let activeApiProfileId = '';
     let worldbookEntriesCache = [];
     let wandMenuClickBound = false;
+    let externalWorldbookButtonBusy = false;
     const dynamicWorldbookSections = new Set();
     const categories = {
         world: { icon: 'map', label: '世界', sections: ['overview','map','events','processes','causalEffects'] },
@@ -467,15 +468,26 @@
         $('#wsm-worldbook-compiler-status').textContent = status.message || '尚未运行';
         list.innerHTML = '<div class="wsm-board-item">正在读取当前已启用世界书…</div>';
         try {
-            if (force || !worldbookEntriesCache.length) worldbookEntriesCache = await WSM.Context.listWorldbookEntries();
+            if (force || !worldbookEntriesCache.length) worldbookEntriesCache = await WSM.Context.listWorldbookEntries({ includeDisabled: true });
             const selected = new Set(config.entryKeys);
+            const known = new Set(config.knownEntryKeys);
+            let discovered = false;
+            worldbookEntriesCache.forEach((entry) => {
+                if (known.has(entry.key)) return;
+                known.add(entry.key);
+                if (entry.enabled) selected.add(entry.key);
+                discovered = true;
+            });
+            if (discovered) WSM.Settings.update({ worldbookCompiler: {
+                ...config, entryKeys: [...selected], knownEntryKeys: [...known],
+            } });
             const groups = worldbookEntriesCache.reduce((map, entry) => {
                 (map[entry.bookName] ||= []).push(entry);
                 return map;
             }, {});
             list.innerHTML = Object.entries(groups).map(([bookName, entries]) => `<details class="wsm-injection-group" open>
-                <summary>${icon('note')}<span>${escape(bookName)}（${entries.length} 条）</span></summary>
-                ${entries.map((entry) => `<label class="wsm-worldbook-entry-row ${selected.has(entry.key) ? 'active' : ''}"><input type="checkbox" data-worldbook-entry-key value="${escape(entry.key)}" ${selected.has(entry.key) ? 'checked' : ''}><span><b>${escape(entry.comment || entry.keys?.join('、') || `条目 ${entry.id}`)}</b><small>${escape(String(entry.content || '').slice(0, 140))}</small></span></label>`).join('')}
+                <summary>${icon('note')}<span>${escape(bookName)}（启用 ${entries.filter((entry) => entry.enabled).length} / 全部 ${entries.length}）</span></summary>
+                ${entries.map((entry) => `<label class="wsm-worldbook-entry-row ${selected.has(entry.key) ? 'active' : ''} ${entry.enabled ? 'is-enabled' : 'is-disabled'}"><input type="checkbox" data-worldbook-entry-key value="${escape(entry.key)}" ${selected.has(entry.key) ? 'checked' : ''}><span><b>${escape(entry.comment || entry.keys?.join('、') || `条目 ${entry.id}`)}<em>${entry.enabled ? '已启用' : '已关闭'}</em></b><small>${escape(String(entry.content || '').slice(0, 140))}</small></span></label>`).join('')}
             </details>`).join('') || '<div class="wsm-board-item">当前没有可读取的已启用世界书。请先在酒馆中启用世界书，再点“刷新条目”。</div>';
         } catch (error) {
             list.innerHTML = `<div class="wsm-board-item">读取失败：${escape(error.message)}</div>`;
@@ -503,7 +515,7 @@
                 </main></div>
             </div></div>
             <div id="wsm-settings-modal" class="wsm-submodal" hidden><div class="wsm-dialog"><header><b>世界状态机设置</b><button class="wsm-icon-button" data-action="close-settings" aria-label="关闭">${icon('close')}</button></header>
-                <nav class="wsm-settings-tabs"><button data-settings-tab="api">${icon('plug')}<span>API</span></button><button data-settings-tab="dice">${icon('event')}<span>骰子</span></button><button data-settings-tab="worldbook">${icon('note')}<span>拆解世界书</span></button><button data-settings-tab="injection">${icon('send')}<span>注入模块</span></button><button data-settings-tab="prompts">${icon('brain')}<span>内置提示词</span></button><button data-settings-tab="history">${icon('history')}<span>上一轮回滚</span></button></nav>
+                <nav class="wsm-settings-tabs"><button data-settings-tab="api">${icon('plug')}<span>API</span></button><button data-settings-tab="source">${icon('clipboard')}<span>分解正文</span></button><button data-settings-tab="dice">${icon('event')}<span>骰子</span></button><button data-settings-tab="worldbook">${icon('note')}<span>拆解世界书</span></button><button data-settings-tab="injection">${icon('send')}<span>注入模块</span></button><button data-settings-tab="prompts">${icon('brain')}<span>内置提示词</span></button><button data-settings-tab="history">${icon('history')}<span>上一轮回滚</span></button></nav>
                 <section class="wsm-settings-section" data-settings-section="api">
                     <label class="wsm-check"><input id="wsm-use-tavern-api" type="checkbox">使用酒馆默认 API（当前连接与模型）</label>
                     <p class="wsm-settings-help">启用后无需另填地址、模型或 Key，状态机直接跟随酒馆主界面当前使用的 API；请求只包含状态机所需内容。</p>
@@ -519,11 +531,16 @@
                     <label class="wsm-check"><input id="wsm-follow-tavern-font" type="checkbox">字体跟随酒馆</label>
                     <div class="wsm-grid"><label>自定义字体<input id="wsm-custom-font-family" type="text" placeholder='例如："Microsoft YaHei", sans-serif'></label><label>字体大小（百分比）<input id="wsm-font-scale" type="number" min="60" max="140" step="5"></label></div>
                     <p class="wsm-settings-help">只调整状态机文字，不改变面板大小和按钮的可点击范围。建议使用 80%–100%。</p>
-                    <div class="wsm-grid"><label>单次输出 Tokens<input id="wsm-max-tokens" type="number" min="256" max="16384"></label><label>读取最近正文条数<input id="wsm-recent-messages" type="number" min="2" max="200"></label><label>注入最大字符<input id="wsm-injection-max" type="number" min="500"></label></div>
-                    <p class="wsm-settings-help">Tokens 是模型单次返回 JSON 的上限，不是资料读取上限。初始化或重建会把完整聊天、角色卡和世界书分片读取并合并证据；普通轮次读取这里设置的最近条数。</p>
+                    <div class="wsm-grid"><label>单次输出 Tokens<input id="wsm-max-tokens" type="number" min="256" max="16384"></label><label>注入最大字符<input id="wsm-injection-max" type="number" min="500"></label></div>
+                    <p class="wsm-settings-help">Tokens 是模型单次返回 JSON 的上限，不是资料读取上限。正文分片读取在单独的“分解正文”页面说明和设置。</p>
                     <label class="wsm-check"><input id="wsm-enabled" type="checkbox">启用自动状态机</label>
                     <p class="wsm-settings-help">打开插件或切换聊天不会自动读取和初始化。只有点击“读取并初始化”或“重新读取 / 重建”才会读取完整资料。</p>
                     <label class="wsm-check"><input id="wsm-block-on-planner-error" type="checkbox">Planner失败时严格阻止正文生成</label>
+                </section>
+                <section class="wsm-settings-section" data-settings-section="source">
+                    <p class="wsm-settings-help">“分解正文”页面只管理聊天正文的读取范围和完整资料分片流程；它与“拆解世界书”的条目选择、缓存和逐轮路由完全独立，不会把聊天楼层列成世界书条目。</p>
+                    <div class="wsm-grid"><label>普通轮次读取最近正文条数<input id="wsm-recent-messages" type="number" min="2" max="200"></label></div>
+                    <section class="wsm-rollback-panel"><b>${icon('clipboard')}<span>完整正文读取方式</span></b><p>只有点击“读取并初始化”或“重新读取 / 重建”时，才会把完整聊天按分片送入模型。失败分片会自动继续细分；打开软件和切换聊天不会自动初始化。</p><small>世界书是否拆解不会改变正文分片范围，也不会把正文条目放进世界书拆解列表。</small></section>
                 </section>
                 <section class="wsm-settings-section" data-settings-section="dice">
                     <label class="wsm-check"><input id="wsm-dice-enabled" type="checkbox">启用骰子推进系统</label>
@@ -531,7 +548,7 @@
                     <section class="wsm-rollback-panel"><b>${icon('check')}<span>什么时候检定</span></b><p>只有结果同时具备不确定性、现实阻力和有意义的成败后果时才消耗检定骰。日常必然行为、无压力过渡、显而易见的信息、普通对话和一般思考不检定。</p><small>1=大失败，2–10=失败，11–19=成功，20=大成功。</small></section>
                 </section>
                 <section class="wsm-settings-section" data-settings-section="worldbook">
-                    <p class="wsm-settings-help">只处理下方勾选的条目：首次或原文变化时调用当前 API 拆解并缓存；每轮根据实际正文路由相关规则。勾选条目的原文会从 Planner 与正文模型请求中删除，只发送本轮精简结果。</p>
+                    <p class="wsm-settings-help">这里只拆解世界书，不分解聊天正文。列表显示当前世界书的全部条目：已启用条目首次发现时自动勾选，已关闭条目显示但不自动勾选；你仍可手动勾选关闭条目并提前建立缓存，它在酒馆重新启用前不会参与注入。</p>
                     <label class="wsm-check"><input id="wsm-worldbook-compiler-enabled" type="checkbox">启用拆解世界书</label>
                     <div class="wsm-grid"><label>每轮精简字数<input id="wsm-worldbook-compiler-budget" type="number" min="120" max="2000"></label><label>用于匹配的正文条数<input id="wsm-worldbook-compiler-context" type="number" min="2" max="30"></label></div>
                     <label class="wsm-check"><input id="wsm-worldbook-compiler-fail-closed" type="checkbox" checked disabled>无法确认原文已安全处理时，固定阻止正文请求</label>
@@ -712,6 +729,7 @@
         const worldbookCompiler = WSM.WorldbookCompiler.normalizeConfig({
             enabled: $('#wsm-worldbook-compiler-enabled').checked,
             entryKeys: compilerChoices.length ? compilerChoices.filter((input) => input.checked).map((input) => input.value) : current.worldbookCompiler?.entryKeys,
+            knownEntryKeys: [...new Set([...(current.worldbookCompiler?.knownEntryKeys || []), ...worldbookEntriesCache.map((entry) => entry.key)])],
             budget: Number($('#wsm-worldbook-compiler-budget').value || 500),
             contextMessages: Number($('#wsm-worldbook-compiler-context').value || 8),
             failClosed: $('#wsm-worldbook-compiler-fail-closed').checked,
@@ -854,6 +872,62 @@
         button.addEventListener('click', open);
         document.body.appendChild(button);
     }
+    function selectedExternalWorldbookName(select) {
+        const option = select?.selectedOptions?.[0];
+        return String(option?.value || select?.value || option?.textContent || '').trim();
+    }
+    async function compileExternalWorldbook(select, button) {
+        if (externalWorldbookButtonBusy) return;
+        const bookName = selectedExternalWorldbookName(select);
+        if (!bookName) { notify('请先在世界书编辑器中选择一本世界书', 'error'); return; }
+        externalWorldbookButtonBusy = true;
+        button.disabled = true;
+        button.textContent = '芝芝：正在读取条目…';
+        try {
+            const entries = await WSM.Context.listWorldbookEntries({ bookName, includeDisabled: true });
+            const enabledEntries = entries.filter((entry) => entry.enabled);
+            if (!enabledEntries.length) throw new Error('这本世界书没有已启用且有内容的条目');
+            const current = WSM.WorldbookCompiler.normalizeConfig(WSM.Settings.get().worldbookCompiler);
+            const next = WSM.WorldbookCompiler.normalizeConfig({
+                ...current,
+                enabled: true,
+                entryKeys: [...new Set([...current.entryKeys, ...enabledEntries.map((entry) => entry.key)])],
+                knownEntryKeys: [...new Set([...current.knownEntryKeys, ...entries.map((entry) => entry.key)])],
+            });
+            WSM.Settings.update({ worldbookCompiler: next });
+            button.textContent = `芝芝：正在拆解 ${enabledEntries.length} 条…`;
+            const result = await WSM.WorldbookCompiler.compileConfig(next, { force: true, entries: enabledEntries });
+            worldbookEntriesCache = [];
+            notify(`“${bookName}”已一键拆解 ${result.count} 条启用条目`, 'success');
+        } catch (error) {
+            notify(`世界书一键拆解失败：${error.message}`, 'error');
+        } finally {
+            externalWorldbookButtonBusy = false;
+            button.disabled = false;
+            button.textContent = '芝芝：一键拆解本书';
+        }
+    }
+    function mountExternalWorldbookButton() {
+        const select = document.getElementById('world_editor_select');
+        if (!(select instanceof HTMLSelectElement)) return false;
+        let button = document.getElementById('wsm-worldbook-external-compile');
+        if (!(button instanceof HTMLButtonElement)) {
+            button = document.createElement('button');
+            button.id = 'wsm-worldbook-external-compile';
+            button.type = 'button';
+            button.className = 'menu_button interactable';
+            button.textContent = '芝芝：一键拆解本书';
+            button.title = '拆解当前世界书中所有已启用条目；关闭条目不会自动选择或注入';
+            button.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                const currentSelect = document.getElementById('world_editor_select');
+                if (currentSelect instanceof HTMLSelectElement) void compileExternalWorldbook(currentSelect, button);
+            });
+        }
+        if (!button.isConnected || button.previousElementSibling !== select) select.insertAdjacentElement('afterend', button);
+        return true;
+    }
     function mountWandMenuItem() {
         if (document.getElementById('wsm-wand-menu-item')) return true;
         const menu = document.getElementById('extensionsMenu');
@@ -894,7 +968,7 @@
         mountWandMenuItem();
         // Some UI/theme extensions rebuild the wand menu after startup. Keep
         // this tiny idempotent check alive so our entry is restored if removed.
-        window.setInterval(mountWandMenuItem, 1000);
+        window.setInterval(() => { mountWandMenuItem(); mountExternalWorldbookButton(); }, 1000);
     }
     function mount() {
         if (document.getElementById('wsm-root')) return;
@@ -943,6 +1017,7 @@
         applyTypographySettings(WSM.Settings.get());
         mountButton();
         mountWandMenuItemWhenReady();
+        mountExternalWorldbookButton();
         window.addEventListener('wsm-state-changed', () => { if (!$('#wsm-modal')?.hidden) render(); });
         window.addEventListener('wsm-operation-progress', () => { if (!$('#wsm-modal')?.hidden) render(); });
     }

@@ -126,6 +126,48 @@
         });
         return clock;
     }
+    const INITIALIZE_SLICES = [
+        { id: 'foundation', label: '世界与地图', keys: ['identities','world','map','timeline'], maxTokens: 4000 },
+        { id: 'people', label: '人物与知识', keys: ['characters','npcActivities','relationships','knowledge'], maxTokens: 6500 },
+        { id: 'affairs', label: '任务与事件', keys: ['tasks','events','triggers','threads'], maxTokens: 4500 },
+        { id: 'dynamics', label: '进程与因果', keys: ['processes','causalEffects'], maxTokens: 4000 },
+    ];
+    function stateReference(state) {
+        return {
+            identities: state.identities,
+            world: state.world,
+            characters: (state.characters || []).map((item) => ({ id: item.id, name: item.name })),
+            tasks: (state.tasks || []).map((item) => ({ id: item.id, title: item.title })),
+            events: (state.events || []).map((item) => ({ id: item.id, title: item.title })),
+        };
+    }
+    async function initializeInSlices(source, payload, settings) {
+        const state = WSM.Defaults.createState();
+        for (let index = 0; index < INITIALIZE_SLICES.length; index += 1) {
+            const slice = INITIALIZE_SLICES[index];
+            reportProgress(`正在分批建立初始状态：${slice.label}`, 'running', `${index + 1}/${INITIALIZE_SLICES.length} · 避免单个超大 INITIALIZE_WORLD 请求`);
+            const schema = Object.fromEntries(slice.keys.map((key) => [key, WSM.Defaults.STATE_SCHEMA[key]]));
+            const ownership = Object.fromEntries(slice.keys.map((key) => [key, WSM.Defaults.MODULE_OWNERSHIP[key]]).filter(([, value]) => value));
+            const prompts = Object.fromEntries(slice.keys.map((key) => [key, settings.modulePrompts?.[key] || WSM.Defaults.MODULE_PROMPTS[key]]).filter(([, value]) => value));
+            const result = await WSM.Api.complete(
+                `你是世界状态初始化器，本次只建立“${slice.label}”切片。source 已由前序分片模型完整读取，sourceDigest 中每一项都必须综合使用；source.chat 是当前场景原文尾部。只能记录来源中已经存在或正文已经发生的事实，不得续写、推测成真或创造设定。严格遵守 ownership，只返回 JSON：{"state":{本切片字段}}；不得返回其他状态字段、plan、Markdown 或解释。`,
+                {
+                    task: 'INITIALIZE_WORLD_SLICE', slice: slice.id, sliceIndex: index + 1, sliceCount: INITIALIZE_SLICES.length,
+                    source, stateReference: stateReference(state), stateSchema: schema, moduleOwnership: ownership, modulePrompts: prompts,
+                },
+                { maxTokens: slice.maxTokens },
+            );
+            const partial = result?.state ?? result;
+            if (!partial || typeof partial !== 'object') throw new Error(`初始化切片 ${slice.label} 响应缺少 state`);
+            slice.keys.forEach((key) => { if (Object.prototype.hasOwnProperty.call(partial, key)) state[key] = partial[key]; });
+        }
+        state.initialized = true;
+        return {
+            state,
+            plan: { notes: ['初始状态已按世界、人物、事务与因果切片建立；本轮只建立事实，不预演新剧情。'] },
+            moduleInjections: {},
+        };
+    }
     async function setPrompt(content) {
         const ctx = WSM.Context.context();
         const setter = typeof ctx?.setExtensionPrompt === 'function' ? ctx.setExtensionPrompt.bind(ctx) : (typeof window.setExtensionPrompt === 'function' ? window.setExtensionPrompt.bind(window) : null);
@@ -226,6 +268,7 @@
             if (compilerResult?.blocked) throw new Error(compilerResult.error || '世界书拆解阻止了 Planner 请求');
             if (initializing || refreshWorld) {
                 const prepared = await WSM.SourceReader.prepare(source, {
+                    reduceTargetChars: 16000,
                     onProgress(progress) {
                           if (progress.stage === 'read') {
                               reportProgress('正在分批读取全部资料', 'running', `资料分片 ${progress.current}/${progress.total} · 每片独立请求，不丢弃旧正文`);
@@ -241,7 +284,9 @@
             }
             const plannerPrompt = `${settings.plannerPrompt}${diceRound ? WSM.Dice.plannerInstructions(diceRound) : ''}`;
             if (initializing || refreshWorld) reportProgress('全部资料读取完成，正在建立状态', 'running', `正文 ${sourceSummary.chatMessages}/${sourceSummary.chatTotalMessages} 条 · 分片 ${sourceSummary.sourceRead?.chunks || 1} 个 · 世界书 ${sourceSummary.loadedWorldbooks.length} 本`);
-            const result = await WSM.Api.complete(plannerPrompt, payload, { maxTokens: 12000 });
+            const result = initializing
+                ? await initializeInSlices(payload.source, payload, settings)
+                : await WSM.Api.complete(plannerPrompt, payload, { maxTokens: 12000 });
             if (!result?.state || typeof result.state !== 'object') throw new Error('Planner 响应缺少 state');
             let next = WSM.Storage.enforceLocks(current, result.state);
             next = syncIdentities(next, source.identities);
@@ -420,5 +465,5 @@
             }, 1000);
         }
     }
-    WSM.Engine = { init, plan: ensurePlan, settle: ensureSettle, interceptor, fallbackInjection, reportProgress, getProgress, _test: { generationBlockReason, plannerAvailable, activeChatAvailable, setPrompt, setStatePrompts, syncRegisteredPrompt } };
+    WSM.Engine = { init, plan: ensurePlan, settle: ensureSettle, interceptor, fallbackInjection, reportProgress, getProgress, _test: { generationBlockReason, plannerAvailable, activeChatAvailable, setPrompt, setStatePrompts, syncRegisteredPrompt, initializeInSlices } };
 })();

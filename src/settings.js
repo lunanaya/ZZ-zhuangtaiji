@@ -27,7 +27,7 @@
         blockOnPlannerError: false,
         injectionModules: WSM.Defaults.INJECTION_MODULES,
         modulePrompts: WSM.Defaults.MODULE_PROMPTS,
-        worldbookCompiler: { enabled: false, entryKeys: [], budget: 500, contextMessages: 8, failClosed: true },
+        worldbookCompiler: { enabled: false, entryKeys: [], knownEntryKeys: [], budget: 500, contextMessages: 8, failClosed: true },
         timeoutMs: 180000,
         plannerPrompt: WSM.Defaults.PLANNER_PROMPT,
         reconcilerPrompt: WSM.Defaults.RECONCILER_PROMPT,

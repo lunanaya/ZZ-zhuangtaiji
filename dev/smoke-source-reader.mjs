@@ -12,7 +12,7 @@ WorldStateMachine.Api = {
         if (payload.task === 'SOURCE_READ_CHUNK') {
             return { digest: { sourceRefs: payload.sourceChunk.map((item) => item.ref), canon: [`chunk-${payload.chunkIndex}`] } };
         }
-        if (payload.task === 'SOURCE_MERGE_DIGESTS') {
+        if (payload.task === 'SOURCE_MERGE_DIGESTS' || payload.task === 'SOURCE_FINAL_COMPACT') {
             return { digest: { sourceRefs: payload.digestBatch.flatMap((item) => item.sourceRefs || []), canon: ['merged'] } };
         }
         throw new Error(`unexpected task ${payload.task}`);
@@ -61,7 +61,7 @@ WorldStateMachine.Api.complete = async (_prompt, payload) => {
         if (JSON.stringify(payload.sourceChunk).length > 2500) throw new Error('Gateway Timeout');
         return { digest: { sourceRefs: payload.sourceChunk.map((item) => item.ref), canon: ['adaptive'] } };
     }
-    if (payload.task === 'SOURCE_MERGE_DIGESTS') {
+    if (payload.task === 'SOURCE_MERGE_DIGESTS' || payload.task === 'SOURCE_FINAL_COMPACT') {
         return { digest: { sourceRefs: payload.digestBatch.flatMap((item) => item.sourceRefs || []), canon: ['merged'] } };
     }
     throw new Error(`unexpected task ${payload.task}`);

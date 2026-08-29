@@ -18,6 +18,7 @@
         return {
             enabled: raw.enabled === true,
             entryKeys: [...new Set((Array.isArray(raw.entryKeys) ? raw.entryKeys : []).map(String).filter(Boolean))],
+            knownEntryKeys: [...new Set((Array.isArray(raw.knownEntryKeys) ? raw.knownEntryKeys : []).map(String).filter(Boolean))],
             budget: Math.max(120, Math.min(2000, Math.round(Number(raw.budget) || 500))),
             contextMessages: Math.max(2, Math.min(30, Math.round(Number(raw.contextMessages) || 8))),
             failClosed: true,
@@ -73,9 +74,9 @@
             localStorage.setItem(CACHE_KEY, JSON.stringify(Object.fromEntries(recent)));
         } catch (error) { console.warn('[WorldStateMachine] 无法保存世界书拆解缓存', error); }
     }
-    async function resolveSelectedEntries(config = normalizeConfig()) {
+    async function resolveSelectedEntries(config = normalizeConfig(), options = {}) {
         const selected = new Set(config.entryKeys);
-        const available = await WSM.Context.listWorldbookEntries();
+        const available = await WSM.Context.listWorldbookEntries({ includeDisabled: options.includeDisabled === true });
         return available.filter((entry) => selected.has(entry.key) && entry.content);
     }
     function normalizeCompiled(item, entry) {
@@ -329,13 +330,19 @@
         const found = new Set(entries.map((entry) => entry.key));
         return config.entryKeys.filter((key) => !found.has(key));
     }
+    function bookNameFromEntryKey(key) {
+        const encoded = text(key).split('::')[0];
+        try { return decodeURIComponent(encoded); }
+        catch (_error) { return encoded; }
+    }
     async function processSource(source) {
         const config = normalizeConfig();
         if (!config.enabled || !config.entryKeys.length) return { enabled: false };
         const entries = (source.worldbooks || []).flatMap((book) => book.entries || []).filter((entry) => config.entryKeys.includes(entry.key));
-        const missing = missingKeys(config, entries);
-        if (missing.length) return { enabled: true, blocked: true, error: `无法读取 ${missing.length} 条已勾选世界书条目` };
-        if (!entries.length) return { enabled: true, blocked: true, error: '没有可读取的已勾选世界书条目' };
+        const failedBooks = new Set(source.worldbookDiagnostics?.failedNames || []);
+        const failedSelectedBooks = [...new Set(config.entryKeys.map(bookNameFromEntryKey).filter((name) => failedBooks.has(name)))];
+        if (failedSelectedBooks.length) return { enabled: true, blocked: true, error: `无法读取已启用世界书：${failedSelectedBooks.join('、')}` };
+        if (!entries.length) return { enabled: true, routed: '', selected: 0, report: buildReport(null, { originalEntriesRemoved: 0 }) };
         const selected = new Set(entries.map((entry) => entry.key));
         source.worldbooks = (source.worldbooks || []).map((book) => ({ ...book, entries: (book.entries || []).filter((entry) => !selected.has(entry.key)) })).filter((book) => book.entries.length);
         try {
@@ -354,14 +361,24 @@
             await setWorldbookPrompts({});
             return { enabled: false };
         }
-        const entries = await resolveSelectedEntries(config);
-        const missing = missingKeys(config, entries);
+        // Only currently enabled ST entries participate in this turn. Disabled
+        // entries may still be selected and precompiled from the settings UI,
+        // but must not be routed or treated as missing active material.
+        const allAvailable = await WSM.Context.listWorldbookEntries({ includeDisabled: true });
+        const activeBookNames = new Set([
+            ...(await WSM.Context.listEnabledWorldNames?.() || []),
+            ...allAvailable.map((entry) => entry.bookName),
+        ]);
+        const found = new Set(allAvailable.map((entry) => entry.key));
+        const missing = config.entryKeys.filter((key) => activeBookNames.has(bookNameFromEntryKey(key)) && !found.has(key));
         if (missing.length) {
             await setWorldbookPrompts({});
-            const error = `无法读取 ${missing.length} 条已勾选世界书条目；为避免原文泄漏，已阻止正文请求`;
+            const error = `无法读取 ${missing.length} 条当前世界书中的已勾选条目；为避免原文泄漏，已阻止正文请求`;
             lastStatus = { state: 'blocked', message: error, at: Date.now() };
             return { enabled: true, blocked: true, error };
         }
+        const selected = new Set(config.entryKeys);
+        const entries = allAvailable.filter((entry) => entry.enabled && selected.has(entry.key));
         if (!entries.length) {
             await setWorldbookPrompts({});
             return { enabled: true, removed: 0, injected: false };
@@ -386,7 +403,11 @@
     }
     async function compileConfig(configValue, options = {}) {
         const config = normalizeConfig(configValue);
-        const entries = await resolveSelectedEntries(config);
+        const explicit = Array.isArray(options.entries) ? options.entries : null;
+        const selected = new Set(config.entryKeys);
+        const entries = explicit
+            ? explicit.filter((entry) => selected.has(entry.key) && entry.content)
+            : await resolveSelectedEntries(config, { includeDisabled: true });
         if (!entries.length) throw new Error('请至少勾选一条当前可读取的世界书条目');
         await ensureCompiled(config, entries, { force: options.force === true });
         lastStatus = { state: 'ready', message: `已拆解 ${entries.length} 条世界书`, at: Date.now() };

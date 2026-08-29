@@ -1,7 +1,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '0.9.19';
+    const VERSION = '0.9.20';
     const baseUrl = new URL('./', import.meta.url).href;
     const modules = [
         'src/defaults.js',
@@ -11,6 +11,7 @@
         'src/context.js',
         'src/api.js',
         'src/worldbook-compiler.js',
+        'src/source-reader.js',
         'src/injection.js',
         'src/engine.js',
         'src/ui.js',

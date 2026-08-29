@@ -31,6 +31,7 @@ await import('../src/storage.js');
 await import('../src/dice.js');
 await import('../src/context.js');
 await import('../src/worldbook-compiler.js');
+await import('../src/source-reader.js');
 await import('../src/injection.js');
 await import('../src/engine.js');
 

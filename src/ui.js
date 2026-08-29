@@ -519,8 +519,8 @@
                     <label class="wsm-check"><input id="wsm-follow-tavern-font" type="checkbox">字体跟随酒馆</label>
                     <div class="wsm-grid"><label>自定义字体<input id="wsm-custom-font-family" type="text" placeholder='例如："Microsoft YaHei", sans-serif'></label><label>字体大小（百分比）<input id="wsm-font-scale" type="number" min="60" max="140" step="5"></label></div>
                     <p class="wsm-settings-help">只调整状态机文字，不改变面板大小和按钮的可点击范围。建议使用 80%–100%。</p>
-                    <div class="wsm-grid"><label>最大 Tokens<input id="wsm-max-tokens" type="number"></label><label>读取最近正文条数<input id="wsm-recent-messages" type="number" min="2" max="200"></label><label>注入深度<input id="wsm-injection-depth" type="number" min="0"></label><label>注入最大字符<input id="wsm-injection-max" type="number" min="500"></label></div>
-                    <p class="wsm-settings-help">Planner 会直接读取酒馆当前聊天的 user/assistant 正文；初始化或重建时读取完整聊天，普通轮次读取这里设置的最近条数。</p>
+                    <div class="wsm-grid"><label>单次输出 Tokens<input id="wsm-max-tokens" type="number" min="256" max="16384"></label><label>读取最近正文条数<input id="wsm-recent-messages" type="number" min="2" max="200"></label><label>注入深度<input id="wsm-injection-depth" type="number" min="0"></label><label>注入最大字符<input id="wsm-injection-max" type="number" min="500"></label></div>
+                    <p class="wsm-settings-help">Tokens 是模型单次返回 JSON 的上限，不是资料读取上限。初始化或重建会把完整聊天、角色卡和世界书分片读取并合并证据；普通轮次读取这里设置的最近条数。</p>
                     <label class="wsm-check"><input id="wsm-enabled" type="checkbox">启用自动状态机</label>
                     <label class="wsm-check"><input id="wsm-auto-initialize" type="checkbox">首次打开聊天时自动读取</label>
                     <label class="wsm-check"><input id="wsm-block-on-planner-error" type="checkbox">Planner失败时严格阻止正文生成</label>
@@ -723,7 +723,7 @@
             useTavernApi: $('#wsm-use-tavern-api').checked,
             jailbreakPrompt: $('#wsm-jailbreak-prompt').value,
             ...typographyFromForm(),
-            temperature: Number($('#wsm-temperature').value), maxTokens: Number($('#wsm-max-tokens').value), enabled: $('#wsm-enabled').checked,
+            temperature: Number($('#wsm-temperature').value), maxTokens: Math.max(256, Math.min(16384, Number($('#wsm-max-tokens').value) || 5000)), enabled: $('#wsm-enabled').checked,
             autoInitialize: $('#wsm-auto-initialize').checked,
             blockOnPlannerError: $('#wsm-block-on-planner-error').checked,
             diceEnabled: $('#wsm-dice-enabled').checked,

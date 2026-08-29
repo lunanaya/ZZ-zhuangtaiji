@@ -216,6 +216,10 @@
             currentUserAction: latestUserMessage(ctx),
             latestAssistantText: latestAssistantMessage(ctx),
         };
+        // Initialization can ask SourceReader to preserve every source item. It
+        // will stream the material through bounded model calls instead of
+        // silently dropping old chat messages here.
+        if (options.preserveFull === true) return source;
         const limit = Math.max(10000, Number(settings.maxSourceChars || 60000));
         let serialized = JSON.stringify(source);
         if (serialized.length > limit) {

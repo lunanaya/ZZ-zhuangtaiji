@@ -81,6 +81,10 @@
         root[KEY].modulePrompts = Object.assign({}, WSM.Defaults.MODULE_PROMPTS, root[KEY].modulePrompts || {});
         ['causalLinks', 'causalSeeds', 'scenePressure', 'actorCausality', 'backgroundQueue', 'advanceScheduler'].forEach((id) => { delete root[KEY].modulePrompts[id]; });
         root[KEY].worldbookCompiler = Object.assign({}, defaults.worldbookCompiler, root[KEY].worldbookCompiler || {});
+        // maxTokens controls one response, not how much source is read. Keep a
+        // sane provider-compatible generation budget; long sources are handled
+        // by SourceReader's complete chunk pipeline.
+        root[KEY].maxTokens = Math.max(256, Math.min(16384, Math.round(Number(root[KEY].maxTokens) || defaults.maxTokens)));
         window.extension_settings[KEY] = root[KEY];
         return root[KEY];
     }

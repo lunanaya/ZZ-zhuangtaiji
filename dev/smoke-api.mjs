@@ -10,11 +10,20 @@ const settings = {
     timeoutMs: 1000,
 };
 let tavernRequest;
+let completionSettingsHandler;
+let tavernGenerationData;
 globalThis.SillyTavern = {
     getContext() {
         return {
+            eventTypes: { CHAT_COMPLETION_SETTINGS_READY: 'chat-settings' },
+            eventSource: {
+                on(_name, handler) { completionSettingsHandler = handler; },
+                removeListener(_name, handler) { if (completionSettingsHandler === handler) completionSettingsHandler = null; },
+            },
             async generateRaw(request) {
                 tavernRequest = request;
+                tavernGenerationData = { model: 'gpt-5', messages: request.prompt };
+                completionSettingsHandler?.(tavernGenerationData);
                 return '```json\n{"ok":true}\n```';
             },
         };
@@ -25,9 +34,27 @@ WorldStateMachine.Settings = { get: () => settings };
 await import('../src/api.js');
 assert.deepEqual(await WorldStateMachine.Api.complete('BASE-SYSTEM', { task: 'test' }), { ok: true });
 assert.equal(tavernRequest.responseLength, 3210);
+assert.equal(tavernRequest.trimNames, false);
+assert.equal(tavernGenerationData.reasoning_effort, 'low');
+assert.equal(tavernGenerationData.verbosity, 'low');
 assert.match(tavernRequest.prompt[0].content, /BASE-SYSTEM/);
 assert.match(tavernRequest.prompt[0].content, /CUSTOM-JAILBREAK-MARKER/);
 assert.deepEqual(JSON.parse(tavernRequest.prompt[1].content), { task: 'test' });
+assert.deepEqual(await WorldStateMachine.Api.complete('BASE-SYSTEM', { task: 'bounded' }, { maxTokens: 500000 }), { ok: true });
+assert.equal(tavernRequest.responseLength, 16384);
+
+let attempts = 0;
+SillyTavern.getContext = () => ({
+    async generateRaw(request) {
+        tavernRequest = request;
+        attempts += 1;
+        if (attempts === 1) throw new Error('API returned an error Gateway Timeout');
+        return '{"ok":true}';
+    },
+});
+assert.deepEqual(await WorldStateMachine.Api.complete('BASE-SYSTEM', { task: 'retry' }), { ok: true });
+assert.equal(attempts, 2);
+assert.equal(tavernRequest.jsonSchema.name, 'world_state_machine_result');
 
 settings.useTavernApi = false;
 settings.endpoint = 'https://example.test/v1';
@@ -43,6 +70,14 @@ assert.deepEqual(await WorldStateMachine.Api.complete('BASE-SYSTEM', { task: 'ex
 assert.equal(externalRequest.url, 'https://example.test/v1/chat/completions');
 assert.equal(externalRequest.request.headers.Authorization, 'Bearer secret');
 assert.match(JSON.parse(externalRequest.request.body).messages[0].content, /CUSTOM-JAILBREAK-MARKER/);
+settings.model = 'gpt-5';
+assert.deepEqual(await WorldStateMachine.Api.complete('BASE-SYSTEM', { task: 'external-gpt' }), { ok: true });
+const gptBody = JSON.parse(externalRequest.request.body);
+assert.equal(gptBody.max_completion_tokens, 3210);
+assert.equal(gptBody.reasoning_effort, 'low');
+assert.equal(gptBody.verbosity, 'low');
+assert.equal('max_tokens' in gptBody, false);
+assert.equal('temperature' in gptBody, false);
 assert.deepEqual(await WorldStateMachine.Api.listModels(), ['model-a', 'model-b']);
 assert.equal(externalRequest.url, 'https://example.test/v1/models');
 

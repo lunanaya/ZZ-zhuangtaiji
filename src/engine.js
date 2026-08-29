@@ -172,7 +172,10 @@
         const refreshWorld = !rebuilding && current.initialized && current.runtime?.needsWorldRefresh === true;
         const initializing = !current.initialized || rebuilding;
         if (initializing || refreshWorld) reportProgress('第 1/3 步：正在读取酒馆资料', 'running', '角色卡、Persona、已启用世界书和聊天正文');
-        const source = await WSM.Context.buildSource({ fullChat: initializing || refreshWorld || options.initialize });
+        const source = await WSM.Context.buildSource({
+            fullChat: initializing || refreshWorld || options.initialize,
+            preserveFull: initializing || refreshWorld,
+        });
         if (initializing || refreshWorld) {
             const preview = summarizeSource(source);
             reportProgress('第 2/3 步：资料读取完成，正在处理世界书', 'running', `正文 ${preview.chatMessages}/${preview.chatTotalMessages} 条 · 世界书 ${preview.loadedWorldbooks.length} 本 · 读取失败 ${preview.failedWorldbooks.length} 本`);
@@ -213,9 +216,22 @@
         if (diceRound) payload.diceRound = diceRound;
         try {
             if (compilerResult?.blocked) throw new Error(compilerResult.error || '世界书拆解阻止了 Planner 请求');
+            if (initializing || refreshWorld) {
+                const prepared = await WSM.SourceReader.prepare(source, {
+                    onProgress(progress) {
+                        if (progress.stage === 'read') {
+                            reportProgress('正在分批读取全部资料', 'running', `资料分片 ${progress.current}/${progress.total} · 每片独立请求，不丢弃旧正文`);
+                        } else {
+                            reportProgress('正在合并分片证据', 'running', `第 ${progress.pass} 轮 · ${progress.current}/${progress.total}`);
+                        }
+                    },
+                });
+                payload.source = prepared.source;
+                sourceSummary.sourceRead = prepared.stats;
+            }
             const plannerPrompt = `${settings.plannerPrompt}${diceRound ? WSM.Dice.plannerInstructions(diceRound) : ''}`;
-            if (initializing || refreshWorld) reportProgress('第 3/3 步：资料已发送，正在等待模型建立状态', 'running', `正文 ${sourceSummary.chatMessages}/${sourceSummary.chatTotalMessages} 条 · 世界书 ${sourceSummary.loadedWorldbooks.length} 本`);
-            const result = await WSM.Api.complete(plannerPrompt, payload);
+            if (initializing || refreshWorld) reportProgress('全部资料读取完成，正在建立状态', 'running', `正文 ${sourceSummary.chatMessages}/${sourceSummary.chatTotalMessages} 条 · 分片 ${sourceSummary.sourceRead?.chunks || 1} 个 · 世界书 ${sourceSummary.loadedWorldbooks.length} 本`);
+            const result = await WSM.Api.complete(plannerPrompt, payload, { maxTokens: 12000 });
             if (!result?.state || typeof result.state !== 'object') throw new Error('Planner 响应缺少 state');
             let next = WSM.Storage.enforceLocks(current, result.state);
             next = syncIdentities(next, source.identities);

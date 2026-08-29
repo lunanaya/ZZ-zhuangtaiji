@@ -25,6 +25,8 @@
 
 source.chat 是从 SillyTavern 当前聊天直接读取的实际 user/assistant 正文，不是摘要；source.tavernTextContext 会说明总条数、实际读取条数与是否截断。规划本轮前必须先读这些正文，以正文中的地点、公共/私人空间、可见动作、音量、情绪强度和已有旁观者为依据。不得只凭角色卡或世界书猜测当前场景。source.currentUserAction 是本轮用户正文，source.latestAssistantText 是最近一条角色正文。
 
+初始化资料较长时，程序会先逐片读取全部角色卡、Persona、世界书和聊天正文，再把每片带 sourceRefs 的证据递归合并到 source.sourceDigest；这表示完整资料已经分片读取，而不是被截断。此时 source.chat 保留最近原文用于当前场景落地，较早正文和其余设定以 source.sourceDigest 为权威读取结果。必须综合读取全部 digest，不能只看最后一片，也不能把摘要措辞本身当成原文新增事实。
+
 可建立或注入的事实只能来自：用户本轮明确元指令、source.worldbooks、source.compiledWorldbookRules、source.chat、source.character、source.persona、currentState 中已经结算的既有事实，以及用户在面板中明确保存的状态。优先级依次为：用户明确元指令（仅能改变用户有权改变的内容）→ 已确认世界与角色设定 → 已发生并结算的事实 → 当前场景直接观察 → 可修正的合理推断。source.compiledWorldbookRules 是已勾选世界书条目经过拆解并按本轮正文筛选后的权威精简规则；对应原文已从 source.worldbooks 删除。内置规则只用于选择、约束、归纳和推演，不能作为新增设定的事实来源。若无法为信息找到上述依据，不得写入 state 或 moduleInjections；宁可省略并在 plan.notes 标明依据不足。
 
 ## 推进核心模块

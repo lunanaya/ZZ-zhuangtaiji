@@ -44,7 +44,7 @@
     }
     function isRetryable(error) {
         const message = String(error?.message || error || '');
-        return /gateway\s*time-?out|\b(?:502|503|504)\b|no message generated|返回了空内容|不是有效 JSON/i.test(message);
+        return /gateway\s*time-?out|request\s*time-?out|请求超时|\b(?:502|503|504)\b|no message generated|返回了空内容|不是有效 JSON/i.test(message);
     }
     function structuredJsonSchema() {
         return {
@@ -72,41 +72,70 @@
         eventSource.on(eventName, handler);
         return () => eventSource.removeListener?.(eventName, handler);
     }
-    async function tavernAttempt(context, messages, settings, signal, structured = false) {
+    function attemptSignal(parentSignal, timeoutMs) {
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        if (parentSignal?.aborted) controller.abort();
+        else parentSignal?.addEventListener?.('abort', abort, { once: true });
+        const timer = window.setTimeout(abort, timeoutMs);
+        return {
+            signal: controller.signal,
+            cleanup() {
+                window.clearTimeout(timer);
+                parentSignal?.removeEventListener?.('abort', abort);
+            },
+        };
+    }
+    function outputTokens(settings, options = {}) {
+        const requested = Number(options.maxTokens ?? settings.maxTokens ?? 5000);
+        // This is an output budget, not an input-reading limit. Extremely large
+        // values make providers reserve an impossible generation and can cause
+        // a timeout before the first token is emitted.
+        return Math.max(256, Math.min(16384, Number.isFinite(requested) ? Math.round(requested) : 5000));
+    }
+    async function tavernAttempt(context, messages, settings, parentSignal, timeoutMs, structured = false) {
         const removeTuning = tuneTavernGptRequest(context, messages);
+        const attempt = attemptSignal(parentSignal, timeoutMs);
         try {
             return await awaitWithSignal(context.generateRaw({
                 prompt: messages,
                 responseLength: Number(settings.maxTokens || 5000),
                 trimNames: false,
                 ...(structured ? { jsonSchema: structuredJsonSchema() } : {}),
-            }), signal);
-        } finally { removeTuning(); }
+            }), attempt.signal);
+        } catch (error) {
+            if (error?.name === 'AbortError' && !parentSignal?.aborted) throw new Error(`Planner API 单次请求超时（${Math.round(timeoutMs / 1000)} 秒）`);
+            throw error;
+        } finally {
+            attempt.cleanup();
+            removeTuning();
+        }
     }
-    async function completeViaTavern(messages, settings, signal) {
+    async function completeViaTavern(messages, settings, signal, timeoutMs) {
         const context = window.SillyTavern?.getContext?.();
         if (typeof context?.generateRaw !== 'function') {
             throw new Error('当前 SillyTavern 版本不支持默认 API 调用，请更新酒馆或关闭“使用酒馆默认 API”');
         }
         try {
-            const content = await tavernAttempt(context, messages, settings, signal);
+            const content = await tavernAttempt(context, messages, settings, signal, timeoutMs);
             if (!String(content || '').trim()) throw new Error('酒馆默认 API 返回了空内容');
             return extractJson(content);
         } catch (error) {
             if (!isRetryable(error) || signal?.aborted) throw error;
             console.warn('[WorldStateMachine] 默认 API 首次请求失败，使用 GPT 兼容的结构化输出重试', error);
             WSM.Engine?.reportProgress?.('模型首次请求超时，正在自动重试', 'running', '已切换为 GPT 兼容的结构化 JSON 输出；无需重复点击初始化');
-            const content = await tavernAttempt(context, messages, settings, signal, true);
+            // The compatibility retry receives a fresh timeout budget instead
+            // of inheriting whatever little time the first gateway used up.
+            const content = await tavernAttempt(context, messages, settings, signal, timeoutMs, true);
             if (!String(content || '').trim()) throw new Error('酒馆默认 API 重试后仍返回空内容');
             return extractJson(content);
         }
     }
     async function complete(system, payload, options = {}) {
         const settings = WSM.Settings.get();
-        const controller = new AbortController();
-        // Leave enough wall time for one upstream gateway timeout plus the
-        // compatibility retry. Older saved settings used a 90-second value.
-        const timeout = window.setTimeout(() => controller.abort(), Math.max(180000, Number(settings.timeoutMs || 0)));
+        const timeoutMs = Math.max(180000, Number(settings.timeoutMs || 0));
+        const maxTokens = outputTokens(settings, options);
+        const requestSettings = Object.assign({}, settings, { maxTokens });
         const messages = [
             { role: 'system', content: systemPrompt(system, settings.jailbreakPrompt) },
             { role: 'user', content: JSON.stringify(payload) },
@@ -116,7 +145,7 @@
         const body = {
             model: settings.model,
             temperature: Number(settings.temperature ?? 0.15),
-            max_tokens: Number(settings.maxTokens || 5000),
+            max_tokens: maxTokens,
             stream: false,
             messages,
         };
@@ -129,11 +158,16 @@
             delete body.temperature;
         }
         try {
-            if (settings.useTavernApi !== false && options.forceExternal !== true) return await completeViaTavern(messages, settings, options.signal || controller.signal);
-            const response = await fetch(normalizeEndpoint(settings.endpoint), {
-                method: 'POST', headers, body: JSON.stringify(body), signal: options.signal || controller.signal,
-            });
-            const raw = await response.text();
+            if (settings.useTavernApi !== false && options.forceExternal !== true) return await completeViaTavern(messages, requestSettings, options.signal, timeoutMs);
+            const attempt = attemptSignal(options.signal, timeoutMs);
+            let response;
+            let raw;
+            try {
+                response = await fetch(normalizeEndpoint(settings.endpoint), {
+                    method: 'POST', headers, body: JSON.stringify(body), signal: attempt.signal,
+                });
+                raw = await response.text();
+            } finally { attempt.cleanup(); }
             if (!response.ok) throw new Error(`Planner API ${response.status}: ${raw.slice(0, 500)}`);
             let data;
             try { data = JSON.parse(raw); } catch (_) { data = { output_text: raw }; }
@@ -141,7 +175,7 @@
         } catch (error) {
             if (error?.name === 'AbortError') throw new Error('Planner API 请求超时或已取消');
             throw error;
-        } finally { window.clearTimeout(timeout); }
+        }
     }
     async function listModels(profile = {}) {
         const settings = Object.assign({}, WSM.Settings.get(), profile || {});
@@ -161,5 +195,5 @@
         const result = await complete('只输出 {"ok":true}', { task: 'connection_test' }, options);
         return result?.ok === true;
     }
-    WSM.Api = { complete, test, listModels };
+    WSM.Api = { complete, test, listModels, _test: { outputTokens } };
 })();

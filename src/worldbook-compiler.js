@@ -27,6 +27,38 @@
         for (let index = 0; index < input.length; index += 1) result = Math.imul(result ^ input.charCodeAt(index), 16777619);
         return (result >>> 0).toString(16).padStart(8, '0');
     }
+    function packByJsonSize(values, limit = 24000) {
+        const batches = [];
+        let batch = [];
+        let length = 2;
+        (values || []).forEach((value) => {
+            const itemLength = JSON.stringify(value).length + 1;
+            if (batch.length && length + itemLength > limit) {
+                batches.push(batch);
+                batch = [];
+                length = 2;
+            }
+            batch.push(value);
+            length += itemLength;
+        });
+        if (batch.length) batches.push(batch);
+        return batches;
+    }
+    function splitContent(value, limit = 12000) {
+        const input = text(value);
+        if (input.length <= limit) return [input];
+        const parts = [];
+        let rest = input;
+        while (rest.length > limit) {
+            let cut = Math.max(rest.lastIndexOf('\n', limit), rest.lastIndexOf('。', limit));
+            if (cut < Math.floor(limit * 0.45)) cut = limit;
+            else cut += 1;
+            parts.push(rest.slice(0, cut));
+            rest = rest.slice(cut);
+        }
+        if (rest) parts.push(rest);
+        return parts;
+    }
     function loadCache() {
         try {
             const parsed = JSON.parse(localStorage.getItem(CACHE_KEY) || '{}');
@@ -60,16 +92,47 @@
         const cache = loadCache();
         const missing = entries.filter((entry) => options.force === true || cache[entry.key]?.sourceHash !== hash(entry.content) || !cache[entry.key]?.compiled);
         if (missing.length) {
-            lastStatus = { state: 'compiling', message: `正在拆解 ${missing.length} 条世界书`, at: Date.now() };
-            const result = await WSM.Api.complete(
-                '你是世界书规则拆解器。逐条去重、消歧并压缩，但不得改变事实、规则强度、例外、人物身份和权力边界。只输出严格 JSON：{"entries":[{"key":"原key","core":["不可违反的短规则"],"triggers":["触发词或情境"],"rules":["条件规则"],"background":["必要背景"]}]}。禁止续写正文、增加设定或输出 Markdown。',
-                { task: 'WORLDBOOK_COMPILE', entries: missing.map((entry) => ({ key: entry.key, book: entry.bookName, title: entry.comment, content: entry.content })) },
-            );
-            const items = Array.isArray(result?.entries) ? result.entries : [];
+            const units = missing.flatMap((entry) => {
+                const parts = splitContent(entry.content);
+                return parts.map((content, index) => ({
+                    entry,
+                    requestKey: parts.length > 1 ? `${entry.key}::part-${index + 1}-of-${parts.length}` : entry.key,
+                    part: index + 1,
+                    parts: parts.length,
+                    content,
+                }));
+            });
+            const batches = packByJsonSize(units.map((unit) => ({
+                key: unit.requestKey, originalKey: unit.entry.key, part: unit.part, parts: unit.parts,
+                book: unit.entry.bookName, title: unit.entry.comment, content: unit.content,
+            })), 22000);
+            const compiledParts = new Map();
+            for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+                const batch = batches[batchIndex];
+                lastStatus = { state: 'compiling', message: `正在分批拆解世界书 ${batchIndex + 1}/${batches.length}（共 ${missing.length} 条）`, at: Date.now() };
+                const result = await WSM.Api.complete(
+                    '你是世界书规则拆解器。逐条去重、消歧并压缩，但不得改变事实、规则强度、例外、人物身份和权力边界。只输出严格 JSON：{"entries":[{"key":"原key","core":["不可违反的短规则"],"triggers":["触发词或情境"],"rules":["条件规则"],"background":["必要背景"]}]}。禁止续写正文、增加设定或输出 Markdown。',
+                    { task: 'WORLDBOOK_COMPILE', batchIndex: batchIndex + 1, batchCount: batches.length, entries: batch },
+                    { maxTokens: 5000 },
+                );
+                const items = Array.isArray(result?.entries) ? result.entries : [];
+                batch.forEach((unit) => {
+                    const matched = items.find((item) => text(item?.key) === unit.key) || (batch.length === 1 ? items[0] : null);
+                    if (!matched) throw new Error(`拆解结果缺少条目：${unit.title || unit.originalKey}（分片 ${unit.part}/${unit.parts}）`);
+                    const entry = missing.find((item) => item.key === unit.originalKey);
+                    const values = compiledParts.get(unit.originalKey) || [];
+                    values.push(normalizeCompiled(matched, entry));
+                    compiledParts.set(unit.originalKey, values);
+                });
+            }
             missing.forEach((entry) => {
-                const matched = items.find((item) => text(item?.key) === entry.key) || (missing.length === 1 ? items[0] : null);
-                if (!matched) throw new Error(`拆解结果缺少条目：${entry.comment || entry.key}`);
-                cache[entry.key] = { sourceHash: hash(entry.content), compiledAt: Date.now(), compiled: normalizeCompiled(matched, entry) };
+                const parts = compiledParts.get(entry.key) || [];
+                if (!parts.length) throw new Error(`拆解结果缺少条目：${entry.comment || entry.key}`);
+                const unique = (field) => [...new Set(parts.flatMap((item) => item[field] || []).map(text).filter(Boolean))];
+                cache[entry.key] = {
+                    sourceHash: hash(entry.content), compiledAt: Date.now(),
+                    compiled: { ...parts[0], key: entry.key, core: unique('core'), triggers: unique('triggers'), rules: unique('rules'), background: unique('background') },
+                };
             });
             saveCache(cache);
         }
@@ -128,11 +191,24 @@
         };
     }
     async function route(config, compiled, currentContext) {
-        const result = await WSM.Api.complete(
-            `你是逐轮世界书规则路由器。currentContext 是酒馆实际正文。只选择本轮相关规则，合并重复内容；核心硬规则只要可能影响回复就保留。不得续写剧情、增加设定或弱化禁令。只输出严格 JSON {"text":"注入正文模型的纯文本规则"}，text 不超过 ${config.budget} 个汉字；没有相关规则时可为空。`,
-            { task: 'WORLDBOOK_ROUTE', currentContext, compiledRules: compiled.map((item) => item.compiled).filter(Boolean) },
+        const rules = compiled.map((item) => item.compiled).filter(Boolean);
+        const batches = packByJsonSize(rules, 22000);
+        const candidates = [];
+        for (let index = 0; index < batches.length; index += 1) {
+            const result = await WSM.Api.complete(
+                `你是逐轮世界书规则路由器。currentContext 是酒馆实际正文。只选择本轮相关规则，合并重复内容；核心硬规则只要可能影响回复就保留。不得续写剧情、增加设定或弱化禁令。只输出严格 JSON {"text":"候选纯文本规则"}，text 不超过 ${config.budget} 个汉字；没有相关规则时可为空。`,
+                { task: 'WORLDBOOK_ROUTE', batchIndex: index + 1, batchCount: batches.length, currentContext, compiledRules: batches[index] },
+                { maxTokens: 1500 },
+            );
+            if (text(result?.text)) candidates.push(text(result.text));
+        }
+        if (candidates.length <= 1) return text(candidates[0]).slice(0, config.budget);
+        const merged = await WSM.Api.complete(
+            `你是世界书规则最终路由器。合并 candidateTexts，删除重复，但不得弱化硬规则、例外和禁止事项。只输出严格 JSON {"text":"最终纯文本规则"}，text 不超过 ${config.budget} 个汉字。`,
+            { task: 'WORLDBOOK_ROUTE_MERGE', currentContext, candidateTexts: candidates },
+            { maxTokens: 1500 },
         );
-        return text(result?.text).slice(0, config.budget);
+        return text(merged?.text).slice(0, config.budget);
     }
     async function prepare(config, entries, currentContext, options = {}) {
         const key = hash(JSON.stringify({ entries: entries.map((entry) => [entry.key, hash(entry.content)]), currentContext, budget: config.budget }));

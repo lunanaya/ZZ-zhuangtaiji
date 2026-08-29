@@ -62,6 +62,22 @@
         if (rest) parts.push(rest);
         return parts;
     }
+    function splitCompileBatch(batch, minimumChars = 900) {
+        if (batch.length > 1) {
+            const middle = Math.ceil(batch.length / 2);
+            return [batch.slice(0, middle), batch.slice(middle)];
+        }
+        const unit = batch[0];
+        if (!unit || text(unit.content).length <= minimumChars) return null;
+        const parts = splitContent(unit.content, Math.max(minimumChars, Math.ceil(unit.content.length / 2)));
+        if (parts.length < 2) return null;
+        return parts.map((content, index) => [{
+            ...unit,
+            key: `${unit.key}::adaptive-${index + 1}-of-${parts.length}`,
+            part: `${unit.part}.${index + 1}`,
+            content,
+        }]);
+    }
     function loadCache() {
         try {
             const parsed = JSON.parse(localStorage.getItem(CACHE_KEY) || '{}');
@@ -98,7 +114,7 @@
         const missing = entries.filter((entry) => options.force === true || cache[entry.key]?.sourceHash !== hash(entry.content) || !cache[entry.key]?.compiled);
         if (missing.length) {
             const units = missing.flatMap((entry) => {
-                const parts = splitContent(entry.content);
+                const parts = splitContent(entry.content, 4500);
                 return parts.map((content, index) => ({
                     entry,
                     requestKey: parts.length > 1 ? `${entry.key}::part-${index + 1}-of-${parts.length}` : entry.key,
@@ -110,16 +126,29 @@
             const batches = packByJsonSize(units.map((unit) => ({
                 key: unit.requestKey, originalKey: unit.entry.key, part: unit.part, parts: unit.parts,
                 book: unit.entry.bookName, title: unit.entry.comment, content: unit.content,
-            })), 22000);
+            })), 7000);
             const compiledParts = new Map();
-            for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+            let compileAttempts = 0;
+            let adaptiveSplits = 0;
+            for (let batchIndex = 0; batchIndex < batches.length;) {
                 const batch = batches[batchIndex];
-                lastStatus = { state: 'compiling', message: `正在分批拆解世界书 ${batchIndex + 1}/${batches.length}（共 ${missing.length} 条）`, at: Date.now() };
-                const result = await WSM.Api.complete(
-                    '你是世界书规则拆解器。逐条去重、消歧并压缩，但不得改变事实、规则强度、例外、人物身份和权力边界。只输出严格 JSON：{"entries":[{"key":"原key","core":["不可违反的短规则"],"triggers":["触发词或情境"],"rules":["条件规则"],"background":["必要背景"]}]}。禁止续写正文、增加设定或输出 Markdown。',
-                    { task: 'WORLDBOOK_COMPILE', batchIndex: batchIndex + 1, batchCount: batches.length, entries: batch },
-                    { maxTokens: 5000 },
-                );
+                lastStatus = { state: 'compiling', message: `正在小批拆解世界书 ${batchIndex + 1}/${batches.length}（尝试 ${compileAttempts + 1}）`, at: Date.now() };
+                let result;
+                try {
+                    compileAttempts += 1;
+                    result = await WSM.Api.complete(
+                        '你是世界书规则拆解器。逐条去重、消歧并压缩，但不得改变事实、规则强度、例外、人物身份和权力边界。只输出严格 JSON：{"entries":[{"key":"原key","core":["不可违反的短规则"],"triggers":["触发词或情境"],"rules":["条件规则"],"background":["必要背景"]}]}。禁止续写正文、增加设定或输出 Markdown。',
+                        { task: 'WORLDBOOK_COMPILE', batchIndex: batchIndex + 1, batchCount: batches.length, entries: batch },
+                        { maxTokens: Math.min(3000, 900 + batch.length * 650) },
+                    );
+                } catch (error) {
+                    const children = splitCompileBatch(batch);
+                    if (!children) throw error;
+                    adaptiveSplits += 1;
+                    batches.splice(batchIndex, 1, ...children);
+                    lastStatus = { state: 'compiling', message: `世界书拆解请求失败，已自动细分 ${adaptiveSplits} 次（当前 ${batches.length} 片）`, at: Date.now() };
+                    continue;
+                }
                 const items = Array.isArray(result?.entries) ? result.entries : [];
                 batch.forEach((unit) => {
                     const matched = items.find((item) => text(item?.key) === unit.key) || (batch.length === 1 ? items[0] : null);
@@ -129,6 +158,7 @@
                     values.push(normalizeCompiled(matched, entry));
                     compiledParts.set(unit.originalKey, values);
                 });
+                batchIndex += 1;
             }
             missing.forEach((entry) => {
                 const parts = compiledParts.get(entry.key) || [];
@@ -203,15 +233,22 @@
     }
     async function routeGroup(config, compiled, currentContext) {
         const rules = compiled.map((item) => item.compiled).filter(Boolean);
-        const batches = packByJsonSize(rules, 22000);
+        const batches = packByJsonSize(rules, 7000);
         const candidates = [];
-        for (let index = 0; index < batches.length; index += 1) {
-            const result = await WSM.Api.complete(
-                `你是逐轮世界书规则路由器。currentContext 是酒馆实际正文。只选择本轮相关规则，合并重复内容；核心硬规则只要可能影响回复就保留。不得续写剧情、增加设定或弱化禁令。只输出严格 JSON {"text":"候选纯文本规则"}，text 不超过 ${config.budget} 个汉字；没有相关规则时可为空。`,
-                { task: 'WORLDBOOK_ROUTE', batchIndex: index + 1, batchCount: batches.length, currentContext, compiledRules: batches[index] },
-                { maxTokens: 1500 },
-            );
-            if (text(result?.text)) candidates.push(text(result.text));
+        for (let index = 0; index < batches.length;) {
+            try {
+                const result = await WSM.Api.complete(
+                    `你是逐轮世界书规则路由器。currentContext 是酒馆实际正文。只选择本轮相关规则，合并重复内容；核心硬规则只要可能影响回复就保留。不得续写剧情、增加设定或弱化禁令。只输出严格 JSON {"text":"候选纯文本规则"}，text 不超过 ${config.budget} 个汉字；没有相关规则时可为空。`,
+                    { task: 'WORLDBOOK_ROUTE', batchIndex: index + 1, batchCount: batches.length, currentContext, compiledRules: batches[index] },
+                    { maxTokens: 1200 },
+                );
+                if (text(result?.text)) candidates.push(text(result.text));
+                index += 1;
+            } catch (error) {
+                if (batches[index].length <= 1) throw error;
+                const middle = Math.ceil(batches[index].length / 2);
+                batches.splice(index, 1, batches[index].slice(0, middle), batches[index].slice(middle));
+            }
         }
         if (candidates.length <= 1) return text(candidates[0]).slice(0, config.budget);
         const merged = await WSM.Api.complete(
@@ -462,6 +499,6 @@
         },
         updateCompiledEntry,
         clearCache() { saveCache({}); activeTurn = null; lastDelivery = null; lastStatus = { state: 'idle', message: '拆解缓存已清空', at: Date.now() }; },
-        _test: { hash, contextFromMessages, redactOriginals, injectText, fallbackText },
+        _test: { hash, contextFromMessages, redactOriginals, injectText, fallbackText, splitCompileBatch },
     };
 })();

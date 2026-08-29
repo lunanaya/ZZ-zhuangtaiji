@@ -67,4 +67,26 @@ assert.equal(processed.blocked, undefined);
 assert.equal(processed.selected, 1);
 assert.equal(source.compiledWorldbookRules.originalEntriesRemoved, 1);
 
+const largeEntry = {
+    key: WorldStateMachine.Context.worldbookEntryKey('测试世界书', 'large'),
+    id: 'large', bookName: '测试世界书', comment: '超长条目', enabled: true, depth: 2,
+    content: `LARGE-START-${'世界规则。'.repeat(1800)}-LARGE-END`,
+};
+compilerConfig.entryKeys = [largeEntry.key];
+compilerConfig.knownEntryKeys.push(largeEntry.key);
+let largeAttempts = 0;
+const successfulParts = [];
+WorldStateMachine.Api.complete = async (_prompt, payload, options) => {
+    assert.ok(options.maxTokens <= 3000);
+    largeAttempts += 1;
+    if (JSON.stringify(payload.entries).length > 2500) throw new Error('Got response status 502');
+    successfulParts.push(...payload.entries.map((entry) => entry.content));
+    return { entries: payload.entries.map((entry) => ({ key: entry.key, core: [entry.content], triggers: [], rules: [], background: [] })) };
+};
+const adaptiveCompiled = await WorldStateMachine.WorldbookCompiler.compileConfig(compilerConfig, { force: true, entries: [largeEntry] });
+assert.equal(adaptiveCompiled.count, 1);
+assert.ok(largeAttempts > successfulParts.length);
+assert.match(successfulParts.join(''), /LARGE-START/);
+assert.match(successfulParts.join(''), /LARGE-END/);
+
 console.log('Worldbook enabled/disabled entry smoke tests passed');

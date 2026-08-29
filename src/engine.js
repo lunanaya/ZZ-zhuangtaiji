@@ -8,8 +8,16 @@
     let settingsBound = false;
     let autoInitializeTimer = null;
     let autoInitializeAttempts = 0;
+    let operationProgress = { state: 'idle', message: '', details: '', at: 0 };
 
     const safeText = (value) => String(value ?? '').trim();
+    function reportProgress(message, state = 'running', details = '') {
+        operationProgress = { state, message: safeText(message), details: safeText(details), at: Date.now() };
+        try { window.dispatchEvent(new CustomEvent('wsm-operation-progress', { detail: operationProgress })); }
+        catch (_error) { /* Progress reporting must never interrupt planning. */ }
+        return operationProgress;
+    }
+    function getProgress() { return Object.assign({}, operationProgress); }
     function syncIdentities(state, names = WSM.Context.identityNames()) {
         const next = state;
         const identities = {
@@ -163,7 +171,12 @@
         const rebuilding = options.initialize === true;
         const refreshWorld = !rebuilding && current.initialized && current.runtime?.needsWorldRefresh === true;
         const initializing = !current.initialized || rebuilding;
+        if (initializing || refreshWorld) reportProgress('第 1/3 步：正在读取酒馆资料', 'running', '角色卡、Persona、已启用世界书和聊天正文');
         const source = await WSM.Context.buildSource({ fullChat: initializing || refreshWorld || options.initialize });
+        if (initializing || refreshWorld) {
+            const preview = summarizeSource(source);
+            reportProgress('第 2/3 步：资料读取完成，正在处理世界书', 'running', `正文 ${preview.chatMessages}/${preview.chatTotalMessages} 条 · 世界书 ${preview.loadedWorldbooks.length} 本 · 读取失败 ${preview.failedWorldbooks.length} 本`);
+        }
         const fingerprint = WSM.Context.sourceFingerprint(source);
         const compilerResult = await WSM.WorldbookCompiler?.processSource?.(source);
         const sourceSummary = Object.assign(summarizeSource(source), {
@@ -201,6 +214,7 @@
         try {
             if (compilerResult?.blocked) throw new Error(compilerResult.error || '世界书拆解阻止了 Planner 请求');
             const plannerPrompt = `${settings.plannerPrompt}${diceRound ? WSM.Dice.plannerInstructions(diceRound) : ''}`;
+            if (initializing || refreshWorld) reportProgress('第 3/3 步：资料已发送，正在等待模型建立状态', 'running', `正文 ${sourceSummary.chatMessages}/${sourceSummary.chatTotalMessages} 条 · 世界书 ${sourceSummary.loadedWorldbooks.length} 本`);
             const result = await WSM.Api.complete(plannerPrompt, payload);
             if (!result?.state || typeof result.state !== 'object') throw new Error('Planner 响应缺少 state');
             let next = WSM.Storage.enforceLocks(current, result.state);
@@ -231,6 +245,7 @@
                 snapshotKind: 'generation',
             });
             await setPrompt(next.planner.injection);
+            if (initializing || refreshWorld) reportProgress('读取并初始化完成', 'success', `已建立 REV ${next.revision} · 世界书 ${sourceSummary.loadedWorldbooks.length} 本 · 正文 ${sourceSummary.chatMessages} 条`);
             return next.planner;
         } catch (error) {
             current.runtime = Object.assign({}, current.runtime, { sourceSummary, worldbookInjection: compilerResult?.report || current.runtime?.worldbookInjection || null });
@@ -239,6 +254,7 @@
             });
             await WSM.Storage.save(current, 'planner-error', { snapshot: false });
             await setPrompt(current.planner.injection);
+            if (initializing || refreshWorld) reportProgress('读取或初始化失败', 'error', safeText(error?.message || error));
             console.error('[WorldStateMachine] Planner 失败，使用当前状态降级', error);
             return current.planner;
         }
@@ -399,5 +415,5 @@
         }
         scheduleAutoInitialize('startup', 1200);
     }
-    WSM.Engine = { init, plan: ensurePlan, autoInitialize, settle: ensureSettle, interceptor, fallbackInjection, _test: { generationBlockReason, plannerAvailable, activeChatAvailable, setPrompt, syncRegisteredPrompt } };
+    WSM.Engine = { init, plan: ensurePlan, autoInitialize, settle: ensureSettle, interceptor, fallbackInjection, reportProgress, getProgress, _test: { generationBlockReason, plannerAvailable, activeChatAvailable, setPrompt, syncRegisteredPrompt } };
 })();

@@ -253,8 +253,18 @@
     position:relative!important;
     z-index:1!important;
 }
+#wsm-root input[type="checkbox"]::before {
+    content:none!important;
+    display:none!important;
+    width:0!important;
+    height:0!important;
+    clip-path:none!important;
+    box-shadow:none!important;
+    transform:none!important;
+}
+#wsm-root input[type="checkbox"]::after { content:""!important; display:block!important; }
 #wsm-root input[type="checkbox"]:checked { border-color:var(--wsm-icon-active)!important; background:var(--wsm-icon-active)!important; }
-#wsm-root input[type="checkbox"]:checked::after { content:"✓"; color:#fff8ef; font:bold 14px/1 sans-serif; transform:translateY(-.5px); }
+#wsm-root input[type="checkbox"]:checked::after { content:"✓"!important; color:#fff8ef!important; font:bold 14px/1 Arial,sans-serif!important; transform:translateY(-.5px)!important; }
 #wsm-root input[type="checkbox"]:focus-visible { box-shadow:0 0 0 3px #929ec455!important; }
 #wsm-root input[type="checkbox"]:disabled { cursor:not-allowed!important; opacity:.5!important; }
 #wsm-root label:has(input[type="checkbox"]:not(:disabled)) { cursor:pointer; }
@@ -267,3 +277,17 @@
 }
 #wsm-launcher { z-index:2147483001!important; }
 #wsm-root button,#wsm-root a,#wsm-root summary { position:relative; z-index:2; }
+
+/* Stay above the chat UI but below SillyTavern's own dialogs/toasts (9999+). */
+#wsm-launcher { z-index:5001!important; }
+.wsm-modal { z-index:5000!important; }
+.wsm-submodal { z-index:5002!important; }
+.wsm-operation-status { flex:0 0 auto; display:flex; align-items:flex-start; gap:9px; padding:9px 16px; border-bottom:1px solid var(--wsm-line); background:#fff8ef; color:var(--wsm-text); }
+.wsm-operation-status[hidden] { display:none!important; }
+.wsm-operation-status::before { content:""; flex:0 0 9px; width:9px; height:9px; margin-top:4px; border-radius:50%; background:var(--wsm-accent); }
+.wsm-operation-status[data-state="running"]::before { animation:wsm-pulse 1s ease-in-out infinite alternate; }
+.wsm-operation-status[data-state="error"] { color:#9b2f2f; background:#fff0ed; }
+.wsm-operation-status[data-state="error"]::before { background:#c64b3f; }
+.wsm-operation-status small { display:block; margin-top:2px; color:var(--wsm-dim); }
+#wsm-root button:disabled { cursor:wait; opacity:.55; }
+@keyframes wsm-pulse { to { transform:scale(1.45); opacity:.45; } }

@@ -530,7 +530,7 @@
         return `<div id="wsm-modal" class="wsm-modal" hidden>
             <div class="wsm-shell">
                 <header class="wsm-header"><div><b>WORLD ENGINE</b><span id="wsm-status">未初始化</span></div><div class="wsm-actions">
-                    <div class="wsm-read-action"><button id="wsm-read-current" data-action="read-current">读取当前聊天</button><section id="wsm-operation-status" class="wsm-operation-status" role="status" aria-live="polite"><b></b><small></small><ol id="wsm-operation-steps"></ol></section></div><button id="wsm-rebuild" data-action="initialize">重新读取 / 重建</button><button data-action="settings">设置</button><button data-action="history">回滚上一轮</button><button class="wsm-icon-button" data-action="close" aria-label="关闭">${icon('close')}</button>
+                    <div class="wsm-read-action"><button id="wsm-read-current" data-action="read-current">读取当前聊天</button><section id="wsm-operation-status" class="wsm-operation-status" role="status" aria-live="polite"><b></b><small></small></section></div><button id="wsm-rebuild" data-action="initialize">重新读取 / 重建</button><button data-action="settings">设置</button><button data-action="history">回滚上一轮</button><button class="wsm-icon-button" data-action="close" aria-label="关闭">${icon('close')}</button>
                 </div></header>
                 <nav class="wsm-category-bar">${categoryButtons}</nav>
                 <div class="wsm-body"><nav class="wsm-tabs">${tabs}</nav><main class="wsm-main">
@@ -630,15 +630,7 @@
         status.textContent = progress.state === 'running' ? '正在读取…' : (state.initialized ? `REV ${state.revision} · ${state.world?.time?.display || '时间未定'}` : '等待初始化');
         operation.dataset.state = progress.state || 'idle';
         operation.querySelector('b').textContent = progress.message || '读取进度：等待开始';
-        operation.querySelector('small').textContent = progress.details || '点击“读取当前聊天”后，会在这里逐步显示资料收集、分片读取、合并和状态更新。';
-        const steps = Array.isArray(progress.steps) ? progress.steps : [];
-        const stepList = $('#wsm-operation-steps');
-        if (stepList) {
-            stepList.innerHTML = steps.length
-                ? steps.map((step, index) => `<li class="${index === steps.length - 1 ? 'current' : ''}" data-state="${escape(step.state || 'idle')}"><span>${escape(step.message || '')}</span>${step.details ? `<small>${escape(step.details)}</small>` : ''}</li>`).join('')
-                : '<li data-state="idle"><span>尚未开始</span></li>';
-            stepList.hidden = false;
-        }
+        operation.querySelector('small').textContent = progress.details || '点击后在此显示当前步骤。';
         readCurrent.textContent = state.initialized ? '读取当前聊天' : '读取并初始化';
         rebuild.hidden = !state.initialized;
         readCurrent.disabled = progress.state === 'running';
@@ -845,6 +837,7 @@
         }
         if (action === 'read-current') {
             const initialized = WSM.Storage.load().initialized;
+            WSM.Engine.reportProgress?.('正在准备读取当前聊天', 'running', '正在检查聊天、模型连接和资料来源…');
             let planner;
             try {
                 planner = await WSM.Engine.plan({
@@ -856,6 +849,7 @@
                 });
             }
             catch (error) { WSM.Engine.reportProgress?.('读取或初始化失败', 'error', error.message); planner = { error: error.message }; }
+            if (planner?.error) WSM.Engine.reportProgress?.('读取当前聊天失败', 'error', planner.error);
             render();
         }
         if (action === 'test-api') {
@@ -933,7 +927,9 @@
     }
     function selectedExternalWorldbookName(select) {
         const option = select?.selectedOptions?.[0];
-        return String(option?.value || select?.value || option?.textContent || '').trim();
+        // ST's editor select may use an internal id as value while showing the
+        // real book name as its label.  The world-info API needs the latter.
+        return String(option?.textContent || option?.label || option?.value || select?.value || '').trim();
     }
     async function compileExternalWorldbook(select, button) {
         if (externalWorldbookButtonBusy) return;
@@ -959,11 +955,13 @@
             worldbookEntriesCache = [];
             notify(`“${bookName}”已一键拆解 ${result.count} 条启用条目`, 'success');
         } catch (error) {
+            button.textContent = '芝芝：未读取到内容（点重试）';
+            button.title = `读取失败：${error.message}`;
             notify(`世界书一键拆解失败：${error.message}`, 'error');
         } finally {
             externalWorldbookButtonBusy = false;
             button.disabled = false;
-            button.textContent = '芝芝：一键拆解本书';
+            if (!button.textContent.includes('未读取到内容')) button.textContent = '芝芝：一键拆解本书';
         }
     }
     function mountExternalWorldbookButton() {

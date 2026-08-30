@@ -236,6 +236,9 @@
         const settings = WSM.Settings.get();
         if (!settings.enabled) {
             await setPrompt('');
+            if (options.initialize === true || options.readFullChat === true) {
+                reportProgress('读取当前聊天失败', 'error', '已在设置中关闭“启用自动状态机”');
+            }
             return null;
         }
         const key = turnKey();

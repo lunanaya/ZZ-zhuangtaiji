@@ -111,7 +111,7 @@
         return unique(candidates.flatMap(nameCandidates));
     }
     function normalizeEntries(data, options = {}) {
-        const source = data?.entries || data?.data?.entries || data?.worldInfo?.entries || data?.worldInfoData?.entries || data?.world_info?.entries || {};
+        const source = data?.entries || data?.data?.entries || data?.world?.entries || data?.data?.world?.entries || data?.worldInfo?.entries || data?.worldInfoData?.entries || data?.world_info?.entries || {};
         const entries = (Array.isArray(source) ? source : Object.values(source || {})).map((entry, index) => ({
             id: text(entry.uid ?? entry.id ?? index),
             keys: Array.isArray(entry.key) ? entry.key : (Array.isArray(entry.keys) ? entry.keys : [entry.key || entry.keys].filter(Boolean)),

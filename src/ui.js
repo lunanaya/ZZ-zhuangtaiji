@@ -530,9 +530,8 @@
         return `<div id="wsm-modal" class="wsm-modal" hidden>
             <div class="wsm-shell">
                 <header class="wsm-header"><div><b>WORLD ENGINE</b><span id="wsm-status">未初始化</span></div><div class="wsm-actions">
-                    <button id="wsm-read-current" data-action="read-current">读取当前聊天</button><button id="wsm-rebuild" data-action="initialize">重新读取 / 重建</button><button data-action="settings">设置</button><button data-action="history">回滚上一轮</button><button class="wsm-icon-button" data-action="close" aria-label="关闭">${icon('close')}</button>
+                    <div class="wsm-read-action"><button id="wsm-read-current" data-action="read-current">读取当前聊天</button><section id="wsm-operation-status" class="wsm-operation-status" role="status" aria-live="polite"><b></b><small></small><ol id="wsm-operation-steps"></ol></section></div><button id="wsm-rebuild" data-action="initialize">重新读取 / 重建</button><button data-action="settings">设置</button><button data-action="history">回滚上一轮</button><button class="wsm-icon-button" data-action="close" aria-label="关闭">${icon('close')}</button>
                 </div></header>
-                <div id="wsm-operation-status" class="wsm-operation-status" role="status" aria-live="polite" hidden><div><b></b><small></small><ol id="wsm-operation-steps"></ol></div></div>
                 <nav class="wsm-category-bar">${categoryButtons}</nav>
                 <div class="wsm-body"><nav class="wsm-tabs">${tabs}</nav><main class="wsm-main">
                     <div id="wsm-section-title"></div><div class="wsm-view-toolbar"><button data-action="toggle-edit">${icon('edit')}<span>编辑当前栏目</span></button></div>
@@ -629,15 +628,16 @@
         const rebuild = $('#wsm-rebuild');
         if (!status || !operation || !readCurrent || !rebuild) return;
         status.textContent = progress.state === 'running' ? '正在读取…' : (state.initialized ? `REV ${state.revision} · ${state.world?.time?.display || '时间未定'}` : '等待初始化');
-        operation.hidden = !progress.message;
         operation.dataset.state = progress.state || 'idle';
-        operation.querySelector('b').textContent = progress.message || '';
-        operation.querySelector('small').textContent = progress.details || '';
+        operation.querySelector('b').textContent = progress.message || '读取进度：等待开始';
+        operation.querySelector('small').textContent = progress.details || '点击“读取当前聊天”后，会在这里逐步显示资料收集、分片读取、合并和状态更新。';
         const steps = Array.isArray(progress.steps) ? progress.steps : [];
         const stepList = $('#wsm-operation-steps');
         if (stepList) {
-            stepList.innerHTML = steps.map((step, index) => `<li class="${index === steps.length - 1 ? 'current' : ''}" data-state="${escape(step.state || 'idle')}"><span>${escape(step.message || '')}</span>${step.details ? `<small>${escape(step.details)}</small>` : ''}</li>`).join('');
-            stepList.hidden = steps.length < 2;
+            stepList.innerHTML = steps.length
+                ? steps.map((step, index) => `<li class="${index === steps.length - 1 ? 'current' : ''}" data-state="${escape(step.state || 'idle')}"><span>${escape(step.message || '')}</span>${step.details ? `<small>${escape(step.details)}</small>` : ''}</li>`).join('')
+                : '<li data-state="idle"><span>尚未开始</span></li>';
+            stepList.hidden = false;
         }
         readCurrent.textContent = state.initialized ? '读取当前聊天' : '读取并初始化';
         rebuild.hidden = !state.initialized;

@@ -321,10 +321,10 @@
             if (initializing || refreshWorld) {
                 const prepared = await WSM.SourceReader.prepare(source, {
                     forceDigest: true,
-                    // Keep more independently extracted evidence for a manual
-                    // full-chat read.  The state is still built in field
-                    // slices, so this does not turn into one oversized request.
-                    reduceTargetChars: 30000,
+                    // Keep the final digest bounded for the state model.  Raw
+                    // source has no total-length cap: it is read in bounded
+                    // chunks and recursively merged before reaching here.
+                    reduceTargetChars: 16000,
                     onProgress(progress) {
                           if (progress.stage === 'read') {
                               reportProgress('正在分批读取全部资料', 'running', `资料分片 ${progress.current}/${progress.total} · 每片独立请求，不丢弃旧正文`);

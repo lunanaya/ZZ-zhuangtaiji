@@ -264,7 +264,12 @@
         }
 
         const rebuilding = options.initialize === true;
-        const refreshWorld = !rebuilding && current.initialized && current.runtime?.needsWorldRefresh === true;
+        // “读取当前聊天” is an explicit user request to re-read the chat, not
+        // the lightweight per-turn planner refresh.  The latter intentionally
+        // reads only recentMessages, which made a long existing chat appear to
+        // be analysed while most of its history never reached SourceReader.
+        const fullChatRefresh = options.readFullChat === true && current.initialized;
+        const refreshWorld = !rebuilding && current.initialized && (current.runtime?.needsWorldRefresh === true || fullChatRefresh);
         const initializing = !current.initialized || rebuilding;
         if (initializing || refreshWorld) reportProgress('第 1/3 步：正在读取酒馆资料', 'running', '角色卡、Persona、已启用世界书和聊天正文');
         const source = await WSM.Context.buildSource({
@@ -283,12 +288,14 @@
                 routedChars: String(compilerResult.routed || '').length,
             } : null,
         });
-        const phase = initializing ? 'INITIALIZE_WORLD' : (refreshWorld ? 'REFRESH_WORLD' : 'PRE_GENERATION_PLAN');
+        const phase = initializing ? 'INITIALIZE_WORLD' : (fullChatRefresh ? 'REFRESH_FULL_CHAT' : (refreshWorld ? 'REFRESH_WORLD' : 'PRE_GENERATION_PLAN'));
         const diceRound = settings.diceEnabled ? WSM.Dice?.createRound?.(key) : null;
         const payload = {
             phase,
             instructions: initializing
                 ? '完整理解角色卡、Persona、聊天与已启用世界书，建立初始持久世界状态；除user和char外，提取3至12名最相关的既存NPC。'
+                : fullChatRefresh
+                    ? '这是用户主动执行的完整聊天刷新。必须综合 sourceDigest 的全部分片证据、角色卡、Persona、世界书和当前已结算状态，更新所有受聊天事实影响的状态字段；不得只看末尾正文，也不得只补 NPC。保留仍成立的既有事实，冲突或不确定信息必须标明来源和不确定性，禁止续写。'
                 : refreshWorld
                     ? '保留已经成立的事实，重新阅读完整角色卡与世界书，补齐其中有姓名、身份或长期关系的3至12名相关NPC；不要把无关路人塞入世界，也不要重演历史。'
                     : '推进用户本轮行为后的世界后台，规划但不要假定正文将发生的事情。',
@@ -314,7 +321,10 @@
             if (initializing || refreshWorld) {
                 const prepared = await WSM.SourceReader.prepare(source, {
                     forceDigest: true,
-                    reduceTargetChars: 16000,
+                    // Keep more independently extracted evidence for a manual
+                    // full-chat read.  The state is still built in field
+                    // slices, so this does not turn into one oversized request.
+                    reduceTargetChars: 30000,
                     onProgress(progress) {
                           if (progress.stage === 'read') {
                               reportProgress('正在分批读取全部资料', 'running', `资料分片 ${progress.current}/${progress.total} · 每片独立请求，不丢弃旧正文`);

@@ -103,7 +103,10 @@
     }
 
     async function prepare(source, options = {}) {
-        const chunkChars = Math.max(4000, Number(options.chunkChars || 24000));
+        // A 20k-character Chinese chat can already be a fairly large token
+        // payload once JSON and instructions are included.  Use conservative
+        // default chunks; failures still split further adaptively below.
+        const chunkChars = Math.max(4000, Number(options.chunkChars || 8000));
         const partChars = Math.max(2000, Math.floor(chunkChars * 0.55));
         const records = sourceRecords(source, partChars);
         const chunks = pack(records, chunkChars);

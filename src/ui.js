@@ -400,8 +400,10 @@
             const loaded = info.loadedWorldbooks || [];
             const failed = info.failedWorldbooks || [];
             const counts = info.worldbookEntryCounts || {};
+            const sourceRead = info.sourceRead || {};
+            const fullRead = sourceRead.chunked === true;
             return `<div class="wsm-source-grid">
-                <section class="wsm-board"><h4>基础输入</h4><div class="wsm-board-item">角色卡：${info.characterCard ? '已读取' : '未读取'}<br>Persona：${info.persona ? '已读取' : '未读取'}<br>酒馆正文：已读取 ${escape(String(info.chatMessages || 0))} / ${escape(String(info.chatTotalMessages || 0))} 条${info.chatTruncated ? '（已按设置截取）' : ''}</div></section>
+                <section class="wsm-board"><h4>基础输入</h4><div class="wsm-board-item">角色卡：${info.characterCard ? '已读取' : '未读取'}<br>Persona：${info.persona ? '已读取' : '未读取'}<br>酒馆正文：已读取 ${escape(String(info.chatMessages || 0))} / ${escape(String(info.chatTotalMessages || 0))} 条${info.chatTruncated ? '（已按设置截取）' : ''}<br>${fullRead ? `完整资料分片：${escape(String(sourceRead.chunks || 0))} 片 · 请求 ${escape(String(sourceRead.requestAttempts || 0))} 次${Number(sourceRead.adaptiveSplits || 0) ? ` · 自动细分 ${escape(String(sourceRead.adaptiveSplits))} 次` : ''}` : '尚未执行完整资料分片读取'}</div></section>
                 <section class="wsm-board"><h4>已读取世界书</h4>${loaded.length ? loaded.map((name) => `<div class="wsm-board-item"><b>${escape(name)}</b><small>${escape(String(counts[name] || 0))} 条启用条目</small></div>`).join('') : '<div class="wsm-board-item">没有读到任何世界书</div>'}</section>
                 ${failed.length ? `<section class="wsm-board"><h4>发现但读取失败</h4>${failed.map((name) => `<div class="wsm-board-item">${escape(name)}</div>`).join('')}</section>` : ''}
                 <section class="wsm-board"><h4>注入边界</h4><div class="wsm-board-item">最终注入由上述输入、已经结算的当前状态和本轮 Planner 约束生成。时间线只在面板展示，不进入正文注入。</div></section>
@@ -836,22 +838,24 @@
         if (action === 'save-section') await saveSection();
         if (action === 'initialize') {
             if (!window.confirm('确定重新读取完整聊天并重建状态？当前状态会被新的读取结果替换。')) return;
-            notify('正在重新读取角色卡、Persona、世界书和完整聊天…');
             let planner;
             try { planner = await WSM.Engine.plan({ force: true, initialize: true }); }
             catch (error) { WSM.Engine.reportProgress?.('读取或初始化失败', 'error', error.message); planner = { error: error.message }; }
-            if (planner?.error) notify(`读取失败：${planner.error}`, 'error');
-            else notify('重新读取并重建完成', 'success');
             render();
         }
         if (action === 'read-current') {
             const initialized = WSM.Storage.load().initialized;
-            notify(initialized ? '正在读取当前聊天…' : '正在读取并建立初始状态…');
             let planner;
-            try { planner = await WSM.Engine.plan({ force: true, initialize: !initialized }); }
+            try {
+                planner = await WSM.Engine.plan({
+                    force: true,
+                    initialize: !initialized,
+                    // Once a state exists, this is still a refresh (not a
+                    // destructive rebuild), but it must read every chat item.
+                    readFullChat: initialized,
+                });
+            }
             catch (error) { WSM.Engine.reportProgress?.('读取或初始化失败', 'error', error.message); planner = { error: error.message }; }
-            if (planner?.error) notify(`读取失败：${planner.error}`, 'error');
-            else notify(initialized ? '当前聊天读取完成' : '初始化完成', 'success');
             render();
         }
         if (action === 'test-api') {

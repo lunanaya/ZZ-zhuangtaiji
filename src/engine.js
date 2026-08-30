@@ -7,16 +7,27 @@
     let settlingPromise = null;
     let bound = false;
     let settingsBound = false;
-    let operationProgress = { state: 'idle', message: '', details: '', at: 0 };
+    let operationProgress = { state: 'idle', message: '', details: '', at: 0, steps: [] };
 
     const safeText = (value) => String(value ?? '').trim();
     function reportProgress(message, state = 'running', details = '') {
-        operationProgress = { state, message: safeText(message), details: safeText(details), at: Date.now() };
+        const nextMessage = safeText(message);
+        const nextDetails = safeText(details);
+        // A new initialization begins a fresh, visible progress trail. Keep
+        // previous stages of the active run so the user can see exactly where
+        // source reading reached before it completed or failed.
+        const previous = /^第 1\/3 步：/.test(nextMessage) ? [] : (operationProgress.steps || []);
+        const last = previous.at(-1);
+        const step = { state, message: nextMessage, details: nextDetails, at: Date.now() };
+        const steps = last?.message === step.message && last?.details === step.details && last?.state === step.state
+            ? [...previous.slice(0, -1), step]
+            : [...previous, step].slice(-36);
+        operationProgress = { ...step, steps };
         try { window.dispatchEvent(new CustomEvent('wsm-operation-progress', { detail: operationProgress })); }
         catch (_error) { /* Progress reporting must never interrupt planning. */ }
         return operationProgress;
     }
-    function getProgress() { return Object.assign({}, operationProgress); }
+    function getProgress() { return { ...operationProgress, steps: (operationProgress.steps || []).map((step) => ({ ...step })) }; }
     function syncIdentities(state, names = WSM.Context.identityNames()) {
         const next = state;
         const identities = {

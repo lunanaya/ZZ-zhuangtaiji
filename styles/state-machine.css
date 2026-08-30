@@ -343,5 +343,12 @@
 .wsm-operation-status[data-state="error"] { color:#9b2f2f; background:#fff0ed; }
 .wsm-operation-status[data-state="error"]::before { background:#c64b3f; }
 .wsm-operation-status small { display:block; margin-top:2px; color:var(--wsm-dim); }
+.wsm-operation-status>div { min-width:0; flex:1; }
+#wsm-operation-steps { display:grid; gap:3px; margin:8px 0 0; padding:7px 0 0 19px; border-top:1px dashed #929ec477; color:var(--wsm-dim); font-size:11px; }
+#wsm-operation-steps[hidden] { display:none!important; }
+#wsm-operation-steps li { padding-left:1px; overflow-wrap:anywhere; }
+#wsm-operation-steps li.current { color:var(--wsm-text); font-weight:700; }
+#wsm-operation-steps li[data-state="error"] { color:#9b2f2f; }
+#wsm-operation-steps small { margin-top:0; font-size:inherit; }
 #wsm-root button:disabled { cursor:wait; opacity:.55; }
 @keyframes wsm-pulse { to { transform:scale(1.45); opacity:.45; } }

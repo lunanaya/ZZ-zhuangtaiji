@@ -530,7 +530,7 @@
                 <header class="wsm-header"><div><b>WORLD ENGINE</b><span id="wsm-status">未初始化</span></div><div class="wsm-actions">
                     <button id="wsm-read-current" data-action="read-current">读取当前聊天</button><button id="wsm-rebuild" data-action="initialize">重新读取 / 重建</button><button data-action="settings">设置</button><button data-action="history">回滚上一轮</button><button class="wsm-icon-button" data-action="close" aria-label="关闭">${icon('close')}</button>
                 </div></header>
-                <div id="wsm-operation-status" class="wsm-operation-status" role="status" aria-live="polite" hidden><div><b></b><small></small></div></div>
+                <div id="wsm-operation-status" class="wsm-operation-status" role="status" aria-live="polite" hidden><div><b></b><small></small><ol id="wsm-operation-steps"></ol></div></div>
                 <nav class="wsm-category-bar">${categoryButtons}</nav>
                 <div class="wsm-body"><nav class="wsm-tabs">${tabs}</nav><main class="wsm-main">
                     <div id="wsm-section-title"></div><div class="wsm-view-toolbar"><button data-action="toggle-edit">${icon('edit')}<span>编辑当前栏目</span></button></div>
@@ -597,19 +597,9 @@
     }
     function render() {
         const state = WSM.Storage.load();
-        const progress = WSM.Engine?.getProgress?.() || {};
         syncWorldbookSections(state);
         const [title] = sectionMap[active] || sectionMap.worldbookEmpty;
-        $('#wsm-status').textContent = progress.state === 'running' ? '正在读取…' : (state.initialized ? `REV ${state.revision} · ${state.world?.time?.display || '时间未定'}` : '等待初始化');
-        const operation = $('#wsm-operation-status');
-        operation.hidden = !progress.message;
-        operation.dataset.state = progress.state || 'idle';
-        operation.querySelector('b').textContent = progress.message || '';
-        operation.querySelector('small').textContent = progress.details || '';
-        $('#wsm-read-current').textContent = state.initialized ? '读取当前聊天' : '读取并初始化';
-        $('#wsm-rebuild').hidden = !state.initialized;
-        $('#wsm-read-current').disabled = progress.state === 'running';
-        $('#wsm-rebuild').disabled = progress.state === 'running';
+        renderOperationStatus(WSM.Engine?.getProgress?.() || {}, state);
         $('#wsm-section-title').innerHTML = `<h3>${escape(title)}</h3><small>${editMode ? '使用简单中文修改；保存时会自动转换为内部状态。' : '点击卡片可以展开或收起详情。技术字段已自动隐藏或转换成人类可读内容。'}</small>`;
         $('#wsm-game-view').innerHTML = renderGameView(state);
         if (!editMode && sectionHelp[active]) $('#wsm-section-title small').textContent = sectionHelp[active];
@@ -629,6 +619,28 @@
         renderNavigation();
         bindHorizontalNavigation();
         revealHorizontalItem(root.querySelector('.wsm-category-bar'), root.querySelector(`[data-category-select="${activeCategory}"]`));
+    }
+    function renderOperationStatus(progress = WSM.Engine?.getProgress?.() || {}, state = WSM.Storage.load()) {
+        const status = $('#wsm-status');
+        const operation = $('#wsm-operation-status');
+        const readCurrent = $('#wsm-read-current');
+        const rebuild = $('#wsm-rebuild');
+        if (!status || !operation || !readCurrent || !rebuild) return;
+        status.textContent = progress.state === 'running' ? '正在读取…' : (state.initialized ? `REV ${state.revision} · ${state.world?.time?.display || '时间未定'}` : '等待初始化');
+        operation.hidden = !progress.message;
+        operation.dataset.state = progress.state || 'idle';
+        operation.querySelector('b').textContent = progress.message || '';
+        operation.querySelector('small').textContent = progress.details || '';
+        const steps = Array.isArray(progress.steps) ? progress.steps : [];
+        const stepList = $('#wsm-operation-steps');
+        if (stepList) {
+            stepList.innerHTML = steps.map((step, index) => `<li class="${index === steps.length - 1 ? 'current' : ''}" data-state="${escape(step.state || 'idle')}"><span>${escape(step.message || '')}</span>${step.details ? `<small>${escape(step.details)}</small>` : ''}</li>`).join('');
+            stepList.hidden = steps.length < 2;
+        }
+        readCurrent.textContent = state.initialized ? '读取当前聊天' : '读取并初始化';
+        rebuild.hidden = !state.initialized;
+        readCurrent.disabled = progress.state === 'running';
+        rebuild.disabled = progress.state === 'running';
     }
     function open() { $('#wsm-modal').hidden = false; render(); }
     function close() { $('#wsm-modal').hidden = true; }
@@ -828,9 +840,9 @@
             let planner;
             try { planner = await WSM.Engine.plan({ force: true, initialize: true }); }
             catch (error) { WSM.Engine.reportProgress?.('读取或初始化失败', 'error', error.message); planner = { error: error.message }; }
-            render();
             if (planner?.error) notify(`读取失败：${planner.error}`, 'error');
             else notify('重新读取并重建完成', 'success');
+            render();
         }
         if (action === 'read-current') {
             const initialized = WSM.Storage.load().initialized;
@@ -838,9 +850,9 @@
             let planner;
             try { planner = await WSM.Engine.plan({ force: true, initialize: !initialized }); }
             catch (error) { WSM.Engine.reportProgress?.('读取或初始化失败', 'error', error.message); planner = { error: error.message }; }
-            render();
             if (planner?.error) notify(`读取失败：${planner.error}`, 'error');
             else notify(initialized ? '当前聊天读取完成' : '初始化完成', 'success');
+            render();
         }
         if (action === 'test-api') {
             await saveSettings(false);
@@ -1072,7 +1084,13 @@
         mountWandMenuItemWhenReady();
         mountExternalWorldbookButton();
         window.addEventListener('wsm-state-changed', () => { if (!$('#wsm-modal')?.hidden) render(); });
-        window.addEventListener('wsm-operation-progress', () => { if (!$('#wsm-modal')?.hidden) render(); });
+        // Reading large chats reports many small progress updates. Redrawing the
+        // complete panel for each one can reset scroll/focus and, in some
+        // SillyTavern themes, hide the status row before the final result is
+        // rendered. Only this compact status row needs to change here.
+        window.addEventListener('wsm-operation-progress', (event) => {
+            if (!$('#wsm-modal')?.hidden) renderOperationStatus(event.detail || WSM.Engine?.getProgress?.() || {});
+        });
     }
     WSM.UI = { mount, open, render };
 })();

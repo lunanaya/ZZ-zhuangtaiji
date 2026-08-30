@@ -204,8 +204,26 @@
         if (!response.ok) throw new Error(`模型列表 ${response.status}: ${raw.slice(0, 500)}`);
         let data;
         try { data = JSON.parse(raw); } catch (_) { throw new Error('模型列表返回的不是有效 JSON'); }
-        const items = Array.isArray(data?.data) ? data.data : (Array.isArray(data?.models) ? data.models : (Array.isArray(data) ? data : []));
-        const models = items.map((item) => String(typeof item === 'string' ? item : (item?.id || item?.name || ''))).filter(Boolean);
+        // OpenAI-compatible providers unfortunately use several different
+        // response envelopes. Collect every conventional list instead of
+        // stopping at the first one, so a provider's nested `data.models` or
+        // `result.items` list is not silently omitted from the picker.
+        const lists = [];
+        const visited = new Set();
+        const collect = (value) => {
+            if (!value || typeof value !== 'object' || visited.has(value)) return;
+            visited.add(value);
+            if (Array.isArray(value)) {
+                lists.push(value);
+                return;
+            }
+            ['data', 'models', 'items', 'result'].forEach((key) => collect(value[key]));
+        };
+        collect(data);
+        const models = lists.flatMap((items) => items)
+            .map((item) => String(typeof item === 'string' ? item : (item?.id || item?.name || item?.model || '')))
+            .map((item) => item.trim())
+            .filter(Boolean);
         if (!models.length) throw new Error('接口没有返回可用模型');
         return [...new Set(models)].sort((a, b) => a.localeCompare(b));
     }

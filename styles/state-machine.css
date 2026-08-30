@@ -134,6 +134,9 @@
 .wsm-settings-help { margin:4px 16px 12px; color:var(--wsm-dim); font-size:13px; }
 #wsm-custom-api-fields { transition:opacity .15s ease; }
 #wsm-custom-api-fields>label { display:flex; flex-direction:column; gap:5px; margin:13px 16px; color:var(--wsm-dim); font-size:13px; }
+#wsm-custom-api-fields>.wsm-model-picker { margin-top:16px; padding-top:13px; border-top:1px solid var(--wsm-line); }
+#wsm-root .wsm-model-picker select { width:100%; min-height:210px; padding:5px; border:1px solid var(--wsm-line); border-radius:7px; background:#fff2e1; color:var(--wsm-text); }
+#wsm-root .wsm-model-picker small { color:var(--wsm-dim); }
 #wsm-custom-api-fields.wsm-disabled-fields { opacity:.48; }
 #wsm-root .wsm-api-profile-toolbar,#wsm-root .wsm-api-profile-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:12px 16px; }
 #wsm-root #wsm-api-profile-buttons { display:flex; flex:1 1 260px; flex-wrap:wrap; gap:7px; }
@@ -159,7 +162,7 @@
 .wsm-rollback-panel p { margin:0; color:var(--wsm-dim); line-height:1.6; }
 .wsm-rollback-panel small { color:var(--wsm-dim); }
 .wsm-rollback-panel button { justify-self:start; }
-.wsm-dialog input,.wsm-dialog textarea { box-sizing:border-box; width:100%; border:1px solid var(--wsm-line); border-radius:7px; padding:8px; background:#fff2e1; color:var(--wsm-text); }
+.wsm-dialog input,.wsm-dialog textarea,.wsm-dialog select { box-sizing:border-box; width:100%; border:1px solid var(--wsm-line); border-radius:7px; padding:8px; background:#fff2e1; color:var(--wsm-text); }
 .wsm-dialog textarea { min-height:180px; font:12px/1.5 ui-monospace,monospace; }
 #wsm-root .wsm-module-prompt textarea { min-height:74px; font-family:Inter,"Microsoft YaHei",sans-serif; }
 .wsm-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; padding:0 16px; }
@@ -227,6 +230,37 @@
 #wsm-worldbook-external-compile {
     margin-inline-start: 6px;
     white-space: nowrap;
+}
+
+/* Horizontal navigation must remain draggable even when the gesture starts on
+   a button. The generic interaction rule below uses `manipulation`, which some
+   mobile browsers interpret as tap/zoom only and therefore traps these rows. */
+#wsm-root .wsm-settings-tabs,
+#wsm-root .wsm-category-bar,
+#wsm-root .wsm-actions {
+    min-width:0;
+    justify-content:flex-start;
+    overflow-x:auto;
+    overflow-y:hidden;
+    overscroll-behavior-x:contain;
+    -webkit-overflow-scrolling:touch;
+    touch-action:pan-x!important;
+    scrollbar-width:thin!important;
+}
+#wsm-root .wsm-settings-tabs button,
+#wsm-root .wsm-category-bar button,
+#wsm-root .wsm-actions button { flex:0 0 auto; min-width:max-content; touch-action:pan-x!important; }
+#wsm-root .wsm-settings-tabs::-webkit-scrollbar,
+#wsm-root .wsm-category-bar::-webkit-scrollbar,
+#wsm-root .wsm-actions::-webkit-scrollbar { display:block; height:5px; }
+#wsm-root .wsm-settings-tabs::-webkit-scrollbar-thumb,
+#wsm-root .wsm-category-bar::-webkit-scrollbar-thumb,
+#wsm-root .wsm-actions::-webkit-scrollbar-thumb { border-radius:999px; background:#929ec488; }
+@media (max-width:960px), (max-height:720px) {
+    #wsm-root .wsm-tabs { touch-action:pan-x!important; scrollbar-width:thin!important; }
+    #wsm-root .wsm-tabs button { flex:0 0 auto; touch-action:pan-x!important; }
+    #wsm-root .wsm-tabs::-webkit-scrollbar { display:block; height:5px; }
+    #wsm-root .wsm-tabs::-webkit-scrollbar-thumb { border-radius:999px; background:#929ec488; }
 }
 
 #wsm-root .wsm-worldbook-entry-row small {

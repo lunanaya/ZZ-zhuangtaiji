@@ -27,6 +27,7 @@
     let activeSettingsTab = 'api';
     let apiProfilesDraft = [];
     let activeApiProfileId = '';
+    const apiModelsByProfile = new Map();
     let worldbookEntriesCache = [];
     let wandMenuClickBound = false;
     let externalWorldbookButtonBusy = false;
@@ -439,6 +440,29 @@
         root.querySelectorAll('[data-settings-section]').forEach((section) => { section.hidden = section.dataset.settingsSection !== activeSettingsTab; });
         const footer = $('#wsm-settings-modal footer');
         if (footer) footer.hidden = activeSettingsTab === 'history';
+        revealHorizontalItem(root.querySelector('.wsm-settings-tabs'), root.querySelector(`[data-settings-tab="${activeSettingsTab}"]`));
+    }
+    function revealHorizontalItem(container, item) {
+        if (!(container instanceof HTMLElement) || !(item instanceof HTMLElement)) return;
+        const left = item.offsetLeft;
+        const right = left + item.offsetWidth;
+        if (left < container.scrollLeft) container.scrollLeft = Math.max(0, left - 8);
+        else if (right > container.scrollLeft + container.clientWidth) container.scrollLeft = right - container.clientWidth + 8;
+    }
+    function bindHorizontalWheel(container) {
+        if (!(container instanceof HTMLElement) || container.dataset.wsmHorizontalWheel === '1') return;
+        container.dataset.wsmHorizontalWheel = '1';
+        container.addEventListener('wheel', (event) => {
+            if (container.scrollWidth <= container.clientWidth + 1) return;
+            const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+            if (!delta) return;
+            const before = container.scrollLeft;
+            container.scrollLeft += delta;
+            if (container.scrollLeft !== before) event.preventDefault();
+        }, { passive: false });
+    }
+    function bindHorizontalNavigation() {
+        root.querySelectorAll('.wsm-settings-tabs,.wsm-category-bar,.wsm-actions,.wsm-tabs').forEach(bindHorizontalWheel);
     }
     function renderInjectionModuleSettings(settings) {
         const modules = settings.injectionModules || WSM.Defaults.INJECTION_MODULES;
@@ -523,8 +547,10 @@
                         <div class="wsm-api-profile-toolbar"><div id="wsm-api-profile-buttons"></div><button type="button" data-action="add-api-profile">＋ 新增 API</button><button type="button" data-action="delete-api-profile">删除当前</button></div>
                         <label>配置名称<input id="wsm-api-profile-name" type="text" placeholder="例如：主线路、备用线路"></label>
                         <label>OpenAI 兼容 API 地址<input id="wsm-endpoint" type="text" placeholder="https://example.com/v1"></label>
-                        <div class="wsm-grid"><label>模型<input id="wsm-model" type="text" list="wsm-model-options"><datalist id="wsm-model-options"></datalist></label><label>API Key<input id="wsm-key" type="password"></label><label>温度<input id="wsm-temperature" type="number" step="0.05"></label></div>
+                        <label>API Key<input id="wsm-key" type="password" autocomplete="off"></label>
+                        <div class="wsm-grid"><label>温度<input id="wsm-temperature" type="number" step="0.05"></label></div>
                         <div class="wsm-api-profile-actions"><button type="button" data-action="fetch-models">自动拉取模型</button><button type="button" data-action="test-custom-api">测试当前配置</button><small id="wsm-api-profile-status">尚未测试</small></div>
+                        <label class="wsm-model-picker">模型<input id="wsm-model" type="text" list="wsm-model-options" placeholder="可手动输入或从下方完整列表选择"><datalist id="wsm-model-options"></datalist><select id="wsm-model-list" size="12" aria-label="已拉取的完整模型列表" hidden></select><small>自动拉取后，完整模型列表会显示在这里；也可以手动输入模型名。</small></label>
                     </div>
                     <label class="wsm-jailbreak-field">破限提示词（可选，可自行输入）<textarea id="wsm-jailbreak-prompt" placeholder="留空则不添加。这里的内容会附加到状态机的系统提示词中。"></textarea></label>
                     <p class="wsm-settings-help">该内容会发送给 Planner、结算器及需要调用 API 的拆解功能，请勿填写 API Key 等敏感信息。</p>
@@ -601,6 +627,8 @@
             editButton.setAttribute('aria-label', editButton.title);
         }
         renderNavigation();
+        bindHorizontalNavigation();
+        revealHorizontalItem(root.querySelector('.wsm-category-bar'), root.querySelector(`[data-category-select="${activeCategory}"]`));
     }
     function open() { $('#wsm-modal').hidden = false; render(); }
     function close() { $('#wsm-modal').hidden = true; }
@@ -696,7 +724,21 @@
         $('#wsm-model').value = profile.model || '';
         $('#wsm-key').value = profile.apiKey || '';
         renderApiProfileButtons();
+        renderModelList(profile);
         if ($('#wsm-api-profile-status')) $('#wsm-api-profile-status').textContent = '尚未测试';
+    }
+    function renderModelList(profile = activeApiProfile()) {
+        const input = $('#wsm-model');
+        const datalist = $('#wsm-model-options');
+        const list = $('#wsm-model-list');
+        if (!input || !datalist || !list) return;
+        const models = apiModelsByProfile.get(profile?.id) || [];
+        const current = input.value.trim();
+        const choices = [...new Set([...(current ? [current] : []), ...models])];
+        datalist.innerHTML = choices.map((model) => `<option value="${escape(model)}"></option>`).join('');
+        list.innerHTML = choices.map((model) => `<option value="${escape(model)}">${escape(model)}</option>`).join('');
+        list.hidden = choices.length === 0;
+        if (current) list.value = current;
     }
     function apiProfilePatch() {
         captureActiveApiProfile();
@@ -717,7 +759,7 @@
         const useTavernApi = $('#wsm-use-tavern-api')?.checked !== false;
         const fields = $('#wsm-custom-api-fields');
         fields?.classList.toggle('wsm-disabled-fields', useTavernApi);
-        fields?.querySelectorAll('input').forEach((input) => { input.disabled = useTavernApi; });
+        fields?.querySelectorAll('input, select, button').forEach((input) => { input.disabled = useTavernApi; });
     }
     async function saveSettings(closeAfter = true) {
         const current = WSM.Settings.get();
@@ -829,8 +871,9 @@
             status.textContent = '正在拉取模型…';
             try {
                 const models = await WSM.Api.listModels(activeApiProfile());
-                $('#wsm-model-options').innerHTML = models.map((model) => `<option value="${escape(model)}"></option>`).join('');
+                apiModelsByProfile.set(activeApiProfileId, models);
                 if (!$('#wsm-model').value && models[0]) $('#wsm-model').value = models[0];
+                renderModelList(activeApiProfile());
                 captureActiveApiProfile();
                 WSM.Settings.update(apiProfilePatch());
                 status.textContent = `已获取 ${models.length} 个模型，点击模型输入框选择`;
@@ -1009,11 +1052,21 @@
             if (event.target?.id === 'wsm-use-tavern-api') syncApiModeFields();
             if (event.target?.id === 'wsm-follow-tavern-font') syncTypographyFields();
             if (event.target?.id === 'wsm-api-profile-name') { captureActiveApiProfile(); renderApiProfileButtons(); }
+            if (event.target?.id === 'wsm-model-list') {
+                $('#wsm-model').value = event.target.value;
+                captureActiveApiProfile();
+            }
         });
         root.addEventListener('input', (event) => {
             if (event.target?.id === 'wsm-font-scale' || event.target?.id === 'wsm-custom-font-family') applyTypographySettings(typographyFromForm());
+            if (event.target?.id === 'wsm-model') {
+                const list = $('#wsm-model-list');
+                if (list) list.value = event.target.value;
+                captureActiveApiProfile();
+            }
         });
         document.body.appendChild(root);
+        bindHorizontalNavigation();
         applyTypographySettings(WSM.Settings.get());
         mountButton();
         mountWandMenuItemWhenReady();

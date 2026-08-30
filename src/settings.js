@@ -2,7 +2,7 @@
     'use strict';
     const WSM = window.WorldStateMachine = window.WorldStateMachine || {};
     const KEY = 'worldStateMachine';
-    const RULES_VERSION = 7;
+    const RULES_VERSION = 8;
     const defaults = {
         rulesVersion: RULES_VERSION,
         enabled: true,
@@ -27,7 +27,7 @@
         blockOnPlannerError: false,
         injectionModules: WSM.Defaults.INJECTION_MODULES,
         modulePrompts: WSM.Defaults.MODULE_PROMPTS,
-        worldbookCompiler: { enabled: false, entryKeys: [], knownEntryKeys: [], budget: 500, contextMessages: 8, failClosed: true },
+        worldbookCompiler: { enabled: false, selectedBookNames: [], knownBookNames: [], entryKeys: [], knownEntryKeys: [], budget: 500, contextMessages: 8, failClosed: true },
         timeoutMs: 180000,
         plannerPrompt: WSM.Defaults.PLANNER_PROMPT,
         reconcilerPrompt: WSM.Defaults.RECONCILER_PROMPT,
@@ -68,7 +68,14 @@
             };
             root[KEY].plannerPrompt = WSM.Defaults.PLANNER_PROMPT;
             root[KEY].reconcilerPrompt = WSM.Defaults.RECONCILER_PROMPT;
-            root[KEY].modulePrompts = Object.assign({}, WSM.Defaults.MODULE_PROMPTS, saved.modulePrompts || {});
+            root[KEY].modulePrompts = Object.assign({}, WSM.Defaults.MODULE_PROMPTS, saved.modulePrompts || {}, {
+                // These modules implement the v8 bounded-state lifecycle. They
+                // must migrate together with the core prompts; the previous
+                // customized text remains available in promptMigrationBackup.
+                triggers: WSM.Defaults.MODULE_PROMPTS.triggers,
+                causalEffects: WSM.Defaults.MODULE_PROMPTS.causalEffects,
+                planner: WSM.Defaults.MODULE_PROMPTS.planner,
+            });
             ['causalLinks', 'causalSeeds', 'scenePressure', 'actorCausality', 'backgroundQueue', 'advanceScheduler'].forEach((id) => { delete root[KEY].modulePrompts[id]; });
             root[KEY].modulePrompts.causalEffects = WSM.Defaults.MODULE_PROMPTS.causalEffects;
             root[KEY].modulePrompts.planner = WSM.Defaults.MODULE_PROMPTS.planner;
@@ -88,6 +95,8 @@
         // sane provider-compatible generation budget; long sources are handled
         // by SourceReader's complete chunk pipeline.
         root[KEY].maxTokens = Math.max(256, Math.min(16384, Math.round(Number(root[KEY].maxTokens) || defaults.maxTokens)));
+        const recentMessages = Number(root[KEY].recentMessages);
+        root[KEY].recentMessages = Number.isFinite(recentMessages) ? Math.max(0, Math.min(200, Math.round(recentMessages))) : defaults.recentMessages;
         window.extension_settings[KEY] = root[KEY];
         return root[KEY];
     }

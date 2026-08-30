@@ -13,7 +13,13 @@
 </head>
 <body>
     <div class="preview-note"><b>世界状态机 · 离线预览</b><small>本页的人物和世界内容只是界面演示。正式插件初始为空，会从当前 Persona、角色卡、世界书和聊天内容建立状态；本页不会发送真实 API 请求。</small></div>
+    <textarea id="send_textarea" hidden></textarea><button id="send_but" type="button" hidden></button>
     <script>
+        window.previewSentMessage = '';
+        document.getElementById('send_but').addEventListener('click', () => {
+            window.previewSentMessage = document.getElementById('send_textarea').value;
+            document.body.dataset.previewSentMessage = window.previewSentMessage;
+        });
         const previewCompilerKeys = [`${encodeURIComponent('分析世界书')}::public-scene`, `${encodeURIComponent('分析世界书')}::character-boundary`];
         window.extension_settings = { worldStateMachine: { enabled: true, endpoint: '', model: 'planner-model', worldbookCompiler: { enabled: true, entryKeys: previewCompilerKeys, budget: 500, contextMessages: 8, failClosed: true } } };
         window.selected_world_info = ['分析世界书', '现代都市规则'];
@@ -33,17 +39,28 @@
         const eventSource = { on(name, fn){ (listeners[name] ||= []).push(fn); } };
         const event_types = { GENERATION_AFTER_COMMANDS:'generation_after_commands', GENERATION_ENDED:'generation_ended', CHARACTER_MESSAGE_RENDERED:'character_message_rendered', CHAT_CHANGED:'chat_changed' };
         const state = {
-            schemaVersion:6, initialized:true, revision:12, updatedAt:Date.now(), identities:{user:'林知夏',char:'夏以昼'},
+            schemaVersion:9, initialized:true, revision:12, updatedAt:Date.now(), identities:{user:'林知夏',char:'夏以昼'},
             world:{time:{display:'周二 14:30',iso:'',timezone:'Asia/Shanghai',elapsedMinutes:210},location:{current:'夏家·客厅',environment:'午后安静，窗帘半掩',weather:'晴'},facts:['夏以昼16:00有既定公司会议']},
-            map:{currentLocationId:'xia-living',locations:[
-                {id:'xia-living',name:'夏家·客厅',area:'夏家',description:'午后安静，通往书房和玄关',status:'visited'},
-                {id:'xia-study',name:'夏家·书房',area:'夏家',description:'存放文件和书籍',status:'visited'},
-                {id:'xia-entry',name:'夏家·玄关',area:'夏家',description:'离开住宅的必经处',status:'known'},
-                {id:'company',name:'公司',area:'城区',description:'夏以昼下午会议的地点',status:'known'}
+            map:{rootLabel:'天行世界',currentLocationId:'xia-living',locations:[
+                {id:'tianxing',name:'天行',type:'region',parentId:'',x:48,y:48,description:'当前故事所在的大区域',status:'visited',sourceRefs:['世界书:city-basics']},
+                {id:'beichen',name:'北辰市',type:'city',parentId:'tianxing',x:24,y:48,description:'位于临空以西的城市',status:'known',sourceRefs:['世界书:city-basics']},
+                {id:'linkong',name:'临空市',type:'city',parentId:'tianxing',x:72,y:46,description:'主要故事城市，位于北辰市东侧',status:'visited',sourceRefs:['世界书:city-basics']},
+                {id:'old-town',name:'旧城区',type:'district',parentId:'linkong',x:20,y:62,description:'临空市西侧的老城区',status:'known',sourceRefs:['chat:a1']},
+                {id:'sky-district',name:'临空新区',type:'district',parentId:'linkong',x:72,y:35,description:'商业与住宅集中区域',status:'visited',sourceRefs:['worldbook:city-basics']},
+                {id:'xia-home',name:'夏以昼的家',type:'residence',parentId:'sky-district',x:25,y:62,description:'夏以昼长期居住的住宅',status:'visited',sourceRefs:['character:char']},
+                {id:'user-home',name:'林知夏的家',type:'residence',parentId:'sky-district',x:72,y:68,description:'林知夏的住所',status:'known',sourceRefs:['persona:user']},
+                {id:'company',name:'夏氏集团总部',type:'workplace',parentId:'sky-district',x:68,y:25,description:'夏以昼下午会议的地点',status:'known',sourceRefs:['character:char']},
+                {id:'gallery',name:'白屿画廊',type:'landmark',parentId:'sky-district',x:43,y:37,description:'正文确认存在的画廊',status:'known',sourceRefs:['chat:a2']},
+                {id:'xia-living',name:'客厅',type:'room',parentId:'xia-home',x:45,y:52,description:'午后安静，通往书房和玄关',status:'visited',sourceRefs:['chat:a1']},
+                {id:'xia-study',name:'书房',type:'room',parentId:'xia-home',x:74,y:28,description:'存放文件和书籍',status:'visited',sourceRefs:['chat:a1']},
+                {id:'xia-entry',name:'玄关',type:'room',parentId:'xia-home',x:18,y:72,description:'离开住宅的必经处',status:'known',sourceRefs:['chat:a1']}
             ],routes:[
+                {from:'beichen',to:'linkong',description:'北辰在西，临空在东',status:'open',travelMinutes:90,distance:'城际交通'},
+                {from:'xia-home',to:'company',description:'城市道路，可乘车前往',status:'open',travelMinutes:25,distance:'约十二公里'},
+                {from:'xia-home',to:'gallery',description:'穿过新区中心街区',status:'open',travelMinutes:12,distance:'约四公里'},
                 {from:'xia-living',to:'xia-study',description:'室内走廊，可直接通行',status:'open'},
                 {from:'xia-living',to:'xia-entry',description:'穿过短廊即可到达',status:'open'},
-                {from:'xia-entry',to:'company',description:'需要出门乘车前往',status:'open'}
+                {from:'xia-entry',to:'xia-study',description:'经客厅连接',status:'open'}
             ]},
             characters:[
                 {id:'user',name:'林知夏',location:'夏家·客厅',present:true,status:'刚结束试探性的交谈',goals:['确认夏以昼的真实态度'],currentAction:'坐在沙发旁观察夏以昼',tasks:[],notes:''},
@@ -64,9 +81,9 @@
             ],
             relationships:[{id:'rel-user-char',from:'user',to:'char',type:'旧识',status:'彼此仍有熟悉感，但四年失联让交流显得谨慎而克制',evidence:['四年没有联系','本轮谈话没有明确表态']}],
             knowledge:[{id:'secret-feeling',information:'林知夏对夏以昼的真实感情',knownBy:['user'],unknownTo:['char'],source:'人物内心',certainty:'confirmed'}],
-            tasks:[{id:'meeting-1600',title:'参加公司会议',ownerIds:['char'],status:'active',dependencies:['15:35前离开夏家'],deadline:'16:00',progress:'尚未出发',consequences:['迟到会影响项目安排']}],
+            tasks:[{id:'airport-pickup',title:'接机',ownerIds:['user'],status:'active',dependencies:['确认航班落地时间','规划去机场路线'],deadline:'今天傍晚',progress:'尚未出发',consequences:['抵达时间会影响是否能顺利碰面'],userVisible:true,userRelevance:'这是林知夏已经答应处理的安排',sourceRefs:['chat:u2'],choices:[{id:'go-now',label:'立即去接机',message:'我现在就出发去机场接机。'},{id:'go-later',label:'一会儿再去',message:'我打算稍后再去机场，先确认航班的准确落地时间。'},{id:'explore-route',label:'沿线转转',message:'我先沿着去机场的路线看看，顺便确认路况和可停留的地方。'},{id:'ask-details',label:'先问清信息',message:'我先联系对方，确认航班、出口和见面地点。'}]}],
             events:[{id:'quiet-afternoon',title:'夏家的午后谈话',status:'active',location:'夏家·客厅',participantIds:['user','char'],developments:['双方仍在试探']},{id:'event-short-rain',title:'商圈短时阵雨',status:'resolved',location:'临空市·云庭商场周边',participantIds:['liang-mingwei','chen-yu'],developments:['阵雨让部分行人临时寻找遮挡','雨势已经减弱']}],
-            triggers:[{id:'leave-for-meeting',title:'夏以昼准备离开',conditions:['世界时间达到15:35','会议未取消'],status:'armed',effectsIfTriggered:['夏以昼开始收拾并准备出门'],blockedReasons:[]}],
+            triggers:[{id:'airport-road-delay',title:'机场沿线临时拥堵',conditions:['选择前往机场','进入晚高峰时段'],status:'armed',effectsIfTriggered:['可能需要调整路线或出发时间'],blockedReasons:['尚未决定何时出发'],userVisible:true,userRelevance:'导航和当前时段足以让林知夏预判拥堵可能',sourceRefs:['airport-pickup','world.time'],choices:[{id:'depart-early',label:'提前出发',message:'我决定提前出发，给路上的变化留出时间。'},{id:'check-traffic',label:'先查实时路况',message:'我先查看去机场沿线的实时路况，再选择路线。'},{id:'alternate-route',label:'准备备用路线',message:'我先规划一条备用路线，以免路上临时拥堵。'},{id:'wait-and-see',label:'暂时观察',message:'我暂时不出发，先观察时间和路况变化。'}]}],
             threads:[{id:'four-year-distance',title:'四年失联后的关系修复',status:'open',stakes:'两人的信任与未来关系',participantIds:['user','char'],nextNaturalStep:'通过持续交流逐渐确认彼此变化',history:['本轮开始谈及近况']}],
             processes:[{id:'afternoon-talk',title:'午后谈话的自然进展',kind:'social',status:'active',drivers:['双方仍愿意继续交流'],decayConditions:['长时间沉默','夏以昼需要出发参会'],resolutionConditions:['谈话自然结束','一方明确离开'],currentDirection:'平稳、谨慎地继续'}],
             causalEffects:[{id:'rain-photo-effect',causeRef:'event-short-rain',cause:'云庭商场周边出现短时阵雨',steps:['梁明薇就近在商场侧门躲雨','原本在附近拍街景的陈屿仍在现场','陈屿认出梁明薇并顺手拍下一张照片'],result:'照片暂存在陈屿相机中，尚未公开或产生舆论',affectedIds:['liang-mingwei','chen-yu'],status:'developing',reachCondition:'陈屿之后实际整理并决定处理这张照片',evidenceRefs:['event-short-rain','activity-liang-1','activity-chen-1']}],

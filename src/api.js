@@ -1,6 +1,38 @@
 (function () {
     'use strict';
     const WSM = window.WorldStateMachine = window.WorldStateMachine || {};
+    let activeCallBudget = null;
+    let scriptModulePromise = null;
+
+    async function requestHeaders() {
+        if (typeof window.getRequestHeaders === 'function') return window.getRequestHeaders();
+        if (!scriptModulePromise) scriptModulePromise = import('/script.js').catch((error) => {
+            scriptModulePromise = null;
+            throw error;
+        });
+        const module = await scriptModulePromise;
+        if (typeof module?.getRequestHeaders !== 'function') throw new Error('当前酒馆未提供 CSRF 请求头方法，请刷新酒馆页面');
+        return module.getRequestHeaders();
+    }
+
+    async function withCallBudget(maxCalls, label, operation) {
+        if (activeCallBudget) return operation(activeCallBudget);
+        const budget = { label: String(label || 'operation'), max: Math.max(0, Math.floor(Number(maxCalls) || 0)), used: 0 };
+        activeCallBudget = budget;
+        try { return await operation(budget); }
+        finally { if (activeCallBudget === budget) activeCallBudget = null; }
+    }
+
+    function consumeCallBudget(options = {}) {
+        const budget = options.callBudget || activeCallBudget;
+        // Fail closed: every billable completion must belong to an operation
+        // that declared its cap. This prevents a new feature from accidentally
+        // bypassing the user's charge limit in a later release.
+        if (!budget) throw new Error('已阻止未声明调用额度的 API 请求，避免意外扣费');
+        if (budget.used >= budget.max) throw new Error(`已达到本次操作的 API 调用上限（${budget.max} 次），已阻止额外扣费`);
+        budget.used += 1;
+        return budget;
+    }
 
     function normalizeEndpoint(value) {
         let endpoint = String(value || '').trim().replace(/\/+$/, '');
@@ -8,22 +40,234 @@
         if (!/\/chat\/completions(?:\?|$)/.test(endpoint)) endpoint += '/chat/completions';
         return endpoint;
     }
+    function endpointBase(value) {
+        const endpoint = new URL(normalizeEndpoint(value), window.location?.href || 'http://localhost/');
+        endpoint.pathname = endpoint.pathname.replace(/\/chat\/completions\/?$/, '');
+        endpoint.search = '';
+        endpoint.hash = '';
+        return endpoint.href.replace(/\/+$/, '');
+    }
     function modelsEndpoint(value) {
         const endpoint = new URL(normalizeEndpoint(value), window.location?.href || 'http://localhost/');
         endpoint.pathname = endpoint.pathname.replace(/\/chat\/completions\/?$/, '/models');
         endpoint.search = '';
         return endpoint.href;
     }
-    function extractJson(text) {
-        const cleaned = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-        try { return JSON.parse(cleaned); } catch (_) { /* find object */ }
-        const start = cleaned.indexOf('{');
-        const end = cleaned.lastIndexOf('}');
-        if (start >= 0 && end > start) return JSON.parse(cleaned.slice(start, end + 1));
-        throw new Error('Planner 返回的不是有效 JSON');
+    const STATE_ROOT_KEYS = ['identities','world','map','characters','npcActivities','relationships','knowledge','tasks','events','triggers','threads','processes','causalEffects','timeline'];
+    const EVIDENCE_ROOT_KEYS = ['sourceRefs','canon','chronology','characters','relationships','knowledge','locations','tasks','events','causal','currentScene','uncertainties'];
+    function objectKeyCount(value, keys) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return 0;
+        return keys.reduce((count, key) => count + (Object.prototype.hasOwnProperty.call(value, key) ? 1 : 0), 0);
+    }
+    function contractScore(value, contract) {
+        if (!contract || !value || typeof value !== 'object' || Array.isArray(value)) return contract ? 0 : 1;
+        const envelopes = [value, value.result, value.data, value.output].filter((item) => item && typeof item === 'object' && !Array.isArray(item));
+        if (contract === 'state') {
+            for (let index = 0; index < envelopes.length; index += 1) {
+                if (envelopes[index].state && typeof envelopes[index].state === 'object' && !Array.isArray(envelopes[index].state)) return index ? 90 : 100;
+            }
+            return objectKeyCount(value, STATE_ROOT_KEYS) >= 3 ? 50 : 0;
+        }
+        if (contract === 'evidence') {
+            if (value.evidence && typeof value.evidence === 'object') return 100;
+            if (value.digest && typeof value.digest === 'object') return 95;
+            return objectKeyCount(value, EVIDENCE_ROOT_KEYS) >= 3 ? 50 : 0;
+        }
+        if (contract === 'digest') {
+            if (value.digest && typeof value.digest === 'object') return 100;
+            return objectKeyCount(value, EVIDENCE_ROOT_KEYS) >= 3 ? 50 : 0;
+        }
+        return 1;
+    }
+    function contractLabel(contract) {
+        if (contract === 'state') return '包含 state 的世界状态结果';
+        if (contract === 'evidence') return '包含 evidence/digest 的资料证据';
+        if (contract === 'digest') return '包含 digest 的资料摘要';
+        return '有效结果';
+    }
+    function extractJson(value, options = {}) {
+        const contract = String(options.jsonContract || '');
+        const candidates = [];
+        const addCandidate = (candidate) => {
+            if (candidate && typeof candidate === 'object') candidates.push(candidate);
+        };
+        if (value && typeof value === 'object') addCandidate(value);
+        const cleaned = typeof value === 'string'
+            ? String(value || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
+            : '';
+        if (cleaned) {
+            try { addCandidate(JSON.parse(cleaned)); } catch (_) { /* scan embedded JSON */ }
+
+            // A reasoning response may contain several valid JSON objects: an
+            // example or echoed evidence first, and the actual answer last.
+            // Collect every balanced candidate, then choose by the contract the
+            // caller requested instead of blindly accepting the first object.
+            for (let start = 0; start < cleaned.length; start += 1) {
+                const opening = cleaned[start];
+                if (opening !== '{' && opening !== '[') continue;
+                const stack = [opening];
+                let inString = false;
+                let escaped = false;
+                for (let index = start + 1; index < cleaned.length; index += 1) {
+                    const char = cleaned[index];
+                    if (inString) {
+                        if (escaped) escaped = false;
+                        else if (char === '\\') escaped = true;
+                        else if (char === '"') inString = false;
+                        continue;
+                    }
+                    if (char === '"') { inString = true; continue; }
+                    if (char === '{' || char === '[') stack.push(char);
+                    else if (char === '}' || char === ']') {
+                        const expected = char === '}' ? '{' : '[';
+                        if (stack[stack.length - 1] !== expected) break;
+                        stack.pop();
+                        if (!stack.length) {
+                            try { addCandidate(JSON.parse(cleaned.slice(start, index + 1))); } catch (_) { /* try the next opening */ }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if (!candidates.length) throw new Error('Planner 返回的不是有效 JSON');
+        if (!contract) return candidates[0];
+        let best = null;
+        let bestScore = 0;
+        candidates.forEach((candidate) => {
+            const score = contractScore(candidate, contract);
+            // Prefer the later candidate on ties: reasoning/examples usually
+            // precede the model's final answer.
+            if (score >= bestScore && score > 0) { best = candidate; bestScore = score; }
+        });
+        if (best) return best;
+        const roots = [...new Set(candidates.flatMap((candidate) => Object.keys(candidate || {}).slice(0, 8)))].slice(0, 12);
+        throw new Error(`Planner 返回了 ${candidates.length} 个 JSON，但没有找到${contractLabel(contract)}${roots.length ? `；检测到根字段：${roots.join('、')}` : ''}`);
+    }
+    function repairTruncatedJson(value, contract = 'state') {
+        const cleaned = String(value || '').trim()
+            .replace(/^```(?:json)?\s*/i, '')
+            .replace(/<think>[\s\S]*?<\/think>/gi, '')
+            .replace(/\s*```$/, '');
+        let best = null;
+        let bestLength = -1;
+        for (let start = 0; start < cleaned.length; start += 1) {
+            if (cleaned[start] !== '{') continue;
+            const stack = [];
+            const checkpoints = [];
+            let inString = false;
+            let escaped = false;
+            let invalid = false;
+            for (let index = start; index < cleaned.length; index += 1) {
+                const char = cleaned[index];
+                if (inString) {
+                    if (escaped) escaped = false;
+                    else if (char === '\\') escaped = true;
+                    else if (char === '"') inString = false;
+                    continue;
+                }
+                if (char === '"') { inString = true; continue; }
+                if (char === '{') stack.push('}');
+                else if (char === '[') stack.push(']');
+                else if (char === '}' || char === ']') {
+                    if (stack.at(-1) !== char) { invalid = true; break; }
+                    stack.pop();
+                    if (stack.length <= 1) checkpoints.push({ end: index + 1, closers: [...stack] });
+                    if (!stack.length) break;
+                } else if (char === ',' && stack.length <= 2) {
+                    // Recover only at a whole root/state-module boundary. A
+                    // deeper comma could retain a semantically half-built item.
+                    checkpoints.push({ end: index, closers: [...stack] });
+                }
+            }
+            if (invalid) continue;
+            for (let index = checkpoints.length - 1; index >= 0; index -= 1) {
+                const checkpoint = checkpoints[index];
+                const candidateText = `${cleaned.slice(start, checkpoint.end).trimEnd()}${checkpoint.closers.slice().reverse().join('')}`;
+                try {
+                    const candidate = JSON.parse(candidateText);
+                    if (contractScore(candidate, contract) <= 0) continue;
+                    if (candidateText.length > bestLength) { best = candidate; bestLength = candidateText.length; }
+                    break;
+                } catch (_) { /* try the previous safe module boundary */ }
+            }
+        }
+        return best;
+    }
+    function contentText(value) {
+        if (typeof value === 'string') return value;
+        if (Array.isArray(value)) return value.map((item) => contentText(item)).filter(Boolean).join('\n');
+        if (value && typeof value === 'object') return contentText(value.text ?? value.content ?? value.output_text ?? '');
+        return '';
     }
     function responseText(data) {
-        return data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? data?.output_text ?? data?.content?.[0]?.text ?? '';
+        return contentText(data?.choices?.[0]?.message?.content)
+            || contentText(data?.choices?.[0]?.text)
+            || contentText(data?.output_text)
+            || contentText(data?.content);
+    }
+    function parseSseResponse(raw, interrupted = false) {
+        const chunks = [];
+        let finishReason = interrupted ? 'length' : '';
+        let errorEnvelope = null;
+        String(raw || '').split(/\r?\n/).forEach((line) => {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data:')) return;
+            const payload = trimmed.slice(5).trim();
+            if (!payload || payload === '[DONE]') return;
+            try {
+                const event = JSON.parse(payload);
+                if (event?.error && !errorEnvelope) errorEnvelope = event;
+                const choice = event?.choices?.[0] || {};
+                const text = contentText(choice?.delta?.content)
+                    || contentText(choice?.message?.content)
+                    || contentText(choice?.text)
+                    || contentText(event?.output_text);
+                if (text) chunks.push(text);
+                if (choice?.finish_reason) finishReason = String(choice.finish_reason);
+            } catch (_) { /* Ignore comments and incomplete trailing SSE lines. */ }
+        });
+        if (errorEnvelope && !chunks.length) return errorEnvelope;
+        return { choices: [{ message: { content: chunks.join('') }, finish_reason: finishReason }] };
+    }
+    async function readForwardedResponse(response, streaming, meta = {}) {
+        if (!streaming || typeof response?.body?.getReader !== 'function' || typeof TextDecoder === 'undefined') {
+            return { raw: await response.text(), interrupted: false };
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let raw = '';
+        let lastReported = 0;
+        try {
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                raw += decoder.decode(value, { stream: true });
+                if (raw.length - lastReported >= 1000) {
+                    lastReported = raw.length;
+                    WSM.Engine?.reportProgress?.('请求 B 正在流式返回证据', 'running', `任务 ${meta.task || 'unknown'} · 已接收约 ${raw.length} 字 · 仍是同一次 API`);
+                }
+            }
+            raw += decoder.decode();
+            return { raw, interrupted: false };
+        } catch (error) {
+            if (!raw.trim()) throw error;
+            console.warn('[WorldStateMachine] 流式响应在尾部中断，尝试保留已完成证据模块', { task: meta.task, receivedChars: raw.length, reason: String(error?.message || error) });
+            return { raw, interrupted: true };
+        }
+    }
+    function providerResponseError(data) {
+        if (!data || typeof data !== 'object' || Array.isArray(data) || data?.choices?.length) return '';
+        if (!data.error && !data.quota_error && !data.message) return '';
+        const values = [data.error?.message, data.error, data.quota_error?.message, data.quota_error, data.message];
+        for (const value of values) {
+            if (typeof value === 'string' && value.trim()) return value.trim().slice(0, 500);
+            if (value && typeof value === 'object') {
+                const nested = contentText(value.message ?? value.detail ?? value.error ?? '');
+                if (nested) return nested.slice(0, 500);
+            }
+        }
+        return '接口返回了错误对象';
     }
     function systemPrompt(basePrompt, jailbreakPrompt) {
         const custom = String(jailbreakPrompt || '').trim();
@@ -40,11 +284,30 @@
         });
     }
     function isGptReasoningModel(model) {
+        // Only alter parameters for an unambiguous official-style model id.
+        // Provider labels such as "[按次]gpt-5.5" are routing aliases and have
+        // already succeeded with ordinary max_tokens; forcing official GPT
+        // parameters on an alias can make the proxy reject or time out.
         return /(?:^|\/)(?:gpt-5(?:[.-]|$)|o[134](?:[.-]|$))/i.test(String(model || ''));
     }
     function isRetryable(error) {
         const message = String(error?.message || error || '');
         return /gateway\s*time-?out|request\s*time-?out|请求超时|\b(?:502|503|504)\b|no message generated|返回了空内容|不是有效 JSON/i.test(message);
+    }
+    function isQuotaReservationError(error) {
+        const message = String(error?.message || error || '');
+        return /insufficient[_\s-]*(?:user[_\s-]*)?quota|预扣费额度失败|用户剩余额度|余额不足/i.test(message);
+    }
+    function quotaTokenBudgets(requested) {
+        const maximum = Math.max(256, Math.round(Number(requested) || 5000));
+        return [...new Set([maximum, 2048, 1024, 512].filter((value) => value <= maximum))];
+    }
+    function friendlyTavernError(error) {
+        const message = String(error?.message || error || '未知错误').trim();
+        if (/^(?:forbidden|access denied)$/i.test(message) || /\b403\b/.test(message)) {
+            return new Error('酒馆默认 API 拒绝了请求（Forbidden/403）。当前资料可能触发所选模型或反代的内容策略，或该连接没有调用权限；请更换酒馆模型，或在插件 API 设置中改用可读取这些资料的独立 Planner API。');
+        }
+        return error instanceof Error ? error : new Error(message);
     }
     function structuredJsonSchema() {
         return {
@@ -87,7 +350,13 @@
         };
     }
     function outputTokens(settings, options = {}) {
-        const requested = Number(options.maxTokens ?? settings.maxTokens ?? 5000);
+        const configured = Math.max(256, Number(settings.maxTokens ?? 5000) || 5000);
+        const taskLimit = Math.max(256, Number(options.maxTokens ?? configured) || configured);
+        // A task-level value is a ceiling, never permission to override the
+        // user's configured output budget. The previous implementation forced
+        // request B to 8000 even when Settings said 5000, causing pay-per-call
+        // proxies to return quota_error immediately after request A succeeded.
+        const requested = Math.min(configured, taskLimit);
         // This is an output budget, not an input-reading limit. Extremely large
         // values make providers reserve an impossible generation and can cause
         // a timeout before the first token is emitted.
@@ -111,21 +380,47 @@
             removeTuning();
         }
     }
-    async function completeViaTavern(messages, settings, signal, timeoutMs, meta = {}) {
+    async function tavernAttemptWithQuotaBackoff(context, messages, settings, parentSignal, timeoutMs, structured, meta = {}) {
+        const budgets = quotaTokenBudgets(settings.maxTokens);
+        let lastError;
+        for (let index = 0; index < budgets.length; index += 1) {
+            const maxTokens = budgets[index];
+            try {
+                const content = await tavernAttempt(context, messages, { ...settings, maxTokens }, parentSignal, timeoutMs, structured);
+                return { content, maxTokens };
+            } catch (error) {
+                lastError = error;
+                const next = budgets[index + 1];
+                if (!next || !isQuotaReservationError(error) || parentSignal?.aborted) throw error;
+                console.warn('[WorldStateMachine] 默认 API 预扣费额度不足，降低本次输出预算重试', {
+                    task: meta.task || 'unknown', previousMaxTokens: maxTokens, nextMaxTokens: next,
+                });
+                WSM.Engine?.reportProgress?.('API 额度不足，正在降低输出预算重试', 'running', `任务 ${meta.task || 'unknown'} · ${maxTokens} → ${next} Tokens`);
+            }
+        }
+        throw lastError;
+    }
+    async function completeViaTavern(messages, settings, signal, timeoutMs, meta = {}, singleAttempt = false, jsonContract = '') {
         const context = window.SillyTavern?.getContext?.();
         if (typeof context?.generateRaw !== 'function') {
             throw new Error('当前 SillyTavern 版本不支持默认 API 调用，请更新酒馆或关闭“使用酒馆默认 API”');
         }
         const startedAt = Date.now();
+        let effectiveMaxTokens = Number(settings.maxTokens || 5000);
         try {
             // State-machine calls always require JSON. Start with ST's native
             // structured generation instead of spending the first attempt on a
             // less reliable free-form JSON response.
-            const content = await tavernAttempt(context, messages, settings, signal, timeoutMs, true);
+            const firstAttempt = singleAttempt
+                ? { content: await tavernAttempt(context, messages, settings, signal, timeoutMs, true), maxTokens: effectiveMaxTokens }
+                : await tavernAttemptWithQuotaBackoff(context, messages, settings, signal, timeoutMs, true, meta);
+            effectiveMaxTokens = firstAttempt.maxTokens;
+            const content = firstAttempt.content;
             if (!String(content || '').trim()) throw new Error('酒馆默认 API 返回了空内容');
-            return extractJson(content);
+            return extractJson(content, { jsonContract });
         } catch (error) {
-            if (!isRetryable(error) || signal?.aborted) throw error;
+            if (singleAttempt) throw friendlyTavernError(error);
+            if (!isRetryable(error) || signal?.aborted) throw friendlyTavernError(error);
             const reason = String(error?.message || error || '未知错误').slice(0, 300);
             const elapsed = Date.now() - startedAt;
             console.warn('[WorldStateMachine] 默认 API 结构化请求失败，切换兼容 JSON 模式重试', { ...meta, elapsedMs: elapsed, reason }, error);
@@ -135,16 +430,18 @@
             // combinations return 502 when jsonSchema is present, so retry with
             // prompt-enforced JSON instead of repeating an unsupported option.
             try {
-                const content = await tavernAttempt(context, messages, settings, signal, timeoutMs, false);
+                const compatibleSettings = { ...settings, maxTokens: Math.min(Number(settings.maxTokens || 5000), effectiveMaxTokens) };
+                const content = (await tavernAttemptWithQuotaBackoff(context, messages, compatibleSettings, signal, timeoutMs, false, meta)).content;
                 if (!String(content || '').trim()) throw new Error('酒馆默认 API 兼容模式仍返回空内容');
-                return extractJson(content);
+                return extractJson(content, { jsonContract });
             } catch (retryError) {
-                const retryReason = String(retryError?.message || retryError || '未知错误').slice(0, 300);
+                const retryReason = String(friendlyTavernError(retryError)?.message || retryError || '未知错误').slice(0, 300);
                 throw new Error(`任务 ${meta.task || 'unknown'} 最终失败：结构化请求 ${reason}；兼容请求 ${retryReason}；输入 ${meta.inputChars || 0} 字`);
             }
         }
     }
     async function complete(system, payload, options = {}) {
+        const callBudget = consumeCallBudget(options);
         const settings = WSM.Settings.get();
         const timeoutMs = Math.max(180000, Number(settings.timeoutMs || 0));
         const maxTokens = outputTokens(settings, options);
@@ -164,9 +461,19 @@
             model: settings.model,
             temperature: Number(settings.temperature ?? 0.15),
             max_tokens: maxTokens,
-            stream: false,
+            stream: options.stream === true,
             messages,
         };
+        if (options.reasoningEffort) {
+            // Some OpenAI-compatible routing aliases (for example labels with
+            // billing prefixes) still forward reasoning_effort even though
+            // their model id is not an official OpenAI id. Keep max_tokens for
+            // alias compatibility, but suppress sampling and lengthy hidden
+            // reasoning for bounded internal state tasks.
+            body.reasoning_effort = String(options.reasoningEffort);
+            body.verbosity = 'low';
+            delete body.temperature;
+        }
         if (!body.model) delete body.model;
         if (isGptReasoningModel(body.model)) {
             body.max_completion_tokens = body.max_tokens;
@@ -176,22 +483,59 @@
             delete body.temperature;
         }
         try {
-            if (settings.useTavernApi !== false && options.forceExternal !== true) return await completeViaTavern(messages, requestSettings, options.signal, timeoutMs, meta);
+            if (settings.useTavernApi !== false && options.forceExternal !== true) return await completeViaTavern(messages, requestSettings, options.signal, timeoutMs, meta, options.singleAttempt === true || !!callBudget, options.jsonContract);
             const attempt = attemptSignal(options.signal, timeoutMs);
             let response;
             let raw;
+            let streamInterrupted = false;
             try {
-                response = await fetch(normalizeEndpoint(settings.endpoint), {
-                    method: 'POST', headers, body: JSON.stringify(body), signal: attempt.signal,
+                // Browser-to-provider requests frequently fail with CORS or a
+                // connection reset before the model sees a large prompt. Route
+                // custom OpenAI-compatible profiles through ST's local backend,
+                // exactly as ST does for its own chat-completion requests.
+                // Never retry by falling back to a direct request: the proxy may
+                // already have reached the provider and a fallback could charge
+                // the user twice.
+                const proxyBody = {
+                    ...body,
+                    chat_completion_source: 'openai',
+                    reverse_proxy: endpointBase(settings.endpoint),
+                    proxy_password: settings.apiKey || '',
+                };
+                const proxyHeaders = await requestHeaders();
+                response = await fetch('/api/backends/chat-completions/generate', {
+                    method: 'POST', headers: proxyHeaders, body: JSON.stringify(proxyBody), signal: attempt.signal,
                 });
-                raw = await response.text();
+                const forwarded = await readForwardedResponse(response, options.stream === true, meta);
+                raw = forwarded.raw;
+                streamInterrupted = forwarded.interrupted;
             } finally { attempt.cleanup(); }
-            if (!response.ok) throw new Error(`Planner API ${response.status}: ${raw.slice(0, 500)}`);
+            if (!response.ok) throw new Error(`Planner API 后端转发失败 ${response.status}: ${raw.slice(0, 500)}`);
             let data;
-            try { data = JSON.parse(raw); } catch (_) { data = { output_text: raw }; }
-            return extractJson(responseText(data) || raw);
+            try { data = JSON.parse(raw); }
+            catch (_) { data = /^\s*data:/m.test(raw) ? parseSseResponse(raw, streamInterrupted) : { output_text: raw }; }
+            const providerError = providerResponseError(data);
+            if (providerError) throw new Error(`Planner API 拒绝了任务 ${meta.task}：${providerError}`);
+            try {
+                return extractJson(responseText(data) || raw, { jsonContract: options.jsonContract });
+            } catch (error) {
+                const finishReason = String(data?.choices?.[0]?.finish_reason || '');
+                if (/length|max[_\s-]*tokens/i.test(finishReason)) {
+                    const visibleOutput = responseText(data) || '';
+                    const repairContract = ['state', 'evidence'].includes(options.jsonContract) ? options.jsonContract : '';
+                    const repaired = repairContract ? repairTruncatedJson(visibleOutput, repairContract) : null;
+                    if (repaired) {
+                        WSM.Engine?.reportProgress?.('模型输出到达上限，已安全接收完整证据模块', 'running', `任务 ${meta.task} · 已丢弃尾部未闭合模块 · 本地将合并完整模块并补齐状态结构 · 可见输出 ${visibleOutput.length} 字`);
+                        return repaired;
+                    }
+                    throw new Error(`任务 ${meta.task} 输出达到上限，未形成完整的${contractLabel(options.jsonContract)}；输入 ${meta.inputChars} 字，输出上限 ${maxTokens} Tokens，可见输出 ${visibleOutput.length} 字`);
+                }
+                throw error;
+            }
         } catch (error) {
-            if (error?.name === 'AbortError') throw new Error('Planner API 请求超时或已取消');
+            if (error?.name === 'AbortError') throw new Error(`任务 ${meta.task} 请求超时或已取消；输入 ${meta.inputChars} 字，本次不会自动重试`);
+            const message = String(error?.message || error || '未知网络错误');
+            if (/failed to fetch/i.test(message)) throw new Error(`任务 ${meta.task} 无法连接酒馆后端转发接口；输入 ${meta.inputChars} 字。模型尚未返回响应，本次不会自动重试：${message}`);
             throw error;
         }
     }
@@ -228,8 +572,10 @@
         return [...new Set(models)].sort((a, b) => a.localeCompare(b));
     }
     async function test(options = {}) {
-        const result = await complete('只输出 {"ok":true}', { task: 'connection_test' }, options);
-        return result?.ok === true;
+        return withCallBudget(1, 'connection-test', async () => {
+            const result = await complete('只输出 {"ok":true}', { task: 'connection_test' }, { ...options, singleAttempt: true });
+            return result?.ok === true;
+        });
     }
-    WSM.Api = { complete, test, listModels, _test: { outputTokens } };
+    WSM.Api = { complete, test, listModels, withCallBudget, requestHeaders, _test: { outputTokens, quotaTokenBudgets, isQuotaReservationError, consumeCallBudget, extractJson, repairTruncatedJson, parseSseResponse, responseText, providerResponseError, isGptReasoningModel, contractScore } };
 })();

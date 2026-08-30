@@ -2,6 +2,12 @@ import assert from 'node:assert/strict';
 
 globalThis.window = globalThis;
 globalThis.WorldStateMachine = {};
+const localStore = new Map();
+globalThis.localStorage = {
+    getItem: (key) => localStore.get(key) || null,
+    setItem: (key, value) => localStore.set(key, String(value)),
+    clear: () => localStore.clear(),
+};
 
 await import('../src/source-reader.js');
 
@@ -53,6 +59,13 @@ for (let index = 0; index < chat.length; index += 1) assert.match(readPayload, n
 assert.match(readPayload, /角色卡资料/);
 assert.match(readPayload, /Persona资料/);
 assert.match(readPayload, /世界规则/);
+
+// Re-reading byte-identical material must not spend API calls again.
+const callsBeforeCacheReuse = calls.length;
+const cachedResult = await WorldStateMachine.SourceReader.prepare(source, { chunkChars: 4000, reduceTargetChars: 12000 });
+assert.equal(calls.length, callsBeforeCacheReuse);
+assert.ok(cachedResult.stats.cacheHits > 0);
+localStorage.clear();
 
 const adaptiveCalls = [];
 WorldStateMachine.Api.complete = async (_prompt, payload) => {

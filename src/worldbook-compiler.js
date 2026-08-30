@@ -17,8 +17,10 @@
         const raw = value && typeof value === 'object' ? value : {};
         return {
             enabled: raw.enabled === true,
-            entryKeys: [...new Set((Array.isArray(raw.entryKeys) ? raw.entryKeys : []).map(String).filter(Boolean))],
-            knownEntryKeys: [...new Set((Array.isArray(raw.knownEntryKeys) ? raw.knownEntryKeys : []).map(String).filter(Boolean))],
+            selectedBookNames: [...new Set((Array.isArray(raw.selectedBookNames) ? raw.selectedBookNames : []).map(text).filter(Boolean))],
+            knownBookNames: [...new Set((Array.isArray(raw.knownBookNames) ? raw.knownBookNames : []).map(text).filter(Boolean))],
+            entryKeys: [...new Set((Array.isArray(raw.entryKeys) ? raw.entryKeys : []).map(String).filter((key) => key && key !== 'undefined'))],
+            knownEntryKeys: [...new Set((Array.isArray(raw.knownEntryKeys) ? raw.knownEntryKeys : []).map(String).filter((key) => key && key !== 'undefined'))],
             budget: Math.max(120, Math.min(2000, Math.round(Number(raw.budget) || 500))),
             contextMessages: Math.max(2, Math.min(30, Math.round(Number(raw.contextMessages) || 8))),
             failClosed: true,
@@ -109,64 +111,96 @@
             background: values(item?.background),
         };
     }
+    function compiledResultItems(result, batch = []) {
+        const arrays = [result?.entries, result?.results, result?.items, result?.data?.entries, result?.data?.items];
+        const listed = arrays.find(Array.isArray);
+        if (listed) return listed;
+        if (batch.length !== 1 || !result || typeof result !== 'object') return [];
+        const looksCompiled = (value) => value && typeof value === 'object' && ['core', 'triggers', 'when', 'rules', 'conditionalRules', 'rule', 'background'].some((key) => Object.prototype.hasOwnProperty.call(value, key));
+        if (looksCompiled(result.entry)) return [result.entry];
+        if (looksCompiled(result)) return [result];
+        const nested = Object.values(result).filter(looksCompiled);
+        return nested.length === 1 ? nested : [];
+    }
+    function sourceFallbackRule(entry) {
+        const content = text(entry?.content);
+        const pieces = content.split(/\n+|(?<=[。！？；])/).map(text).filter(Boolean);
+        const core = [];
+        let used = 0;
+        for (const piece of pieces) {
+            if (used >= 1200 || core.length >= 12) break;
+            const value = piece.slice(0, Math.max(0, 1200 - used));
+            if (value) { core.push(value); used += value.length; }
+        }
+        return { key: entry.key, core, triggers: entry.keys || [], rules: [], background: [] };
+    }
+    function ingestReadResult(source, result) {
+        const config = normalizeConfig();
+        const entries = (source?.worldbooks || []).flatMap((book) => book.entries || []).filter((entry) => entry?.content);
+        const allKeys = [...new Set(entries.map((entry) => entry.key).filter(Boolean))];
+        if (allKeys.some((key) => !config.entryKeys.includes(key))) {
+            WSM.Settings.update({ worldbookCompiler: normalizeConfig({
+                ...config, enabled: true,
+                entryKeys: [...config.entryKeys, ...allKeys],
+                knownEntryKeys: [...config.knownEntryKeys, ...allKeys],
+            }) });
+        }
+        const returned = compiledResultItems({ entries: result?.worldbookEntries || result?.worldRules?.entries || [] }, entries);
+        const cache = loadCache();
+        entries.forEach((entry) => {
+            const matched = returned.find((item) => text(item?.key) === entry.key)
+                || returned.find((item) => text(item?.title || item?.label) === text(entry.comment));
+            const existing = cache[entry.key];
+            const item = matched || (existing?.compiled ? existing.compiled : sourceFallbackRule(entry));
+            cache[entry.key] = {
+                sourceHash: hash(entry.content), compiledAt: Date.now(), compiled: normalizeCompiled(item, entry),
+            };
+        });
+        saveCache(cache);
+        activeTurn = null;
+        lastStatus = { state: 'ready', message: `一次读取已浓缩 ${entries.length} 条世界书规则`, at: Date.now() };
+        return { count: entries.length, report: buildReport(null) };
+    }
     async function ensureCompiled(config, entries, options = {}) {
         const cache = loadCache();
         const missing = entries.filter((entry) => options.force === true || cache[entry.key]?.sourceHash !== hash(entry.content) || !cache[entry.key]?.compiled);
-        if (missing.length) {
-            const units = missing.flatMap((entry) => {
-                const parts = splitContent(entry.content, 4500);
-                return parts.map((content, index) => ({
-                    entry,
-                    requestKey: parts.length > 1 ? `${entry.key}::part-${index + 1}-of-${parts.length}` : entry.key,
-                    part: index + 1,
-                    parts: parts.length,
-                    content,
-                }));
-            });
-            const batches = packByJsonSize(units.map((unit) => ({
-                key: unit.requestKey, originalKey: unit.entry.key, part: unit.part, parts: unit.parts,
-                book: unit.entry.bookName, title: unit.entry.comment, content: unit.content,
-            })), 7000);
-            const compiledParts = new Map();
-            let compileAttempts = 0;
-            let adaptiveSplits = 0;
-            for (let batchIndex = 0; batchIndex < batches.length;) {
-                const batch = batches[batchIndex];
-                lastStatus = { state: 'compiling', message: `正在小批拆解世界书 ${batchIndex + 1}/${batches.length}（尝试 ${compileAttempts + 1}）`, at: Date.now() };
-                let result;
-                try {
-                    compileAttempts += 1;
-                    result = await WSM.Api.complete(
-                        '你是世界书规则拆解器。逐条去重、消歧并压缩，但不得改变事实、规则强度、例外、人物身份和权力边界。只输出严格 JSON：{"entries":[{"key":"原key","core":["不可违反的短规则"],"triggers":["触发词或情境"],"rules":["条件规则"],"background":["必要背景"]}]}。禁止续写正文、增加设定或输出 Markdown。',
-                        { task: 'WORLDBOOK_COMPILE', batchIndex: batchIndex + 1, batchCount: batches.length, entries: batch },
-                        { maxTokens: Math.min(3000, 900 + batch.length * 650) },
-                    );
-                } catch (error) {
-                    const children = splitCompileBatch(batch);
-                    if (!children) throw error;
-                    adaptiveSplits += 1;
-                    batches.splice(batchIndex, 1, ...children);
-                    lastStatus = { state: 'compiling', message: `世界书拆解请求失败，已自动细分 ${adaptiveSplits} 次（当前 ${batches.length} 片）`, at: Date.now() };
-                    continue;
-                }
-                const items = Array.isArray(result?.entries) ? result.entries : [];
-                batch.forEach((unit) => {
-                    const matched = items.find((item) => text(item?.key) === unit.key) || (batch.length === 1 ? items[0] : null);
-                    if (!matched) throw new Error(`拆解结果缺少条目：${unit.title || unit.originalKey}（分片 ${unit.part}/${unit.parts}）`);
-                    const entry = missing.find((item) => item.key === unit.originalKey);
-                    const values = compiledParts.get(unit.originalKey) || [];
-                    values.push(normalizeCompiled(matched, entry));
-                    compiledParts.set(unit.originalKey, values);
-                });
-                batchIndex += 1;
-            }
+        if (missing.length && options.localOnly === true) {
             missing.forEach((entry) => {
-                const parts = compiledParts.get(entry.key) || [];
-                if (!parts.length) throw new Error(`拆解结果缺少条目：${entry.comment || entry.key}`);
-                const unique = (field) => [...new Set(parts.flatMap((item) => item[field] || []).map(text).filter(Boolean))];
                 cache[entry.key] = {
                     sourceHash: hash(entry.content), compiledAt: Date.now(),
-                    compiled: { ...parts[0], key: entry.key, core: unique('core'), triggers: unique('triggers'), rules: unique('rules'), background: unique('background') },
+                    compiled: normalizeCompiled(sourceFallbackRule(entry), entry),
+                };
+            });
+            saveCache(cache);
+        }
+        if (missing.length && options.localOnly !== true) {
+            const totalBudget = 50000;
+            const perEntry = Math.max(500, Math.floor(totalBudget / Math.max(1, missing.length)));
+            const requestEntries = missing.map((entry) => {
+                const content = text(entry.content);
+                const excerpt = content.length <= perEntry
+                    ? content
+                    : `${content.slice(0, Math.floor(perEntry / 2))}\n…[本地省略，不增加 API 请求]…\n${content.slice(-Math.ceil(perEntry / 2))}`;
+                return { key: entry.key, book: entry.bookName, title: entry.comment, content: excerpt, originalChars: content.length };
+            });
+            lastStatus = { state: 'compiling', message: `正在一次性拆解 ${missing.length} 条世界书（API 上限 1 次）`, at: Date.now() };
+            let items = [];
+            try {
+                const result = await WSM.Api.complete(
+                    '你是世界书规则拆解器。一次响应完成全部条目；逐条去重、消歧并压缩，但不得改变事实、规则强度、例外、人物身份和权力边界。只输出严格 JSON：{"entries":[{"key":"原key","core":["不可违反的短规则"],"triggers":["触发词或情境"],"rules":["条件规则"],"background":["必要背景"]}]}。禁止续写正文、增加设定、输出 Markdown 或要求后续调用。',
+                    { task: 'WORLDBOOK_COMPILE_ONCE', entries: requestEntries },
+                    { maxTokens: Math.min(6000, 1000 + missing.length * 500), singleAttempt: true },
+                );
+                items = compiledResultItems(result, requestEntries);
+            } catch (error) {
+                console.warn('[WorldStateMachine] 世界书唯一一次拆解请求失败，使用本地无损降级，不重试', error);
+                lastStatus = { state: 'error', message: `唯一一次 API 请求失败，已本地降级：${text(error?.message || error)}`, at: Date.now() };
+            }
+            missing.forEach((entry) => {
+                const matched = items.find((item) => text(item?.key) === entry.key);
+                cache[entry.key] = {
+                    sourceHash: hash(entry.content), compiledAt: Date.now(),
+                    compiled: normalizeCompiled(matched || sourceFallbackRule(entry), entry),
                 };
             });
             saveCache(cache);
@@ -258,29 +292,100 @@
         );
         return text(merged?.text).slice(0, config.budget);
     }
-    async function route(config, compiled, currentContext) {
+    function relevanceTerms(value) {
+        const input = text(value).toLowerCase();
+        const terms = new Set((input.match(/[a-z0-9_]{2,}|[\u3400-\u9fff]{2,}/g) || []));
+        for (const run of input.match(/[\u3400-\u9fff]{3,}/g) || []) {
+            for (let index = 0; index < run.length - 1; index += 1) terms.add(run.slice(index, index + 2));
+        }
+        return terms;
+    }
+    function localRoute(config, compiled, currentContext) {
+        const contextText = text(JSON.stringify(currentContext)).toLowerCase();
+        const contextTerms = relevanceTerms(contextText);
+        const scored = compiled.map((item, index) => {
+            const rule = item?.compiled || {};
+            const triggerText = [...(rule.triggers || []), rule.label, rule.bookName].map(text).join(' ').toLowerCase();
+            const body = [...(rule.core || []), ...(rule.rules || []), ...(rule.background || [])].join(' ').toLowerCase();
+            let score = 0;
+            relevanceTerms(triggerText).forEach((term) => { if (contextTerms.has(term) || contextText.includes(term)) score += 6; });
+            relevanceTerms(body).forEach((term) => { if (contextTerms.has(term)) score += 1; });
+            return { item, score, index };
+        }).sort((a, b) => b.score - a.score || a.index - b.index);
+        const relevant = scored.filter((item) => item.score > 0);
+        const chosen = (relevant.length ? relevant : scored.slice(0, 1)).map((item) => item.item);
         const groups = new Map();
-        compiled.forEach((item) => {
+        chosen.forEach((item) => {
             const depth = Math.max(0, Math.min(100, Math.round(Number(item?.compiled?.depth ?? 4) || 0)));
             if (!groups.has(depth)) groups.set(depth, []);
             groups.get(depth).push(item);
         });
         const routedByDepth = {};
         const perDepthBudget = Math.max(120, Math.floor(config.budget / Math.max(1, groups.size)));
-        for (const [depth, items] of groups.entries()) {
-            const value = await routeGroup({ ...config, budget: perDepthBudget }, items, currentContext);
+        groups.forEach((items, depth) => {
+            const value = fallbackText(items, perDepthBudget);
             if (value) routedByDepth[depth] = value;
-        }
+        });
         return { text: Object.values(routedByDepth).join('\n').slice(0, config.budget), byDepth: routedByDepth };
+    }
+    function localCandidateEntries(entries, currentContext, limit = 200) {
+        if (entries.length <= limit) return entries;
+        const contextText = text(JSON.stringify(currentContext)).toLowerCase();
+        const contextTerms = relevanceTerms(contextText);
+        return entries.map((entry, index) => {
+            const heading = [entry.comment, ...(entry.keys || [])].map(text).join(' ').toLowerCase();
+            let score = entry.constant === true ? 1000 : 0;
+            relevanceTerms(heading).forEach((term) => {
+                if (contextTerms.has(term) || contextText.includes(term)) score += 10;
+            });
+            return { entry, score, index };
+        }).sort((a, b) => b.score - a.score || a.index - b.index)
+            .slice(0, limit)
+            .map((item) => item.entry);
+    }
+    async function route(config, compiled, currentContext) {
+        const rules = compiled.map((item) => item.compiled).filter(Boolean);
+        try {
+            const result = await WSM.Api.complete(
+                `你是逐轮世界书规则路由器。compiledRules 是全部已浓缩世界书，currentContext 是本轮酒馆正文。只抽取本轮相关规则，核心硬规则只要可能影响回复就保留；不得续写、增加设定或弱化禁令。只输出严格 JSON：{"text":"不超过 ${config.budget} 个汉字的规则","byDepth":{"4":"按深度分组的规则"}}。同一轮只能完成一次路由，不要请求后续步骤。`,
+                { task: 'WORLDBOOK_ROUTE_ONCE', currentContext, compiledRules: rules, budget: config.budget },
+                { maxTokens: 1800, singleAttempt: true },
+            );
+            const textResult = text(result?.text).slice(0, config.budget);
+            const byDepth = result?.byDepth && typeof result.byDepth === 'object'
+                ? Object.fromEntries(Object.entries(result.byDepth).map(([depth, value]) => [depth, text(value).slice(0, config.budget)]).filter(([, value]) => value))
+                : {};
+            if (!Object.keys(byDepth).length && textResult) {
+                const depth = String(rules[0]?.depth ?? 4);
+                byDepth[depth] = textResult;
+            }
+            return { text: textResult || Object.values(byDepth).join('\n').slice(0, config.budget), byDepth };
+        } catch (error) {
+            console.warn('[WorldStateMachine] 本轮世界书单次路由失败，使用本地相关性降级（不追加 API）', error);
+            return localRoute(config, compiled, currentContext);
+        }
+    }
+    function routeKeyFromMessages(messages) {
+        const context = contextFromMessages(messages, 30);
+        const users = context.filter((message) => message.role === 'user' || message.role === 'human');
+        return hash(users.at(-1)?.content || JSON.stringify(context.slice(-2)));
     }
     async function prepare(config, entries, currentContext, options = {}) {
         const key = hash(JSON.stringify({ entries: entries.map((entry) => [entry.key, hash(entry.content), entry.depth]), currentContext, budget: config.budget }));
-        if (!options.force && activeTurn?.key === key) return activeTurn;
-        const compiled = await ensureCompiled(config, entries, options);
+        const routeKey = text(options.routeKey);
+        if (!options.force && activeTurn && ((routeKey && activeTurn.routeKey === routeKey) || activeTurn.key === key)) return activeTurn;
+        // Thousands of selected entries must not freeze the UI while building
+        // local fallback caches. Cheap keyword/constant preselection keeps the
+        // detailed routing set bounded; initialization still receives an
+        // evenly sampled snapshot of the complete original source.
+        const routedEntries = options.localOnly === true ? localCandidateEntries(entries, currentContext) : entries;
+        const compiled = await ensureCompiled(config, routedEntries, options);
         let routed;
         let routedByDepth;
         try {
-            const result = await route(config, compiled, currentContext);
+            const result = options.localOnly === true
+                ? localRoute(config, compiled, currentContext)
+                : await route(config, compiled, currentContext);
             routed = result.text;
             routedByDepth = result.byDepth;
         }
@@ -290,7 +395,7 @@
             routedByDepth = Object.fromEntries([...new Set(compiled.map((item) => Number(item?.compiled?.depth ?? 4)))].map((depth) => [depth, fallbackText(compiled.filter((item) => Number(item?.compiled?.depth ?? 4) === depth), config.budget)]).filter(([, value]) => value));
             console.warn('[WorldStateMachine] 世界书逐轮路由失败，使用已拆解核心规则', error);
         }
-        activeTurn = { key, entryKeys: entries.map((entry) => entry.key), routed, routedByDepth, compiled, at: Date.now() };
+        activeTurn = { key, routeKey, entryKeys: entries.map((entry) => entry.key), routed, routedByDepth, compiled, at: Date.now() };
         return activeTurn;
     }
     function expandedOriginals(entries) {
@@ -372,7 +477,7 @@
         try { return decodeURIComponent(encoded); }
         catch (_error) { return encoded; }
     }
-    async function processSource(source) {
+    async function processSource(source, options = {}) {
         const config = normalizeConfig();
         if (!config.enabled || !config.entryKeys.length) return { enabled: false };
         const entries = (source.worldbooks || []).flatMap((book) => book.entries || []).filter((entry) => config.entryKeys.includes(entry.key));
@@ -383,7 +488,10 @@
         const selected = new Set(entries.map((entry) => entry.key));
         source.worldbooks = (source.worldbooks || []).map((book) => ({ ...book, entries: (book.entries || []).filter((entry) => !selected.has(entry.key)) })).filter((book) => book.entries.length);
         try {
-            const prepared = await prepare(config, entries, contextFromMessages(source.chat, config.contextMessages));
+            const prepared = await prepare(config, entries, contextFromMessages(source.chat, config.contextMessages), {
+                localOnly: options.localOnly === true,
+                routeKey: routeKeyFromMessages(source.chat),
+            });
             source.compiledWorldbookRules = { text: prepared.routed, byDepth: prepared.routedByDepth, selectedEntryKeys: prepared.entryKeys, originalEntriesRemoved: entries.length };
             lastStatus = { state: 'ready', message: `已为 Planner 路由 ${prepared.routed.length} 字世界书规则`, at: Date.now() };
             return { enabled: true, routed: prepared.routed, selected: entries.length, report: buildReport(prepared, { originalEntriesRemoved: entries.length }) };
@@ -421,8 +529,16 @@
             return { enabled: true, removed: 0, injected: false };
         }
         const removed = redactOriginals(chat, entries);
+        // A manually edited “最终注入” is the complete one-shot payload. The
+        // selected originals still have to be redacted, but adding routed rules
+        // beside the override would duplicate content the user already edited.
+        if (text(WSM.Storage?.load?.()?.runtime?.finalInjectionOverride)) {
+            await setWorldbookPrompts({});
+            lastDelivery = { at: Date.now(), injected: false, manualOverride: true, removedOriginalOccurrences: removed, chars: 0 };
+            return { enabled: true, removed, injected: false, manualOverride: true };
+        }
         try {
-            const prepared = await prepare(config, entries, contextFromMessages(chat, config.contextMessages));
+            const prepared = await prepare(config, entries, contextFromMessages(chat, config.contextMessages), { localOnly: true, routeKey: routeKeyFromMessages(chat) });
             const injected = await setWorldbookPrompts(prepared.routedByDepth) || injectText(chat, prepared.routed);
             lastStatus = { state: 'ready', message: `已剔除 ${removed} 处原文，注入 ${prepared.routed.length} 字`, at: Date.now() };
             lastDelivery = { at: Date.now(), injected, fallback: false, removedOriginalOccurrences: removed, chars: prepared.routed.length };
@@ -439,16 +555,18 @@
         }
     }
     async function compileConfig(configValue, options = {}) {
-        const config = normalizeConfig(configValue);
-        const explicit = Array.isArray(options.entries) ? options.entries : null;
-        const selected = new Set(config.entryKeys);
-        const entries = explicit
-            ? explicit.filter((entry) => selected.has(entry.key) && entry.content)
-            : await resolveSelectedEntries(config, { includeDisabled: true });
-        if (!entries.length) throw new Error('请至少勾选一条当前可读取的世界书条目');
-        await ensureCompiled(config, entries, { force: options.force === true });
-        lastStatus = { state: 'ready', message: `已拆解 ${entries.length} 条世界书`, at: Date.now() };
-        return { count: entries.length };
+        return WSM.Api.withCallBudget(1, 'worldbook-update', async () => {
+            const config = normalizeConfig(configValue);
+            const explicit = Array.isArray(options.entries) ? options.entries : null;
+            const selected = new Set(config.entryKeys);
+            const entries = explicit
+                ? explicit.filter((entry) => selected.has(entry.key) && entry.content)
+                : await resolveSelectedEntries(config, { includeDisabled: true });
+            if (!entries.length) throw new Error('请至少勾选一条当前可读取的世界书条目');
+            await ensureCompiled(config, entries, { force: options.force === true });
+            lastStatus = { state: 'ready', message: `已一次性处理 ${entries.length} 条世界书（API 1/1）`, at: Date.now() };
+            return { count: entries.length };
+        });
     }
     function updateCompiledEntry(key, value) {
         const entryKey = text(key);
@@ -479,6 +597,7 @@
         processChat,
         setWorldbookPrompts,
         compileConfig,
+        ingestReadResult,
         getLastStatus: () => clone(lastStatus),
         getReport: (persisted) => {
             const live = buildReport();
@@ -499,6 +618,6 @@
         },
         updateCompiledEntry,
         clearCache() { saveCache({}); activeTurn = null; lastDelivery = null; lastStatus = { state: 'idle', message: '拆解缓存已清空', at: Date.now() }; },
-        _test: { hash, contextFromMessages, redactOriginals, injectText, fallbackText, splitCompileBatch },
+        _test: { hash, contextFromMessages, redactOriginals, injectText, fallbackText, splitCompileBatch, compiledResultItems, localRoute, sourceFallbackRule, routeKeyFromMessages },
     };
 })();

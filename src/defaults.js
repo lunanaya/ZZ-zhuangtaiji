@@ -141,6 +141,33 @@ Foreshadowing must grow from existing facts. Never invent a hidden cause because
 
 更新前先清理明显的跨模块重复。若一条信息同时符合多个模块，选择最具体的权威模块，其余位置只保留ID引用。
 
+### 状态预算、轮换与自动压缩
+
+完整 state 是工作记忆，不是无限增长的档案。每次返回前必须先做一次 COMPACT：合并同义项，把多条旧发展总结成一条当前结论，删除已经 resolved、expired、discarded 且其结果已进入稳定事实或 timeline 的项目，并删除不再影响人物判断、当前世界或未来选择的低价值细节。禁止为了“保留信息”把同一事实复制到多个栏目。
+
+- triggers 是逐轮候选池，不是长期收藏。每轮应提供 4–8 条有不同条件和方向、来自既存事实的有效候选；若本轮没有任何旧 trigger 在实际正文中触发，下一轮必须淘汰整批旧候选并生成新的 4–8 条，不得原样保留。若有触发，也要移除 triggered/expired 项并用当前状态补足候选池。
+- causalEffects 只保留仍在 developing 或已经 arrived 且尚未被权威状态吸收的关键链；resolved/discarded 立即删除。同一根因与结果的重复链必须合并。
+- tasks、events、threads、processes 结束后只把必要结果归档到稳定事实或 timeline，本体删除；旧 developments、history、evidence 和 memories 应合并成简短摘要，只保留会影响后续判断的部分。
+- 所有栏目都必须主动控制体积。优先保留当前场景、在场人物、活跃任务、未解决矛盾、可靠知识和仍会产生后果的事项；其余内容总结或删除。不得让完整 state 因轮数增加而线性增长。
+
+### 用户视角互动任务与事件
+
+1. 每轮都要根据最新世界状态刷新 tasks 与 triggers；它们是面板中的用户行动入口，不是替 user 作出的决定。
+2. tasks 只把 user 本人需要处理、可以参与或当前明确关心的事务标记为 userVisible=true。triggers 只有在 user 能从既有知识、现场观察或合理常识中意识到其可能性时才标记为 userVisible=true；隐藏计划、未知秘密和后台巧合必须为 false。
+3. 每个仍有效且 userVisible=true 的 task 或 trigger 都生成恰好四个 choices。四项应体现有意义的不同做法，例如立即行动、延后行动、先调查/准备、改变路线或暂不介入；必须结合当前时间、地点、路线、资源、关系、任务条件和 user 已知信息，不能机械套模板。
+4. choices 格式为 {id,label,message}。label 是短按钮文字；message 是点击后作为 user 正文直接发送的第一人称行动或对白。message 只能表达意图、尝试或选择，不得预判成功、他人反应、发现结果或世界变化，不得包含斜杠命令。
+5. 可从已经成立的世界事实、任务、事件、进程、关系、日程和自然环境中建立新的 triggers，使世界持续提供可互动机会；每项必须带 sourceRefs，且规模与既存原因相称。不得为了凑选项凭空制造袭击、灾难、阴谋、重要陌生人或无根因巧合。
+6. 已完成/失败的 task 与已触发/失效的 trigger 不再生成 choices。不得把 choices 注入正文模型；它们只供用户在面板点击。
+
+### 层级场景地图
+
+1. map 是一个可逐层查看的稳定地点树。locations 使用 parentId 表示“世界/区域→国家→城市→城区→建筑→房间”等所属关系；顶层地点 parentId 为空。type 只用于界面分类，不替代事实。
+2. 初始化时只根据角色卡、Persona、世界书和实际聊天中已有依据建立大范围地图、明确城市，以及与主要人物长期相关且已经成立的住所、工作地或重要地点。可以建立“A的家”“B的家”这类有设定依据的基础地点，但不得编造未知地址、每条街道或无关商铺。
+3. 每轮都读取 source.chat 的最新实际正文。正文或设定明确出现新的稳定地点（例如某人物拥有画廊）时，在正确父级下新增地点并保存 sourceRefs；随口比喻、假设、愿望和未确认传闻不得建立地点。
+4. x、y 是同一父级内 0 到 100 的相对地图坐标：东侧 x 更大，西侧 x 更小，北侧 y 更小，南侧 y 更大。若设定说明“A在B东边”，A 的 x 必须大于 B；没有相对方位证据时只做清晰、保守的分散布局，不得把界面布局反推为世界事实。
+5. 已建立地点的 id、parentId 和坐标应保持稳定；只有正文或权威设定确认地理关系改变/纠正时才修改。routes 连接稳定地点ID，移动仍须符合距离、路线状态和叙事过程。
+6. 地图与 tasks、triggers 等状态一样，只随正文后的唯一一次统一结算调用同步更新；生成前不得调用 API，也不得为地图单独发起额外请求。
+
 ## 六、正文注入
 
 injection 只包含当前正文真正需要知道的信息，使用简短明确的中文，不超过约700个汉字：
@@ -214,6 +241,7 @@ Phantasm 已经内化为本插件的默认事实法则，不是可选择的模�
 5. 正文中显化的因果后果必须能引用既存 rootCauseRef；不能为了给正文找解释而补造根因。
 6. causalEffects 只有在正文或后台状态提供完整抵达路径后才能转为 arrived；否则继续 developing 或在路径不成立时 discarded。
 7. 正文没有提及视野外NPC时，不得据此否定正文前已经完成的后台更新；也不得补造额外后台行为。
+8. 结算后的 tasks 与 triggers 必须依据本轮 user/assistant 实际正文和结算后世界状态重新判断 userVisible、userRelevance、sourceRefs，并为每个仍有效且用户可知可选的项目刷新恰好四个 choices。choices 只表达 user 下一步意图，不得把未发生结果写成事实。
 8. processes 可以根据正文证据继续、转向、衰减或解决，禁止默认升级和人工维持。
 9. 遵守 moduleOwnership：正文事实只写入一个权威模块，其他模块只能引用对应ID；禁止把同一句状态同时复制到world、events、processes和timeline。
 10. lockedPaths 对应字段不得更改。
@@ -227,6 +255,8 @@ Phantasm 已经内化为本插件的默认事实法则，不是可选择的模�
 18. 世界进程进度钟只在正文或已结算后台事实满足驱动条件时变化；受阻时允许停滞、倒退或转化，禁止每轮机械加格。
 19. 关系只在事件足以改变人物判断时更新，并使用自然语言分别表达信任、尊重、戒备、亏欠等维度；不得因普通礼貌刷高关系，也不得用单次冲突抹除全部既有关系。
 20. 线索揭示必须满足已有 evidence、discoveryPaths 或 maturityConditions；不得在揭晓时临时创造谜底、根因或证据。
+21. 结算前执行状态压缩：合并重复与旧流水，删除已经结束且结果已归档的任务、事件、线程、进程和因果影响；所有栏目只保留仍影响当前世界或未来判断的信息。
+22. 比较 preState.triggers 与本轮实际正文。若没有旧 trigger 真正触发，丢弃整批旧候选并为下一轮生成 4–8 条全新 trigger（不得沿用旧ID）；若有触发，删除 triggered/expired 项，并依据结算后状态补足 4–8 条有效候选。新候选必须有既存 sourceRefs，不能凭空制造事故或巧合。
 
 输出结构：
 {
@@ -243,17 +273,18 @@ Phantasm 已经内化为本插件的默认事实法则，不是可选择的模�
             facts: ['稳定的客观世界事实'],
         },
         map: {
+            rootLabel: '大地图顶部显示名称',
             currentLocationId: '当前位置对应的稳定地点ID',
-            locations: [{ id: '稳定地点ID', name: '地点名', area: '所属区域', description: '简短环境说明', status: 'known|visited|unavailable' }],
-            routes: [{ from: '起点ID', to: '终点ID', description: '移动方式或路线说明', status: 'open|blocked|unknown' }],
+            locations: [{ id: '稳定地点ID', name: '地点名', type: 'world|region|country|city|district|landmark|residence|workplace|building|room|other', parentId: '父级地点ID，顶层为空', x: 50, y: 50, area: '兼容旧数据的所属区域显示名', description: '简短环境说明', status: 'known|visited|unavailable', sourceRefs: ['设定或正文依据'] }],
+            routes: [{ from: '起点ID', to: '终点ID', description: '移动方式或路线说明', status: 'open|blocked|unknown', travelMinutes: 0, distance: '可选距离说明' }],
         },
         characters: [{ id: '稳定ID', name: '姓名', persona: '稳定人设摘要', location: '当前位置', present: false, status: '身心状态', pose: '姿势与朝向', clothing: '当前衣物与状态', heldItems: [], injuries: [], resources: [], goals: [], currentAction: '正在做什么', memories: [], notes: '' }],
         npcActivities: [{ id: '稳定ID', characterId: 'NPC稳定ID', location: '地点', action: '正在做或刚完成的事' }],
         relationships: [{ id: '稳定ID', from: '主体ID', to: '对象ID', type: '关系类型', status: '简单的当前关系描述', evidence: [] }],
         knowledge: [{ id: '稳定ID', information: '信息、秘密、线索或主张', knownBy: [], believedBy: [], suspectedBy: [], misunderstoodBy: [], concealedBy: [], unknownTo: [], source: '来源与传播渠道', certainty: 'canon|claim|confirmed|believed|suspected|misunderstood|rumor', reliability: '可靠性', relatedRefs: [], evidence: [], discoveryPaths: [], maturityConditions: [] }],
-        tasks: [{ id: '稳定ID', title: '任务', ownerIds: [], status: 'pending|active|blocked|done|failed', dependencies: [], deadline: '', progress: '', consequences: [] }],
+        tasks: [{ id: '稳定ID', title: '任务', ownerIds: [], status: 'pending|active|blocked|done|failed', dependencies: [], deadline: '', progress: '', consequences: [], userVisible: true, userRelevance: '为什么用户现在能处理或关心', sourceRefs: [], choices: [{ id: '稳定短ID', label: '短按钮文字', message: '第一人称用户行动或对白，不预判结果' }] }],
         events: [{ id: '稳定ID', title: '发展中的事件', status: 'dormant|active|resolved', location: '', participantIds: [], developments: [] }],
-        triggers: [{ id: '稳定ID', title: '可触发事件', conditions: [], status: 'armed|eligible|triggered|expired', effectsIfTriggered: [], blockedReasons: [] }],
+        triggers: [{ id: '稳定ID', title: '可触发事件', conditions: [], status: 'armed|eligible|triggered|expired', effectsIfTriggered: [], blockedReasons: [], userVisible: true, userRelevance: '用户能意识到该可能性的依据', sourceRefs: [], choices: [{ id: '稳定短ID', label: '短按钮文字', message: '第一人称用户行动或对白，不预判结果' }] }],
         threads: [{ id: '稳定ID', title: '长期线程', status: 'open|paused|resolved', stakes: '', participantIds: [], nextNaturalStep: '', history: [] }],
         processes: [{ id: '稳定ID', title: '正在运行的自然或社会进程', kind: 'physical|emotional|social|institutional|other', status: 'active|decaying|paused|resolved|transformed', drivers: [], decayConditions: [], resolutionConditions: [], progress: { current: 0, max: 0, lastChangeReason: '' }, currentDirection: '' }],
         causalEffects: [{ id: '稳定ID', causeRef: '既存根因ID', cause: 'A：已经成立的起因', steps: ['A到B之间的寻常步骤'], result: 'B：局部且可追溯的结果', affectedIds: [], status: 'developing|arrived|resolved|discarded', reachCondition: '尚缺的自然条件', evidenceRefs: [] }],
@@ -263,7 +294,7 @@ Phantasm 已经内化为本插件的默认事实法则，不是可选择的模�
     const INJECTION_MODULES = {
         world: { label: '世界状态', category: 'world', depth: 1, enabled: true, instruction: '作为当前场景的客观基础；没有充分原因时不要擅自改变。' },
         ambient: { label: '环境与路人反应', category: 'world', depth: 0, enabled: true, instruction: '只允许由当前正文触发、符合场所与感知条件的轻量反应；临时路人不得升级为持久NPC或强制事件。' },
-        map: { label: '场景地图', category: 'world', depth: 2, enabled: true, instruction: '遵守当前位置、已知地点与可通行路线；路线受阻时不得瞬移。' },
+        map: { label: '场景地图', category: 'world', depth: 2, enabled: true, instruction: '遵守层级地点、相对方位、当前位置与可通行路线；路线受阻时不得瞬移。地图界面坐标不是角色自动知道的额外情报。' },
         characters: { label: '人物状态', category: 'people', depth: 1, enabled: true, instruction: '遵守人物当前位置、当前行动、目标与在场状态。' },
         npcActivities: { label: 'NPC活动轨迹', category: 'people', depth: 4, enabled: true, instruction: '只作为NPC近期行动连续性；不要逐条复述成流水账。' },
         relationships: { label: '人物关系', category: 'people', depth: 2, enabled: true, instruction: '只用简单自然语言影响态度与距离，禁止展示任何关系评分。' },
@@ -280,17 +311,17 @@ Phantasm 已经内化为本插件的默认事实法则，不是可选择的模�
     const MODULE_OWNERSHIP = {
         world: '只保存当前时刻的稳定快照：时间、当前地点、环境、天气和已经成立的稳定事实。不得保存事件进展、未来条件或历史流水。',
         ambient: '不持久化实体，只为当前轮提供场所自然反馈和一次性旁观者反应。必须由实际正文中的可感知行为触发，不得创建长期NPC、关系、事件或线程。',
-        map: '只保存稳定地点、所属区域、简短说明、当前位置和地点之间的路线状态。不得凭空添加无依据地点；路线受阻时不得让人物无过程抵达。',
+        map: '只保存有设定或正文依据的稳定层级地点、父级、同级相对坐标、来源、简短说明、当前位置和路线状态。初始化可建立明确城市与主要人物已有住所/工作地；正文明确出现画廊等新地点时挂到正确父级。不得编造未知地址或无关地点；路线受阻时不得让人物无过程抵达。',
         characters: '只保存单个人物此刻的位置、在场状态、身心状态、姿势、衣物、手持物、伤势、资源、目标和当前行动。不得复制人物关系、活动轨迹或世界事件全文。',
         npcActivities: '只保存NPC最近已经发生或正在持续的简短活动轨迹：人物、地点、行动；数组顺序就是先后顺序。每个NPC最多5条，不得另设活动时间，不得记录计划、猜测或重复当前状态全文。',
         relationships: '只用自然语言保存人物之间相对稳定的多维关系及形成依据，可分别描述信任、亲近、尊重、戒备、恐惧、亏欠、依赖，但禁止任何评分数字；只有足以改变判断的事件才更新，不得复述人物当前行动。',
         knowledge: '统一保存 Canon、角色主张、相信、推测、误解、未知、隐瞒以及线索的来源、传播渠道、可靠性、证据、发现路径和成熟条件。不得把推测升级为事实，不得复制事件全文。',
-        tasks: '只保存需要完成的事务、负责人、进展、依赖和截止时间。不得把任务未来可能发生的内容写成事件。',
+        tasks: '只保存需要完成的事务、负责人、进展、依赖和截止时间。每轮为用户可知且可参与的有效任务刷新四个用户视角choices；选项只表达行动意图，不得预判结果。不得把任务未来可能发生的内容写成事件。',
         events: '只保存正在发生的动态变化、参与者、影响范围和最新进展。不得复述world中的时间、地点、天气、环境或稳定事实。',
-        triggers: '只保存尚未发生之事的自然触发条件、阻碍和可能结果。若时间确实是硬条件，直接写进conditions，不另设一套时间字段。不得复制事件当前进展，也不得提前写成事实。',
+        triggers: '只保存由既存世界事实自然产生的未发生机会、触发条件、阻碍和可能结果，并保留sourceRefs。候选池每轮保持4至8条；本轮没有旧候选实际触发时，下一轮必须整批换新且不得沿用旧ID，不能长期囤积。每轮只为用户可知可选的有效项目刷新四个用户视角choices；未知秘密不得暴露。若时间确实是硬条件，直接写进conditions，不另设一套时间字段。不得复制事件当前进展，也不得提前写成事实。',
         threads: '只保存跨多轮的长期问题与自然下一步。不得逐字复制事件、任务或关系状态。',
         processes: '只保存某种变化为何持续、何时衰减、何时自然结束及当前趋势。只有重要长期进程可使用4至8格进度钟；受阻时可停滞、倒退或转化，禁止机械推进。不得复述事件内容或世界快照。',
-        causalEffects: '统一保存既存起因、寻常中间步骤、局部结果、受影响人物和抵达状态。每一步必须有现实媒介与机会；不得从普通原因跳成大范围灾难，不得复制成另一份延迟因果。',
+        causalEffects: '统一保存既存起因、寻常中间步骤、局部结果、受影响人物和抵达状态。只保留仍在发展或已抵达但尚未被权威状态吸收的关键链；resolved/discarded立即删除，同根因同结果必须合并。每一步必须有现实媒介与机会；不得从普通原因跳成大范围灾难，不得复制成另一份延迟因果。',
         timeline: '只保存已经完成并经正文确认的历史事实，每件事记录一次，仅供用户查看。不得保存计划或当前快照，也不得进入正文注入或转抄到其他注入模块。',
         planner: '只保存本轮可以怎样发展、不要怎样发展和无变化理由。不得冒充状态或历史。',
     };
@@ -298,24 +329,24 @@ Phantasm 已经内化为本插件的默认事实法则，不是可选择的模�
     const MODULE_PROMPTS = {
         world: '维护当前时间、地点、天气、环境和稳定事实。只记录此刻已经成立的客观状态，不写未来计划或事件流水。',
         ambient: '先读取 source.chat 的实际酒馆正文，再判断公共或半公共场景中是否存在合乎距离、视线、音量和场所规范的轻量环境反应。允许无反应；临时乘客、店员或路人不得写入持久人物状态，也不得夸张升级。',
-        map: '维护当前位置、已知地点和地点之间的可通行路线。新地点必须来自设定或正文证据；移动需要符合路线、阻断状态和叙事过程，禁止无依据瞬移。',
+        map: '维护可切换的层级地图：用parentId组织区域、城市、城区、建筑与房间，用同级0..100的x/y表达已知相对方位（东大西小、北小南大），并保持稳定ID和坐标。初始化从角色卡、Persona、世界书与聊天建立明确的大区域/城市及主要人物已有住所、工作地；每轮扫描实际source.chat，正文明确新增的画廊等稳定地点须带sourceRefs并挂到正确父级。没有依据不得编造未知地址、无关地点或精确方位。维护当前位置与routes，移动须符合距离、阻断状态和叙事过程，禁止瞬移；不得为地图额外调用API。',
         characters: '维护人物当前位置、是否在场、身心状态、姿势与朝向、衣物状态、手持物、伤势、资源、目标和当前行动。保持空间与身体连续性；行动必须符合人设、动机、能力、知识、工具、权限、时间、距离和物理路径。',
         npcActivities: '记录NPC最近已经发生或正在持续的活动，每条只写人物、地点和一句行动，数组顺序表示先后。每人最多保留最近5条，carry模式不新增。',
         relationships: '用自然语言分别描述真正影响判断的信任、亲近、尊重、戒备、恐惧、亏欠或依赖，并保留形成依据。小礼貌不刷高关系，重大冲突也不自动清空全部感情；禁止百分比和任何评分。',
         knowledge: '按 Canon、Claim、Known、Believed、Suspected、Misunderstood、Unknown、Concealed 分层维护信息。记录来源、传播渠道、可靠性、证据、关联事项、可发现路径与成熟条件；人物不得无来源获知秘密，推测和误解不得写成世界事实。',
-        tasks: '维护需要完成的事务、负责人、进展、依赖、期限和影响。计划中的未来结果不能提前写成事实。',
+        tasks: '维护需要完成的事务、负责人、进展、依赖、期限和影响。每轮从用户视角判断可见性与相关性，并为每个仍有效、用户可处理的任务生成恰好四个结合当前世界的choices：立即行动、延后、调查/准备及另一条合理路线。message 使用第一人称，只表达尝试，不预判结果。计划中的未来结果不能提前写成事实。',
         events: '维护正在发生的动态事件、参与者、地点和最新进展。不要重复世界快照或把尚未触发的事写进来。',
-        triggers: '维护尚未发生事件的触发条件、阻碍和可能结果。确有必要的时间门槛写入条件，不单独维护最早时间。条件不满足时不得提前触发。',
+        triggers: '维护4至8条由既存世界事实、日程、关系、进程和环境自然产生的尚未发生机会，记录sourceRefs、触发条件、阻碍和可能结果。比较上一轮候选与实际正文：没有任何候选触发时整批换成新候选并使用新ID；有候选触发时删除终态项并补足候选池，绝不跨轮堆积。每轮只向用户展示其能够知道或观察到的项目，并为每项生成恰好四个不同的用户行动choices；隐藏信息不得泄露，message 不得预判触发成功。确有必要的时间门槛写入条件，不单独维护最早时间。条件不满足时不得提前触发。',
         threads: '维护跨多轮的长期问题、重要性、相关人物、已有发展和自然下一步。不要强迫每轮推进。',
         processes: '维护自然或社会进程的持续原因、衰减条件、结束条件和当前趋势。只有真正重要的势力、灾害、调查、工程、追捕或政治计划使用4至8格进度钟；满足时间、资源或触发条件才推进，受阻时停滞、倒退或转化，达到节点必须改变世界事实。',
-        causalEffects: '维护“A事件→寻常中间过程→局部B结果”。安排人物行动前依次检查动机、能力、机会、知识、工具、权限、时间、距离、姿势、环境、物理路径、主动阻碍与代价；缺少硬条件时标记无法执行，不得为了推动剧情改变人设、瞬移、巧合获知秘密或临时创造重要人物。因果步骤必须有地点、人物机会或信息渠道；普通起因不得夸张升级，隐藏真相与伏笔必须预先存在证据和可发现路径，未抵达时只保留条件，不进入正文。',
+        causalEffects: '维护“A事件→寻常中间过程→局部B结果”，只保留仍有未来作用的关键链，resolved/discarded立即删除，同根因同结果合并。安排人物行动前依次检查动机、能力、机会、知识、工具、权限、时间、距离、姿势、环境、物理路径、主动阻碍与代价；缺少硬条件时标记无法执行，不得为了推动剧情改变人设、瞬移、巧合获知秘密或临时创造重要人物。因果步骤必须有地点、人物机会或信息渠道；普通起因不得夸张升级，隐藏真相与伏笔必须预先存在证据和可发现路径，未抵达时只保留条件，不进入正文。',
         timeline: '只记录正文已经确认发生的历史事实，每件事记录一次，仅供面板展示。不得记录Planner计划、重复当前状态或进入正文注入。',
         planner: '先按 LOAD→PARSE→ADJUDICATE→ADVANCE 读取实际正文：拆分元指令、对白、自主动作、行动尝试、期望结果和时空跳转；尝试与期望不得预判成功。维护场景目标、在场者、地点边界、核心阻碍、张力、可交互点与结束条件。再判断 flowing、quiet、slowing 或 stalled（停滞），并从用户行动、人物自然回应或既有后台事项中选择一个有意义变化点；平静可以低强度，但不能重复气氛原地空转。tasks、events、triggers、threads、processes、causalEffects 只用 sourceType 与 sourceId 引用，逐项决定 carry、advance、decay、resolve、arrive 或 discard。通常一轮最多一个变化点；不得凭空加入袭击、灾难、阴谋、陌生人物或跨尺度事件，不得替用户决定路线、承诺、亲密行为或内心立场。reveal 只能揭示已有且满足发现路径的线索，entry 只能来自既有人物与可解释行程。计划不等于事实。',
     };
 
     function createState() {
         return {
-            schemaVersion: 7,
+            schemaVersion: 9,
             initialized: false,
             revision: 0,
             updatedAt: Date.now(),
@@ -325,7 +356,7 @@ Phantasm 已经内化为本插件的默认事实法则，不是可选择的模�
                 location: { current: '', environment: '', weather: '' },
                 facts: [],
             },
-            map: { currentLocationId: '', locations: [], routes: [] },
+            map: { rootLabel: '大地图', currentLocationId: '', locations: [], routes: [] },
             characters: [],
             npcActivities: [],
             relationships: [],

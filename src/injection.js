@@ -128,6 +128,12 @@
             .replace(/\b(?:closeness|trust|tension)\s*[：:=]\s*-?\d+(?:\.\d+)?%?/gi, '')
             .split(/\n+/).map((line) => line.trim()).filter(Boolean).join('\n');
     }
+    function finalOverride(state) {
+        return text(state?.runtime?.finalInjectionOverride);
+    }
+    function normalizeFinalOverride(value) {
+        return text(value).slice(0, 24000);
+    }
 
     function shorten(value, limit) {
         const input = text(value);
@@ -183,6 +189,8 @@
     }
 
     function compose(state, plan = {}, plannerBlocks = {}) {
+        const override = finalOverride(state);
+        if (override) return override;
         const settings = WSM.Settings.get();
         const modules = settings.injectionModules || WSM.Defaults.INJECTION_MODULES;
         const generated = fallbackBlocks(state, plan);
@@ -210,6 +218,8 @@
     }
 
     function composeByDepth(state, plan = {}, plannerBlocks = {}) {
+        const override = finalOverride(state);
+        if (override) return { 0: override };
         const settings = WSM.Settings.get();
         const modules = settings.injectionModules || WSM.Defaults.INJECTION_MODULES;
         const generated = fallbackBlocks(state, plan);
@@ -244,5 +254,19 @@
         return prompts;
     }
 
-    WSM.Injection = { compose, composeByDepth, fallbackBlocks };
+    function preview(state, plan = {}, plannerBlocks = {}, worldbookByDepth = {}) {
+        const override = finalOverride(state);
+        if (override) return override;
+        const statePrompts = composeByDepth(state, plan, plannerBlocks);
+        const depths = [...new Set([...Object.keys(statePrompts), ...Object.keys(worldbookByDepth || {})].map(Number).filter(Number.isFinite))].sort((a, b) => a - b);
+        return depths.flatMap((depth) => {
+            const values = [];
+            if (text(statePrompts[depth])) values.push(text(statePrompts[depth]));
+            const worldbook = text(worldbookByDepth?.[depth]);
+            if (worldbook) values.push(`<WORLDBOOK_RULES depth="${depth}">\n${worldbook}\n</WORLDBOOK_RULES>`);
+            return values;
+        }).join('\n\n');
+    }
+
+    WSM.Injection = { compose, composeByDepth, preview, normalizeFinalOverride, fallbackBlocks };
 })();

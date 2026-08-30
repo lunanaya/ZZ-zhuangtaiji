@@ -37,7 +37,7 @@ await import('../src/engine.js');
 
 const state = WorldStateMachine.Defaults.createState();
 assert.equal(Object.keys(WorldStateMachine.Settings.get().modulePrompts).length, Object.keys(WorldStateMachine.Defaults.MODULE_PROMPTS).length);
-assert.equal(WorldStateMachine.Settings.get().rulesVersion, 7);
+assert.equal(WorldStateMachine.Settings.get().rulesVersion, 8);
 assert.match(WorldStateMachine.Settings.get().plannerPrompt, /寻常因果影响/);
 assert.match(WorldStateMachine.Settings.get().plannerPrompt, /实际 user\/assistant 正文/);
 assert.match(WorldStateMachine.Settings.get().plannerPrompt, /剧情压力与空转侦测器/);
@@ -235,10 +235,12 @@ assert.match(source.worldbooks[0].entries[0].content, /旁观者反应/);
 
 const selectedKey = WorldStateMachine.Context.worldbookEntryKey('分析世界书', '0');
 WorldStateMachine.Settings.update({ worldbookCompiler: { enabled: true, entryKeys: [selectedKey], budget: 300, contextMessages: 8, failClosed: true } });
+let worldbookRouteCalls = 0;
 WorldStateMachine.Api = {
+    async withCallBudget(_max, _label, operation) { return operation(); },
     async complete(_system, payload) {
-        if (payload.task === 'WORLDBOOK_COMPILE') return { entries: payload.entries.map((entry) => ({ key: entry.key, core: ['公共场景中只允许合乎比例的旁观者反应'], triggers: ['公共场景'], rules: [], background: [] })) };
-        if (payload.task === 'WORLDBOOK_ROUTE') return { text: '公共场景中只允许合乎比例的旁观者反应' };
+        if (payload.task === 'WORLDBOOK_COMPILE_ONCE') return { entries: payload.entries.map((entry) => ({ key: entry.key, core: ['公共场景中只允许合乎比例的旁观者反应'], triggers: ['公共场景'], rules: [], background: [] })) };
+        if (payload.task === 'WORLDBOOK_ROUTE_ONCE') { worldbookRouteCalls += 1; return { text: '公共场景中只允许合乎比例的旁观者反应', byDepth: { 3: '公共场景中只允许合乎比例的旁观者反应' } }; }
         throw new Error('unexpected task');
     },
 };
@@ -269,6 +271,7 @@ const injectionReport = WorldStateMachine.WorldbookCompiler.getReport();
 assert.equal(injectionReport.delivery.injected, true);
 assert.equal(injectionReport.delivery.removedOriginalOccurrences, 1);
 assert.match(injectionReport.routedText, /合乎比例/);
+assert.equal(worldbookRouteCalls, 1, '同一 user 轮次的世界书路由只能调用一次 API');
 WorldStateMachine.WorldbookCompiler.updateCompiledEntry(selectedKey, { core: ['人工修改后的核心规则'], triggers: ['新触发情境'], rules: [], background: [] });
 const editedReport = WorldStateMachine.WorldbookCompiler.getReport();
 assert.equal(editedReport.status.state, 'edited');
@@ -282,17 +285,47 @@ testContext.chatMetadata.worldStateMachine = { state: {
     initialized: true,
     characters: [{ id: 'char', name: '夏以昼', lastUpdatedElapsedMinutes: 30 }],
     npcActivities: [{ characterId: 'char', at: '14:30', location: '公司', action: '开会' }],
-    triggers: [{ id: 'leave', conditions: [], earliestAt: '15:35' }],
+    tasks: [{ id: 'pickup', title: '接机', ownerIds: ['user'], choices: ['立即接机', { id: 'later', label: '稍后接机', message: '我稍后再去接机。' }] }],
+    triggers: [{ id: 'leave', conditions: [], earliestAt: '15:35', choices: [{ label: '先观察', prompt: '我先观察情况。' }] }],
     timeline: [{ id: 'old', at: '14:20', summary: '谈话开始' }],
 }, history: [] };
 const migrated = WorldStateMachine.Storage.load();
-assert.equal(migrated.schemaVersion, 6);
+assert.equal(migrated.schemaVersion, 9);
+assert.equal(migrated.map.rootLabel, '大地图');
+const migratedArea = migrated.map.locations.find((item) => item.name === '夏家');
+assert.ok(migratedArea, '旧版area应迁移成可进入的层级节点');
+assert.equal(migrated.map.locations.find((item) => item.id === 'living').parentId, migratedArea.id);
+assert.ok(migrated.map.locations.every((item) => Number.isFinite(item.x) && Number.isFinite(item.y)), '迁移后每个地点都应有稳定坐标');
 assert.equal(migrated.runtime.needsWorldRefresh, true);
 assert.equal(migrated.runtime.npcLastUpdatedElapsedMinutes.char, 30);
 assert.equal('lastUpdatedElapsedMinutes' in migrated.characters[0], false);
 assert.equal('at' in migrated.npcActivities[0], false);
 assert.deepEqual(migrated.triggers[0].conditions, ['世界时间达到15:35']);
 assert.equal('earliestAt' in migrated.triggers[0], false);
+assert.deepEqual(migrated.tasks[0].choices, [{ id: 'choice-1', label: '立即接机', message: '立即接机' }, { id: 'later', label: '稍后接机', message: '我稍后再去接机。' }]);
+assert.deepEqual(migrated.triggers[0].choices, [{ id: 'choice-1', label: '先观察', message: '我先观察情况。' }]);
 assert.equal('at' in migrated.timeline[0], false);
+
+testContext.generateRaw = async () => '{"ok":true}';
+testContext.chat = [
+    { is_user: true, name: '林知夏', mes: '我停止打闹，坐回座位。', send_date: 'u2' },
+    { is_user: false, name: '夏以昼', mes: '他替我系好安全带。', send_date: 'a2' },
+];
+testContext.chatMetadata.worldStateMachine.state = {
+    ...migrated, initialized: true, planner: { turnKey: 'u2:test', plan: {}, moduleInjections: {}, injection: '', error: '' },
+    runtime: { ...migrated.runtime, lastSettledMessageId: '' },
+};
+let settleCalls = 0;
+WorldStateMachine.Api.complete = async (_system, payload) => {
+    settleCalls += 1;
+    assert.equal(payload.phase, 'POST_GENERATION_RECONCILE');
+    assert.ok(Array.isArray(payload.worldbookRules));
+    return {
+        state: structuredClone(testContext.chatMetadata.worldStateMachine.state),
+        worldbookEntries: [{ key: selectedKey, core: ['公共场景中只允许合乎比例的旁观者反应'], triggers: ['公共场景'], rules: [], background: [] }],
+    };
+};
+await WorldStateMachine.Engine.settle({ force: true });
+assert.equal(settleCalls, 1, '回复后普通状态与世界书必须合并为一次结算 API');
 
 console.log('Injection ownership/deduplication smoke test passed.');

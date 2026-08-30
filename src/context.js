@@ -8,6 +8,13 @@
     function worldbookEntryKey(bookName, entryId) {
         return `${encodeURIComponent(text(bookName))}::${encodeURIComponent(text(entryId))}`;
     }
+    function keyedEntries(bookName, entries) {
+        return (entries || []).map((entry, index) => ({
+            ...entry,
+            key: entry.key || worldbookEntryKey(bookName, entry.id || index),
+            bookName,
+        }));
+    }
     function context() { return window.SillyTavern?.getContext?.() || null; }
     function currentCharacter(ctx = context()) {
         return Array.isArray(ctx?.characters) ? ctx.characters[ctx.characterId] : null;
@@ -32,7 +39,7 @@
     }
     function identityNames(ctx = context()) {
         const messages = Array.isArray(ctx?.chat) ? ctx.chat : [];
-        const recentUserName = [...messages].reverse().find((item) => item?.is_user)?.name;
+        const recentUserName = [...messages].reverse().find((item) => item?.is_user && item?.is_system !== true)?.name;
         const recentCharacterName = [...messages].reverse().find((item) => !item?.is_user && !item?.is_system)?.name;
         const character = compactCharacter(currentCharacter(ctx));
         return {
@@ -49,7 +56,9 @@
         };
     }
     function chat(ctx = context()) {
-        return Array.isArray(ctx?.chat) ? ctx.chat.map(normalizeMessage).filter((item) => item.content) : [];
+        // SillyTavern uses is_system=true for messages hidden from the prompt.
+        // Those floors must stay invisible to the state machine as well.
+        return Array.isArray(ctx?.chat) ? ctx.chat.filter((message) => message?.is_system !== true).map(normalizeMessage).filter((item) => item.content) : [];
     }
     function latestUserMessage(ctx = context()) {
         return [...chat(ctx)].reverse().find((item) => item.role === 'user') || null;
@@ -81,15 +90,25 @@
     }
     function selectedDomWorldNames() {
         try {
-            return ['#world_info option:checked', '#world_editor_select option:checked']
-                .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
-                .map((option) => text(option.value) || text(option.textContent))
-                .filter((value) => value && !/^(none|未选择|选择以编辑|-+)$/i.test(value));
+            // #world_editor_select is merely the book currently open in ST's
+            // editor. It is not enabled lore and must never revive the previous
+            // book in this plugin's picker.
+            return Array.from(document.querySelectorAll('#world_info option:checked'))
+                .map((option) => text(option.textContent) || text(option.value))
+                .filter((value) => value && !/(?:^none$|未选择|选择以编辑|^-+$)/i.test(value));
         } catch (_error) { return []; }
+    }
+    function characterBoundWorldNames(settings, character) {
+        const charData = character?.data || character || {};
+        const primary = nameCandidates(charData?.extensions?.world);
+        const avatar = text(character?.avatar || charData?.avatar);
+        const fileNames = new Set([avatar, avatar.replace(/\.[^.]+$/, '')].filter(Boolean));
+        const charLore = settings?.world_info?.charLore || settings?.worldInfo?.charLore || [];
+        const extras = (Array.isArray(charLore) ? charLore : []).filter((item) => fileNames.has(text(item?.name))).flatMap((item) => nameCandidates(item?.extraBooks));
+        return unique([...primary, ...extras]);
     }
     async function enabledWorldNames(ctx = context(), character = currentCharacter(ctx)) {
         const settings = ctx?.extensionSettings || window.extension_settings || {};
-        const charData = character?.data || character || {};
         const worldSettings = settings.world_info || settings.worldInfo || {};
         const worldModule = await loadWorldInfoModule();
         const candidates = [
@@ -100,23 +119,24 @@
             worldSettings.globalSelect,
             worldSettings.selectedWorlds,
             worldSettings.selected_world_info,
-            ctx?.worldInfo?.selectedWorlds,
-            ctx?.worldInfo?.selected_world_info,
-            ctx?.chatMetadata?.world_info,
-            ctx?.chatMetadata?.worldInfo,
-            charData?.extensions?.world,
-            charData?.world,
+            characterBoundWorldNames(settings, character),
             selectedDomWorldNames(),
         ];
         return unique(candidates.flatMap(nameCandidates));
     }
     function normalizeEntries(data, options = {}) {
-        const source = data?.entries || data?.data?.entries || data?.world?.entries || data?.data?.world?.entries || data?.worldInfo?.entries || data?.worldInfoData?.entries || data?.world_info?.entries || {};
+        const source = Array.isArray(data) ? data : (data?.entries || data?.data?.entries || data?.world?.entries || data?.data?.world?.entries || data?.worldInfo?.entries || data?.worldInfoData?.entries || data?.world_info?.entries || {});
+        const entryText = (value) => {
+            if (typeof value === 'string') return text(value);
+            if (Array.isArray(value)) return value.map(entryText).filter(Boolean).join('\n');
+            if (value && typeof value === 'object') return text(value.content || value.text || value.value);
+            return '';
+        };
         const entries = (Array.isArray(source) ? source : Object.values(source || {})).map((entry, index) => ({
             id: text(entry.uid ?? entry.id ?? index),
             keys: Array.isArray(entry.key) ? entry.key : (Array.isArray(entry.keys) ? entry.keys : [entry.key || entry.keys].filter(Boolean)),
             comment: text(entry.comment || entry.name || entry.title),
-            content: text(entry.content || entry.text || entry.value),
+            content: entryText(entry.content ?? entry.text ?? entry.value ?? entry.prompt),
             depth: Math.max(0, Math.min(100, Math.round(Number(entry.depth ?? entry.extensions?.depth ?? 4) || 0))),
             role: Number(entry.role ?? entry.extensions?.role ?? 0) || 0,
             enabled: ![true, 1, 'true', '1'].includes(entry.disable) && ![true, 1, 'true', '1'].includes(entry.disabled) && ![false, 0, 'false', '0'].includes(entry.enabled),
@@ -125,60 +145,75 @@
         return options.includeDisabled === true ? entries : entries.filter((entry) => entry.enabled);
     }
     async function readWorldbook(name, ctx = context(), options = {}) {
+        const attempts = [];
         try {
             if (typeof ctx?.getWorldInfo === 'function') {
                 const data = await ctx.getWorldInfo(name);
                 const entries = normalizeEntries(data, options);
-                if (entries.length) return { name, entries, source: 'context.getWorldInfo' };
+                attempts.push(`context.getWorldInfo：${entries.length} 条`);
+                if (entries.length) return { name, entries: keyedEntries(name, entries), source: 'context.getWorldInfo', attempts };
             }
-        } catch (error) { console.debug('[WorldStateMachine] getWorldInfo failed', name, error); }
+        } catch (error) { attempts.push(`context.getWorldInfo：${text(error?.message || error)}`); console.debug('[WorldStateMachine] getWorldInfo failed', name, error); }
         try {
             const module = await loadWorldInfoModule();
             if (typeof module?.loadWorldInfo === 'function') {
                 const entries = normalizeEntries(await module.loadWorldInfo(name), options);
-                if (entries.length) return { name, entries, source: 'world-info module' };
+                attempts.push(`world-info module：${entries.length} 条`);
+                if (entries.length) return { name, entries: keyedEntries(name, entries), source: 'world-info module', attempts };
             }
             const moduleCache = module?.world_info?.[name] || module?.worldInfo?.[name];
             const moduleEntries = normalizeEntries(moduleCache, options);
-            if (moduleEntries.length) return { name, entries: moduleEntries, source: 'world-info module cache' };
-        } catch (error) { console.debug('[WorldStateMachine] world-info import failed', name, error); }
+            attempts.push(`world-info module cache：${moduleEntries.length} 条`);
+            if (moduleEntries.length) return { name, entries: keyedEntries(name, moduleEntries), source: 'world-info module cache', attempts };
+        } catch (error) { attempts.push(`world-info module：${text(error?.message || error)}`); console.debug('[WorldStateMachine] world-info import failed', name, error); }
         const cached = window.world_info?.[name];
         const cachedEntries = normalizeEntries(cached, options);
-        if (cachedEntries.length) return { name, entries: cachedEntries, source: 'window cache' };
+        attempts.push(`window cache：${cachedEntries.length} 条`);
+        if (cachedEntries.length) return { name, entries: keyedEntries(name, cachedEntries), source: 'window cache', attempts };
         try {
-            const headers = Object.assign({ 'Content-Type': 'application/json' }, typeof window.getRequestHeaders === 'function' ? window.getRequestHeaders() : {});
+            const headers = await WSM.Api?.requestHeaders?.() || { 'Content-Type': 'application/json' };
             const response = await fetch('/api/worldinfo/get', { method: 'POST', headers, body: JSON.stringify({ name }) });
             if (response.ok) {
                 const entries = normalizeEntries(await response.json(), options);
-                if (entries.length) return { name, entries, source: '/api/worldinfo/get' };
+                attempts.push(`/api/worldinfo/get：${entries.length} 条`);
+                if (entries.length) return { name, entries: keyedEntries(name, entries), source: '/api/worldinfo/get', attempts };
             }
-        } catch (error) { console.debug('[WorldStateMachine] world-info API failed', name, error); }
-        return { name, entries: [], source: 'unreadable' };
+        } catch (error) { attempts.push(`/api/worldinfo/get：${text(error?.message || error)}`); console.debug('[WorldStateMachine] world-info API failed', name, error); }
+        return { name, entries: [], source: 'unreadable', attempts };
     }
     function embeddedCharacterBook(character = currentCharacter(), options = {}) {
         const book = (character?.data || character || {})?.character_book;
         if (!book?.entries) return null;
-        return { name: text(book.name) || '角色卡内嵌世界书', entries: normalizeEntries(book, options), source: 'character card' };
+        const name = text(book.name) || '角色卡内嵌世界书';
+        return { name, entries: keyedEntries(name, normalizeEntries(book, options)), source: 'character card' };
     }
     async function worldbooks(ctx = context(), options = {}) {
         const requestedNames = await enabledWorldNames(ctx);
         const books = await Promise.all(requestedNames.map((name) => readWorldbook(name, ctx, options)));
         const embedded = embeddedCharacterBook(currentCharacter(ctx), options);
         if (embedded) books.push(embedded);
-        const loaded = books.filter((book) => book.entries.length).map((book) => ({
-            ...book,
-            entries: book.entries.map((entry, index) => ({
-                ...entry,
-                key: worldbookEntryKey(book.name, entry.id || index),
-                bookName: book.name,
-            })),
-        }));
+        const loadedByName = new Map();
+        books.filter((book) => book.entries.length).forEach((book) => {
+            const normalized = book.entries.map((entry, index) => ({
+                ...entry, key: worldbookEntryKey(book.name, entry.id || index), bookName: book.name,
+            }));
+            const previous = loadedByName.get(book.name);
+            if (!previous) {
+                loadedByName.set(book.name, { ...book, entries: normalized });
+                return;
+            }
+            const byKey = new Map(previous.entries.map((entry) => [entry.key, entry]));
+            normalized.forEach((entry) => { if (!byKey.has(entry.key)) byKey.set(entry.key, entry); });
+            previous.entries = [...byKey.values()];
+            if (!String(previous.source).includes(book.source)) previous.source = `${previous.source} + ${book.source}`;
+        });
+        const loaded = [...loadedByName.values()];
         return {
             books: loaded,
             diagnostics: {
                 requestedNames,
                 loadedNames: loaded.map((book) => book.name),
-                failedNames: books.filter((book) => !book.entries.length).map((book) => book.name),
+                failedNames: unique(books.filter((book) => !book.entries.length).map((book) => book.name)),
                 entryCounts: Object.fromEntries(loaded.map((book) => [book.name, book.entries.length])),
                 readSources: Object.fromEntries(loaded.map((book) => [book.name, book.source])),
             },
@@ -201,9 +236,38 @@
         const ctx = context();
         const settings = WSM.Settings.get();
         const allChat = chat(ctx);
-        const recentCount = Math.max(2, Number(settings.recentMessages || 12));
-        const selectedChat = options.fullChat ? allChat : allChat.slice(-recentCount);
+        const configuredCount = Number(settings.recentMessages);
+        const recentCount = Number.isFinite(configuredCount) ? Math.max(0, Math.min(200, Math.round(configuredCount))) : 12;
+        const readAllVisible = options.fullChat === true || recentCount === 0;
+        const selectedChat = readAllVisible ? allChat : allChat.slice(-recentCount);
+        const rawChat = Array.isArray(ctx?.chat) ? ctx.chat : [];
+        const hiddenMessages = rawChat.filter((message) => message?.is_system === true).length;
         const worldbookResult = await worldbooks(ctx);
+        let configuredBooks = null;
+        if (settings.worldbookCompiler?.enabled === true) {
+            const availableNames = worldbookResult.books.map((book) => book.name);
+            const knownNames = new Set((settings.worldbookCompiler?.knownBookNames || []).map(text).filter(Boolean));
+            const selectedNames = new Set((settings.worldbookCompiler?.selectedBookNames || []).map(text).filter((name) => availableNames.includes(name)));
+            availableNames.forEach((name) => { if (!knownNames.has(name)) selectedNames.add(name); });
+            configuredBooks = selectedNames;
+            const entryKeys = worldbookResult.books.filter((book) => selectedNames.has(book.name)).flatMap((book) => book.entries.filter((entry) => entry.enabled).map((entry) => entry.key));
+            const nextCompiler = {
+                ...settings.worldbookCompiler,
+                selectedBookNames: [...selectedNames],
+                knownBookNames: availableNames,
+                entryKeys,
+                knownEntryKeys: worldbookResult.books.flatMap((book) => book.entries.map((entry) => entry.key)),
+            };
+            if (JSON.stringify(nextCompiler) !== JSON.stringify(settings.worldbookCompiler)) WSM.Settings.update({ worldbookCompiler: nextCompiler });
+        }
+        if (configuredBooks) {
+            worldbookResult.books = worldbookResult.books.filter((book) => configuredBooks.has(book.name));
+            worldbookResult.diagnostics.requestedNames = worldbookResult.diagnostics.requestedNames.filter((name) => configuredBooks.has(name));
+            worldbookResult.diagnostics.loadedNames = worldbookResult.books.map((book) => book.name);
+            worldbookResult.diagnostics.failedNames = worldbookResult.diagnostics.failedNames.filter((name) => configuredBooks.has(name));
+            worldbookResult.diagnostics.entryCounts = Object.fromEntries(worldbookResult.books.map((book) => [book.name, book.entries.length]));
+            worldbookResult.diagnostics.readSources = Object.fromEntries(worldbookResult.books.map((book) => [book.name, book.source]));
+        }
         const source = {
             identities: identityNames(ctx),
             character: compactCharacter(currentCharacter(ctx)),
@@ -216,10 +280,11 @@
             chat: selectedChat,
             tavernTextContext: {
                 source: 'SillyTavern.getContext().chat',
-                scope: options.fullChat ? 'full' : 'recent',
+                scope: readAllVisible ? 'full-visible' : 'recent-visible',
                 totalMessages: allChat.length,
                 includedMessages: selectedChat.length,
                 truncated: selectedChat.length < allChat.length,
+                hiddenMessages,
             },
             currentUserAction: latestUserMessage(ctx),
             latestAssistantText: latestAssistantMessage(ctx),
@@ -255,5 +320,5 @@
         for (let i = 0; i < raw.length; i += 1) hash = Math.imul(hash ^ raw.charCodeAt(i), 16777619);
         return (hash >>> 0).toString(16);
     }
-    WSM.Context = { context, chat, latestUserMessage, latestAssistantMessage, identityNames, buildSource, sourceFingerprint, listWorldbookEntries, listEnabledWorldNames, worldbookEntryKey, _test: { normalizeEntries } };
+    WSM.Context = { context, chat, latestUserMessage, latestAssistantMessage, identityNames, buildSource, sourceFingerprint, readWorldbook, listWorldbookEntries, listEnabledWorldNames, worldbookEntryKey, _test: { normalizeEntries } };
 })();

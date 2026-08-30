@@ -17,7 +17,10 @@ const compilerConfig = {
     contextMessages: 8,
     failClosed: true,
 };
-WorldStateMachine.Settings = { get: () => ({ worldbookCompiler: compilerConfig, recentMessages: 12, maxSourceChars: 60000 }) };
+WorldStateMachine.Settings = {
+    get: () => ({ worldbookCompiler: compilerConfig, recentMessages: 12, maxSourceChars: 60000 }),
+    update: ({ worldbookCompiler }) => { if (worldbookCompiler) Object.assign(compilerConfig, worldbookCompiler); },
+};
 globalThis.selected_world_info = ['测试世界书'];
 globalThis.SillyTavern = {
     getContext() {
@@ -38,10 +41,14 @@ globalThis.SillyTavern = {
 };
 
 await import('../src/context.js');
+const nestedEntries = WorldStateMachine.Context._test.normalizeEntries({ world: { entries: [{ id: 'nested', content: { text: '嵌套正文' } }] } }, { includeDisabled: true });
+assert.equal(nestedEntries[0].content, '嵌套正文');
 const allEntries = await WorldStateMachine.Context.listWorldbookEntries({ includeDisabled: true });
 assert.equal(allEntries.length, 2);
 assert.equal(allEntries.filter((entry) => entry.enabled).length, 1);
 assert.equal(allEntries.find((entry) => !entry.enabled).comment, '关闭条目');
+const directBook = await WorldStateMachine.Context.readWorldbook('测试世界书', undefined, { includeDisabled: true });
+assert.ok(directBook.entries.every((entry) => entry.key && entry.key !== 'undefined'));
 
 const source = await WorldStateMachine.Context.buildSource({ fullChat: true, preserveFull: true });
 assert.equal(source.worldbooks[0].entries.length, 1);
@@ -50,16 +57,19 @@ assert.equal(source.worldbooks[0].entries[0].comment, '开启条目');
 compilerConfig.entryKeys = allEntries.map((entry) => entry.key);
 compilerConfig.knownEntryKeys = [...compilerConfig.entryKeys];
 WorldStateMachine.Api = {
+    async withCallBudget(_max, _label, operation) { return operation(); },
     async complete(_prompt, payload) {
-        if (payload.task === 'WORLDBOOK_COMPILE') {
+        if (payload.task === 'WORLDBOOK_COMPILE_ONCE') {
             return { entries: payload.entries.map((entry) => ({ key: entry.key, core: [entry.content], triggers: [], rules: [], background: [] })) };
         }
-        if (payload.task === 'WORLDBOOK_ROUTE') return { text: '开启规则' };
-        if (payload.task === 'WORLDBOOK_ROUTE_MERGE') return { text: '开启规则' };
+        if (payload.task === 'WORLDBOOK_ROUTE_ONCE') return { text: '开启规则', byDepth: { 2: '开启规则' } };
         throw new Error(`unexpected task ${payload.task}`);
     },
 };
 await import('../src/worldbook-compiler.js');
+assert.deepEqual(WorldStateMachine.WorldbookCompiler._test.compiledResultItems({ core: ['直接结果'] }, [{ key: 'only' }]), [{ core: ['直接结果'] }]);
+assert.deepEqual(WorldStateMachine.WorldbookCompiler._test.compiledResultItems({ entry: { rules: ['单条包装'] } }, [{ key: 'only' }]), [{ rules: ['单条包装'] }]);
+assert.deepEqual(WorldStateMachine.WorldbookCompiler._test.compiledResultItems({ core: ['不能猜归属'] }, [{ key: 'a' }, { key: 'b' }]), []);
 const compiled = await WorldStateMachine.WorldbookCompiler.compileConfig(compilerConfig, { force: true, entries: allEntries });
 assert.equal(compiled.count, 2);
 const processed = await WorldStateMachine.WorldbookCompiler.processSource(source);
@@ -85,8 +95,8 @@ WorldStateMachine.Api.complete = async (_prompt, payload, options) => {
 };
 const adaptiveCompiled = await WorldStateMachine.WorldbookCompiler.compileConfig(compilerConfig, { force: true, entries: [largeEntry] });
 assert.equal(adaptiveCompiled.count, 1);
-assert.ok(largeAttempts > successfulParts.length);
-assert.match(successfulParts.join(''), /LARGE-START/);
-assert.match(successfulParts.join(''), /LARGE-END/);
+assert.equal(largeAttempts, 1, 'worldbook compilation must not exceed its single billable request cap');
+assert.equal(successfulParts.length, 0);
+assert.match([...memory.values()].join('\n'), /LARGE-START/);
 
 console.log('Worldbook enabled/disabled entry smoke tests passed');

@@ -54,7 +54,7 @@
         return endpoint.href;
     }
     const STATE_ROOT_KEYS = ['identities','world','map','characters','npcActivities','relationships','knowledge','tasks','events','triggers','threads','processes','causalEffects','timeline'];
-    const EVIDENCE_ROOT_KEYS = ['sourceRefs','canon','chronology','characters','relationships','knowledge','locations','tasks','events','causal','currentScene','uncertainties'];
+    const EVIDENCE_ROOT_KEYS = ['sourceRefs','canon','chronology','timeline','anchors','characters','npcActivities','relationships','knowledge','locations','tasks','events','triggers','threads','processes','causal','progression','currentScene','uncertainties'];
     function objectKeyCount(value, keys) {
         if (!value || typeof value !== 'object' || Array.isArray(value)) return 0;
         return keys.reduce((count, key) => count + (Object.prototype.hasOwnProperty.call(value, key) ? 1 : 0), 0);
@@ -141,6 +141,14 @@
             if (score >= bestScore && score > 0) { best = candidate; bestScore = score; }
         });
         if (best) return best;
+        // Providers sometimes return every inner card correctly but omit only
+        // the final array/object closers. Recover complete module boundaries
+        // locally before reporting dozens of unrelated inner JSON objects.
+        // This is deterministic and never spends another API call.
+        if (cleaned && ['state','evidence'].includes(contract)) {
+            const repaired = repairTruncatedJson(cleaned, contract);
+            if (repaired) return repaired;
+        }
         const roots = [...new Set(candidates.flatMap((candidate) => Object.keys(candidate || {}).slice(0, 8)))].slice(0, 12);
         throw new Error(`Planner 返回了 ${candidates.length} 个 JSON，但没有找到${contractLabel(contract)}${roots.length ? `；检测到根字段：${roots.join('、')}` : ''}`);
     }

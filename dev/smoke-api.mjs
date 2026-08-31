@@ -32,6 +32,11 @@ globalThis.SillyTavern = {
 WorldStateMachine.Settings = { get: () => settings };
 
 await import('../src/api.js');
+const recoveredEvidence = WorldStateMachine.Api._test.extractJson(
+    '{"evidence":{"currentScene":[],"characters":[{"name":"测试角色"}],"threads":[{"title":"未决线","status":"open"}]',
+    { jsonContract: 'evidence' },
+);
+assert.equal((recoveredEvidence.evidence || recoveredEvidence).threads[0].title, '未决线', '外层未闭合但模块完整时必须本地修复，不能把内层卡片误报为几十个无关JSON');
 let operationId = 0;
 const complete = (system, payload, options = {}) => WorldStateMachine.Api.withCallBudget(
     1,
@@ -142,8 +147,8 @@ assert.equal(gptBody.reasoning_effort, 'low');
 assert.equal(gptBody.verbosity, 'low');
 assert.equal('max_tokens' in gptBody, false);
 assert.equal('temperature' in gptBody, false);
-const repairedState = WorldStateMachine.Api._test.repairTruncatedJson('{"state":{"world":{"facts":["全局摘要"]},"characters":[{"id":"char","name":"角色"}],"relationships":[{"id":"unfinished', 'state');
-assert.equal(repairedState.state.world.facts[0], '全局摘要');
+const repairedState = WorldStateMachine.Api._test.repairTruncatedJson('{"state":{"world":{"currentConditions":["当前客观状态"]},"characters":[{"id":"char","name":"角色"}],"relationships":[{"id":"unfinished', 'state');
+assert.equal(repairedState.state.world.currentConditions[0], '当前客观状态');
 assert.equal(repairedState.state.characters[0].name, '角色');
 assert.equal(repairedState.state.relationships, undefined, 'an unfinished top-level module must be discarded as a whole');
 const repairedEvidence = WorldStateMachine.Api._test.repairTruncatedJson('{"evidence":{"canon":["覆盖全部后半的核心摘要"],"sourceRefs":["chat:1","chat:2"],"characters":[{"name":"unfinished', 'evidence');

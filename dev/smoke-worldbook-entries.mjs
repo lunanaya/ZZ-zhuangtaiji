@@ -67,9 +67,61 @@ WorldStateMachine.Api = {
     },
 };
 await import('../src/worldbook-compiler.js');
+const nativePayload = {
+    globalLore: [
+        { world: '测试世界书', uid: 1, content: '开启规则' },
+        { world: '其他世界书', uid: 99, content: '未交给插件管理的规则' },
+    ],
+    characterLore: [], chatLore: [], personaLore: [],
+};
+const nativeRemoved = WorldStateMachine.WorldbookCompiler._test.filterNativeWorldbookEntries(nativePayload, compilerConfig);
+assert.equal(nativeRemoved, 1, '已交给拆解器的条目必须在酒馆组装世界书前/后之前移除');
+assert.deepEqual(nativePayload.globalLore.map((entry) => entry.content), ['未交给插件管理的规则'], '未选择的原生世界书条目必须继续由酒馆正常注入');
 assert.deepEqual(WorldStateMachine.WorldbookCompiler._test.compiledResultItems({ core: ['直接结果'] }, [{ key: 'only' }]), [{ core: ['直接结果'] }]);
 assert.deepEqual(WorldStateMachine.WorldbookCompiler._test.compiledResultItems({ entry: { rules: ['单条包装'] } }, [{ key: 'only' }]), [{ rules: ['单条包装'] }]);
 assert.deepEqual(WorldStateMachine.WorldbookCompiler._test.compiledResultItems({ core: ['不能猜归属'] }, [{ key: 'a' }, { key: 'b' }]), []);
+const compactGroups = WorldStateMachine.WorldbookCompiler._test.compactRuleGroups({
+    core: Array.from({ length: 9 }, (_, index) => `核心规则${index}`),
+    triggers: Array.from({ length: 7 }, (_, index) => `触发情境${index}`),
+    rules: Array.from({ length: 9 }, (_, index) => `条件规则${index}`),
+    background: Array.from({ length: 5 }, (_, index) => `必要背景${index}`),
+});
+assert.ok(Object.values(compactGroups).flat().length <= 12, '单个世界书规则卡不得膨胀到十几二十条以上');
+assert.ok(compactGroups.core.length <= 3);
+assert.ok(compactGroups.triggers.length <= 3);
+assert.ok(compactGroups.rules.length <= 5);
+assert.ok(compactGroups.background.length <= 2);
+const etiquetteGroups = WorldStateMachine.WorldbookCompiler._test.sourceRuleGroups(`
+核心原则：人物行为必须符合身份、场合与礼法。
+大家闺秀外出必须有合理理由，并需母亲、嬷嬷或贴身丫鬟陪同。
+男性进入别人内宅属于禁区，除非至亲或得到特殊许可。
+有身份者身边通常有仆从，私密交谈需要避开旁观者。
+男女之间不得随意身体接触。
+公开场合必须履行社会职责，严禁因私人感情抛下职责。
+情节应通过宴席、媒妁或仆人传信等合乎身份的渠道推进。
+生成前必须检查场合、身份与在场旁观者。
+`);
+assert.ok(etiquetteGroups.rules.length >= 4, '规则型世界书必须保留多个独立可执行约束，不能只摘录开头口号');
+assert.match([...etiquetteGroups.rules, ...etiquetteGroups.triggers].join('\n'), /外出.*陪同/);
+assert.match([...etiquetteGroups.rules, ...etiquetteGroups.triggers].join('\n'), /内宅.*许可/);
+assert.match([...etiquetteGroups.rules, ...etiquetteGroups.triggers].join('\n'), /公开场合.*职责/);
+const semanticCompiled = [{ compiled: {
+    depth: 4,
+    core: ['人物言行必须符合身份与场合。'],
+    triggers: [], rules: [], background: [],
+    fragments: [
+        { type: 'rule', cues: ['皇权','朝政'], text: '皇权决策必须符合既定君臣权力边界。' },
+        { type: 'rule', cues: ['选秀','采选'], text: '选秀启动时必须遵守候选资格与宫廷程序。' },
+        { type: 'character', cues: ['夏以昼'], text: '夏以昼是掌握兵权的皇帝。' },
+    ],
+} }];
+const imperialRoute = WorldStateMachine.WorldbookCompiler._test.localRoute({ budget: 500 }, semanticCompiled, [{ role: 'user', content: '我想问皇权如何约束朝政。' }]);
+assert.match(imperialRoute.text, /身份与场合/);
+assert.match(imperialRoute.text, /皇权决策/);
+assert.doesNotMatch(imperialRoute.text, /选秀启动|夏以昼是/);
+const selectionRoute = WorldStateMachine.WorldbookCompiler._test.localRoute({ budget: 500 }, semanticCompiled, [{ role: 'user', content: '宫中马上要开始选秀。' }]);
+assert.match(selectionRoute.text, /选秀启动/);
+assert.doesNotMatch(selectionRoute.text, /皇权决策/);
 const compiled = await WorldStateMachine.WorldbookCompiler.compileConfig(compilerConfig, { force: true, entries: allEntries });
 assert.equal(compiled.count, 2);
 const processed = await WorldStateMachine.WorldbookCompiler.processSource(source);

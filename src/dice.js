@@ -2,19 +2,6 @@
     'use strict';
     const WSM = window.WorldStateMachine = window.WorldStateMachine || {};
 
-    const FOCUSES = [
-        { id: 'context-relationship', label: '上下文关系' },
-        { id: 'space-time-relationship', label: '时空关系' },
-        { id: 'character-relationship', label: '人物关系' },
-    ];
-    const DIRECTIONS = [
-        { id: 'drama', label: '戏剧性' },
-        { id: 'positive', label: '正向' },
-        { id: 'negative', label: '负向' },
-        { id: 'success', label: '成功倾向' },
-        { id: 'romantic', label: '浪漫倾向' },
-    ];
-
     function randomInt(min, max) {
         const low = Math.ceil(Number(min));
         const high = Math.floor(Number(max));
@@ -28,7 +15,6 @@
         }
         return low + Math.floor(Math.random() * range);
     }
-    function pick(items) { return items[randomInt(0, items.length - 1)]; }
     function outcome(number) {
         if (number === 1) return 'critical-failure';
         if (number === 20) return 'critical-success';
@@ -39,81 +25,63 @@
             'critical-failure': '大失败', failure: '失败', success: '成功', 'critical-success': '大成功',
         })[value] || value;
     }
-    function intensityLabel(number) {
-        if (number <= 4) return '平静';
-        if (number <= 8) return '低强度';
-        if (number <= 12) return '中等';
-        if (number <= 16) return '较高';
-        if (number <= 19) return '强烈';
-        return '高潮级';
-    }
     function createRound(turnKey = '') {
-        const focus = pick(FOCUSES);
-        const direction = pick(DIRECTIONS);
-        const poolSize = randomInt(1, 4);
-        const checkPool = Array.from({ length: poolSize }, () => {
+        const poolSize = randomInt(1, 3);
+        const checkPool = Array.from({ length: poolSize }, (_, index) => {
             const number = randomInt(1, 20);
-            return { number, outcome: outcome(number) };
+            return { index: index + 1, number, outcome: outcome(number) };
         });
-        const intensity = randomInt(1, 20);
         return {
-            version: 1,
+            version: 2,
             turnKey: String(turnKey || ''),
-            intensity: { number: intensity, label: intensityLabel(intensity) },
-            analysisFocus: focus,
-            informationIsolation: true,
-            direction: { id: direction.id, label: direction.label, number: randomInt(1, 20) },
+            seed: randomInt(1, 100),
+            shared: true,
             checkPool,
         };
     }
     function normalizeRound(value) {
         if (!value || typeof value !== 'object') return null;
-        const pool = Array.isArray(value.checkPool) ? value.checkPool.map((item) => {
+        const pool = Array.isArray(value.checkPool) ? value.checkPool.slice(0, 3).map((item, index) => {
             const number = Math.min(20, Math.max(1, Number(item?.number || item) || 1));
-            return { number, outcome: outcome(number) };
+            return { index: index + 1, number, outcome: outcome(number) };
         }) : [];
-        const intensityNumber = Math.min(20, Math.max(1, Number(value.intensity?.number) || 1));
-        const directionNumber = Math.min(20, Math.max(1, Number(value.direction?.number) || 1));
         return {
-            version: 1,
+            version: 2,
             turnKey: String(value.turnKey || ''),
-            intensity: { number: intensityNumber, label: intensityLabel(intensityNumber) },
-            analysisFocus: FOCUSES.find((item) => item.id === value.analysisFocus?.id) || FOCUSES[0],
-            informationIsolation: true,
-            direction: Object.assign({}, DIRECTIONS.find((item) => item.id === value.direction?.id) || DIRECTIONS[0], { number: directionNumber }),
+            seed: Math.min(100, Math.max(1, Number(value.seed) || Number(value.direction?.number) || 1)),
+            shared: true,
             checkPool: pool,
         };
     }
     function plannerInstructions(roundValue) {
         const round = normalizeRound(roundValue);
         if (!round) return '';
-        return `\n\n# 本轮骰子推进（程序预掷，必须遵守）
+        return `\n\n# 本轮共享骰池（程序预掷，可选随机源）
 
-1. 剧情强度骰为 ${round.intensity.number}/20（${round.intensity.label}）。它只调整本轮变化幅度，不判定成败。低强度可以只有微小变化，高强度也必须有既存因果支撑。
-2. 本轮优先分析“${round.analysisFocus.label}”，但不排除其他必要信息。此项只是随机焦点，不掷 d20。
-3. 先检查信息隔离：分清各人物已知、未知、误信与信息来源。信息边界是事实检查，不掷骰。
-4. 剧情方向为“${round.direction.label}”，方向骰 ${round.direction.number}/20。该数字表示这个方向的强度，不按成败规则解读；不得为迎合方向而违反人设、信息边界或因果。
-5. 只有行动结果同时具备“不确定性、现实阻力、有意义的成败后果”时才需要行动检定。日常必然行为、无压力过渡、已成立事实、显而易见的信息、普通说话与一般情绪/思考不检定。只有抵抗强烈冲动、精神压力或敌对影响等结果不确定的思维行为才可检定。
-6. 行动检定必须从骰池第一个数字开始顺序消耗，不得挑选、跳过、重掷或自造数字。骰池用完后，不再发起新检定，改用已有事实与最保守的合理结果。
-7. 行动检定：1=大失败；2–10=失败；11–19=成功；20=大成功。数字 10 归入失败，避免阈值重叠。
-8. 需要检定时，正文必须在相应行动附近插入：<check>[姓名|结果|数字|简短原因]</check>。结果只用 critical failure、failure、success 或 critical success；原因不超过30字。无需检定的行为不得输出 <check>。
-9. 可用检定骰（必须按顺序）：${round.checkPool.map((item) => item.number).join(', ') || '无'}。
-10. 遵守现有 <writing_style>。不输出思维链；在内部选择写作技巧。正文不使用“——”，并避免连续重复同一句式。`;
+1. 骰子不决定剧情要不要推进，也不替代剧情推进模块；只有某件事已经允许发生、存在多个同样合理结果且没有唯一答案时，才用骰子选择结果倾向。
+2. 可使用骰子的范围仅限：用户或NPC的不确定行动结果；满足基础条件后的可触发事件；NPC没有明确行程时的多个合理日程；条件允许的自然世界事件；世界进程本轮的顺利/轻微/停滞/受挫；长期线程具备发展条件后的方向或幅度。
+3. 禁止直接掷骰改变人物关系、让角色随机获得知识、改写世界状态、生成时间线事实或决定因果影响是否成立。关系只能依据实际互动产生小幅反应；知识必须有来源；因果必须由前因和现实路径推出。
+4. 已有明确安排、唯一物理结果、既定事实、能力边界、信息来源或完整因果链时不掷骰。骰子只能在合理范围内选结果，不能突破人设、能力、权限、距离、资源与世界规则。
+5. 全部可用模块共享同一骰池，必须从第一枚开始顺序消耗；每枚最多使用一次，不得为每个模块另掷、挑选、跳过、重掷或自造数字。骰池用完后使用最保守的确定性推导。
+6. 行动检定：1=大失败；2–10=失败；11–19=成功；20=大成功。世界进程等非行动事项按点数解释为受挫、停滞、轻微推进或顺利推进，但幅度必须服从已有条件。
+7. 需要行动检定时，正文在对应行动附近插入：<check>[姓名|结果|数字|简短原因]</check>。结果只用 critical failure、failure、success 或 critical success；非行动模块不输出虚假的行动检定标签。
+8. 共享随机种子为 ${round.seed}/100；可用骰池（按顺序且全模块共享）：${round.checkPool.map((item) => item.number).join(', ') || '无'}。
+9. 不输出思维链，不得先决定结果再倒推骰义。`;
     }
     function injectionBlock(roundValue) {
         const round = normalizeRound(roundValue);
         if (!round) return '';
         const pool = round.checkPool.map((item) => `${item.number}（${outcomeLabel(item.outcome)}）`).join(' → ') || '无';
-        return `[骰子推进｜优先执行]
-剧情强度：${round.intensity.number}/20（${round.intensity.label}），只控制幅度，不判定成败。
-分析焦点：${round.analysisFocus.label}（不掷骰）。
-信息隔离：先核对各人物已知/未知/信息来源（不掷骰）。
-剧情方向：${round.direction.label} ${round.direction.number}/20，数字表示方向强度，不判定成败。
-仅当行动同时有不确定性、现实阻力和有意义后果时检定；日常必然行为、无压力过渡、显而易见的信息、普通说话和一般思考不检定。
-检定骰池（按顺序且仅用一次）：${pool}。规则：1=大失败，2–10=失败，11–19=成功，20=大成功。
-需要检定时在对应内容附近输出 <check>[姓名|结果|数字|不超过30字的原因]</check>；无需检定时不输出标签。
-遵守 <writing_style>，不输出思维链；不使用“——”，避免连续重复同一句式。`;
+        return `[共享骰池｜可选随机源]
+随机种子：${round.seed}/100。共享骰池：${pool}。
+骰子不决定剧情是否推进；只有事项已具备发生条件、存在多个合理结果且没有唯一答案时才顺序消耗一枚。
+可用：不确定行动结果、满足条件后的可触发事件、NPC多种合理日程、自然世界事件、世界进程推进幅度、已具备条件的长期线程方向。
+禁用：人物关系升级、知识获得、世界状态、时间线、因果影响，以及已有明确行程、唯一结果或完整因果链的事项。
+所有模块共享这一个池；不得各自掷骰，不得挑选、跳过、重掷或自造数字。骰池用完后按事实作最保守推导。
+骰子只能在既定事实、人设、能力、权限、资源、距离、因果和世界规则允许的范围内解释。
+行动检定规则：1=大失败，2–10=失败，11–19=成功，20=大成功；需要时输出 <check>[姓名|结果|数字|不超过30字原因]</check>。非行动模块不输出行动检定标签。
+不得先决定结果再倒推骰义；不输出思维链。`;
     }
 
-    WSM.Dice = { createRound, normalizeRound, plannerInstructions, injectionBlock, outcome, intensityLabel };
+    WSM.Dice = { createRound, normalizeRound, plannerInstructions, injectionBlock, outcome };
 })();

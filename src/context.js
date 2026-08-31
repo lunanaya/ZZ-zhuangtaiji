@@ -57,7 +57,9 @@
     }
     function chat(ctx = context()) {
         // SillyTavern uses is_system=true for messages hidden from the prompt.
-        // Those floors must stay invisible to the state machine as well.
+        // Hidden floors are the user's archive/compaction layer and must not be
+        // re-expanded during a normal or manual read. Their retained summaries
+        // in visible chat remain the active source of truth.
         return Array.isArray(ctx?.chat) ? ctx.chat.filter((message) => message?.is_system !== true).map(normalizeMessage).filter((item) => item.content) : [];
     }
     function latestUserMessage(ctx = context()) {
@@ -250,7 +252,10 @@
             const selectedNames = new Set((settings.worldbookCompiler?.selectedBookNames || []).map(text).filter((name) => availableNames.includes(name)));
             availableNames.forEach((name) => { if (!knownNames.has(name)) selectedNames.add(name); });
             configuredBooks = selectedNames;
-            const entryKeys = worldbookResult.books.filter((book) => selectedNames.has(book.name)).flatMap((book) => book.entries.filter((entry) => entry.enabled).map((entry) => entry.key));
+            const availableEntryKeys = new Set(worldbookResult.books.filter((book) => selectedNames.has(book.name)).flatMap((book) => book.entries.map((entry) => entry.key)));
+            // Book selection only controls which books appear in the entry
+            // picker. Never turn it into an implicit "select every entry".
+            const entryKeys = (settings.worldbookCompiler?.entryKeys || []).map(String).filter((key) => availableEntryKeys.has(key));
             const nextCompiler = {
                 ...settings.worldbookCompiler,
                 selectedBookNames: [...selectedNames],
@@ -286,8 +291,8 @@
                 truncated: selectedChat.length < allChat.length,
                 hiddenMessages,
             },
-            currentUserAction: latestUserMessage(ctx),
-            latestAssistantText: latestAssistantMessage(ctx),
+            currentUserAction: [...selectedChat].reverse().find((item) => item.role === 'user') || null,
+            latestAssistantText: [...selectedChat].reverse().find((item) => item.role === 'assistant') || null,
         };
         // Initialization can ask SourceReader to preserve every source item. It
         // will stream the material through bounded model calls instead of
@@ -320,5 +325,5 @@
         for (let i = 0; i < raw.length; i += 1) hash = Math.imul(hash ^ raw.charCodeAt(i), 16777619);
         return (hash >>> 0).toString(16);
     }
-    WSM.Context = { context, chat, latestUserMessage, latestAssistantMessage, identityNames, buildSource, sourceFingerprint, readWorldbook, listWorldbookEntries, listEnabledWorldNames, worldbookEntryKey, _test: { normalizeEntries } };
+    WSM.Context = { context, chat, latestUserMessage, latestAssistantMessage, identityNames, buildSource, sourceFingerprint, readWorldbook, listWorldbookEntries, listEnabledWorldNames, worldbookEntryKey, _test: { normalizeEntries, normalizeMessage } };
 })();

@@ -4,6 +4,40 @@
     const text = (value) => String(value ?? '').trim();
     const list = (value) => Array.isArray(value) ? value.filter(Boolean) : [];
     const join = (value) => list(value).join('、');
+    const disclosureLabel = (value) => ({ confidential: '保密', restricted: '受限', public: '公开' }[value] || text(value));
+    function activeMemory(values, warmRelevant = () => false) {
+        return list(values).filter((item) => {
+            const activity = text(item?.activity).toUpperCase();
+            if (!activity || activity === 'HOT') return true;
+            if (activity === 'COLD') return false;
+            return activity === 'WARM' && warmRelevant(item);
+        });
+    }
+    function pacingBlock(settings = WSM.Settings?.get?.() || {}) {
+        const pacing = settings.storyPacing || {};
+        const mode = text(pacing.mode) || 'off';
+        if (mode === 'off') return '';
+        const modeRules = {
+            verySlow: '推进速度：极慢。只处理当前动作、对白、感官结果与直接人物反馈；通常不引入新节点，不主动结束或跳离当前场景。',
+            slow: '推进速度：慢速。每轮最多推进一个很小的变化点，以人物回应、信息澄清和当前场景深化为主。',
+            medium: '推进速度：中速。每轮可以自然推进一个完整节点，必要时触发已经成立的事件或推进既有线程。',
+            fast: '推进速度：快速。可以跳过低价值重复过程，让既有任务、事件或线程进入下一阶段，但仍需写出必要因果与过渡。',
+        };
+        const sceneRule = pacing.allowSceneTransition === true
+            ? '场景切换：允许，但只能在当前场景已自然结束且不需要用户选择时发生。'
+            : '场景切换：禁止自动切换；除非用户明确发起，否则停留在当前场景。';
+        const timeRule = pacing.allowTimeSkip === true
+            ? '时间跳跃：允许，但只能跳过没有决策价值的空白过程，并明确交代经过时间。'
+            : '时间跳跃：禁止自动跳时；不得擅自使用“几小时后、第二天、回到家后”等跨时段推进。';
+        return [
+            modeRules[mode] || modeRules.slow,
+            '速度只控制推进幅度，不控制事件强度；快速不等于制造大事，极慢不等于人物停止行动。',
+            '任何速度都不得越过用户决策点。遇到是否跟随、签署、承诺、告白、离开、接受方案或改变立场等选择时，必须停下并等待用户决定。',
+            '本模块不是剧情规划器：不得新增无依据节点，不得把后台可能性当成已发生事实，也不得在正文模型原有推进之外额外推进第二次。',
+            sceneRule,
+            timeRule,
+        ].join('\n');
+    }
     function replaceIdentityTokens(value, state) {
         let output = text(value);
         const userName = text(state?.identities?.user);
@@ -27,27 +61,37 @@
         const relevantRoutes = list(map.routes).filter((route) => route.from === map.currentLocationId || route.to === map.currentLocationId);
         const relevantNpcIds = new Set([
             ...list(state.characters).filter((item) => item.present || item.location === world.location?.current).map((item) => item.id),
-            ...list(state.causalEffects).filter((item) => item.status === 'arrived').flatMap((item) => list(item.affectedIds)),
+            ...list(state.causalEffects).filter((item) => item.status === 'active').flatMap((item) => list(item.affectedIds)),
         ]);
-        const recentNpcActivities = Object.values(list(state.npcActivities).filter((item) => relevantNpcIds.has(item.characterId)).reduce((groups, item) => {
+        const touchesRelevant = (ids) => list(ids).some((id) => relevantNpcIds.has(id));
+        const recentNpcActivities = Object.values(activeMemory(state.npcActivities, (item) => relevantNpcIds.has(item.characterId)).filter((item) => relevantNpcIds.has(item.characterId)).reduce((groups, item) => {
             if (!item?.characterId || !item?.action) return groups;
             (groups[item.characterId] ||= []).push(item);
             groups[item.characterId] = groups[item.characterId].slice(-3);
             return groups;
         }, {})).flat();
-        const snapshotFacts = [world.time?.display, world.location?.current, world.location?.environment, world.location?.weather, ...list(world.facts)].map(canonicalLine).filter(Boolean);
-        const uniqueEventDevelopments = (item) => list(item.developments).filter((value) => {
+        const snapshotFacts = [world.time?.display, world.season, world.location?.current, world.location?.environment, world.location?.weather, ...list(world.currentConditions)].map(canonicalLine).filter(Boolean);
+        const uniqueEventContent = (item) => [item.summary, item.outcome].filter(Boolean).filter((value) => {
             const canonical = canonicalLine(value);
             return canonical && !snapshotFacts.some((fact) => fact === canonical || (canonical.length >= 12 && (fact.includes(canonical) || canonical.includes(fact))));
         });
         return {
             world: [
                 world.time?.display ? `时间：${world.time.display}` : '',
+                world.season ? `季节：${world.season}` : '',
                 world.location?.current ? `地点：${world.location.current}` : '',
                 world.location?.environment ? `环境：${world.location.environment}` : '',
                 world.location?.weather ? `天气：${world.location.weather}` : '',
-                ...list(world.facts).map((value) => `既定事实：${value}`),
+                ...list(world.currentConditions).map((value) => `当前客观状态：${value}`),
             ].filter(Boolean).join('\n'),
+            factAnchors: activeMemory(state.factAnchors).map((item) => `事实锚点：${item.fact}${item.scope ? `｜范围：${item.scope}` : ''}`).join('\n'),
+            resourceConstraints: activeMemory(state.resourceConstraints, (item) => item.status === 'active').filter((item) => !['expired','satisfied'].includes(item.status)).map((item) => [
+                item.subjectId ? `${entityName(state, item.subjectId, item.subjectId)}：` : '',
+                item.condition,
+                item.amount ? `数量/额度：${item.amount}` : '',
+                item.scope ? `范围：${item.scope}` : '',
+                item.consequence ? `不满足时：${item.consequence}` : '',
+            ].filter(Boolean).join('｜')).join('\n'),
             ambient: list(plan.ambientResponses).map((item) => {
                 if (typeof item === 'string') return `环境反馈：${item}`;
                 const actor = text(item?.actor) || '环境中的人';
@@ -63,34 +107,40 @@
                     return `${from} → ${to}：${status}${route.description ? `；${route.description}` : ''}`;
                 }),
             ].filter(Boolean).join('\n'),
-            characters: list(state.characters).map((item) => [
-                `${entityName(state, item.id, item.name)}：${item.present ? '在场' : `位于${item.location || '未知地点'}`}`,
-                item.status ? `状态：${item.status}` : '',
-                item.pose ? `姿势：${item.pose}` : '',
-                item.clothing ? `衣物：${item.clothing}` : '',
-                join(item.heldItems) ? `手持：${join(item.heldItems)}` : '',
-                join(item.injuries) ? `伤势：${join(item.injuries)}` : '',
-                item.currentAction ? `正在：${item.currentAction}` : '',
-                join(item.goals) ? `目标：${join(item.goals)}` : '',
+            characters: activeMemory(state.characters, (item) => item.present || relevantNpcIds.has(item.id)).map((item) => [
+                `${entityName(state, item.id, item.name)}｜${item.maintenanceLevel === 'active' ? '活跃NPC' : '核心人物'}`,
+                item.identity ? `身份：${item.identity}` : '',
+                item.present ? `位置：${item.location || world.location?.current || '当前场景'}（在场）` : `位置：${item.location || '未知地点'}`,
+                item.situation ? `重要处境：${item.situation}` : '',
+                join(list(item.persistentConditions).map((condition) => typeof condition === 'string' ? condition : [condition.name, condition.effect, condition.recovery].filter(Boolean).join('｜'))) ? `持续状态：${join(list(item.persistentConditions).map((condition) => typeof condition === 'string' ? condition : [condition.name, condition.effect, condition.recovery].filter(Boolean).join('｜')))}` : '',
+                join(list(item.importantItems).map((owned) => typeof owned === 'string' ? owned : [owned.name, owned.status, owned.significance].filter(Boolean).join('｜'))) ? `重要物品：${join(list(item.importantItems).map((owned) => typeof owned === 'string' ? owned : [owned.name, owned.status, owned.significance].filter(Boolean).join('｜')))}` : '',
             ].filter(Boolean).join('；')).join('\n'),
-            npcActivities: recentNpcActivities.map((item) => `${entityName(state, item.characterId)}：${item.location ? `${item.location}｜` : ''}${item.action}`).join('\n'),
-            relationships: list(state.relationships).map((item) => `${entityName(state, item.from) || '?'}→${entityName(state, item.to) || '?'}：${item.status || item.type || '未描述'}`).join('\n'),
-            knowledge: list(state.knowledge).map((item) => [
+            npcActivities: recentNpcActivities.map((item) => `${entityName(state, item.characterId)}：${item.movement ? `${item.movement}｜` : ''}${item.location ? `${item.location}｜` : ''}${item.action}${item.currentRole ? `｜当前作用：${item.currentRole}` : ''}`).join('\n'),
+            relationships: activeMemory(state.relationships, (item) => relevantNpcIds.has(item.from) || relevantNpcIds.has(item.to)).map((item) => `${entityName(state, item.from) || '?'}→${entityName(state, item.to) || '?'}：${item.status || item.type || '未描述'}`).join('\n'),
+            knowledge: activeMemory(state.knowledge, (item) => item.priority === 'L3' && touchesRelevant([...list(item.knownBy), ...list(item.believedBy), ...list(item.suspectedBy), ...list(item.misunderstoodBy), ...list(item.relatedRefs)])).map((item) => [
                 replaceIdentityTokens(item.information, state),
+                item.priority ? `重要性：${item.priority}` : '',
+                item.disclosure ? `公开状态：${disclosureLabel(item.disclosure)}` : '',
                 item.certainty ? `性质：${item.certainty}` : '',
                 join(list(item.knownBy).map((id) => entityName(state, id))) ? `确认：${join(list(item.knownBy).map((id) => entityName(state, id)))}` : '',
                 join(list(item.believedBy).map((id) => entityName(state, id))) ? `相信：${join(list(item.believedBy).map((id) => entityName(state, id)))}` : '',
                 join(list(item.suspectedBy).map((id) => entityName(state, id))) ? `怀疑：${join(list(item.suspectedBy).map((id) => entityName(state, id)))}` : '',
                 join(list(item.misunderstoodBy).map((id) => entityName(state, id))) ? `误解：${join(list(item.misunderstoodBy).map((id) => entityName(state, id)))}` : '',
-                join(list(item.concealedBy).map((id) => entityName(state, id))) ? `隐瞒：${join(list(item.concealedBy).map((id) => entityName(state, id)))}` : '',
                 join(list(item.unknownTo).map((id) => entityName(state, id))) ? `未知：${join(list(item.unknownTo).map((id) => entityName(state, id)))}` : '',
             ].filter(Boolean).join('｜')).join('\n'),
-            tasks: list(state.tasks).filter((item) => !['done','failed'].includes(item.status)).map((item) => `${item.title}：${item.progress || item.status || '待处理'}${item.deadline ? `；截止${item.deadline}` : ''}`).join('\n'),
-            events: list(state.events).filter((item) => item.status !== 'resolved' && uniqueEventDevelopments(item).length).map((item) => `${item.title}最新进展：${join(uniqueEventDevelopments(item))}`).join('\n'),
-            triggers: list(state.triggers).filter((item) => !['triggered','expired'].includes(item.status)).map((item) => `${item.title}：条件${join(item.conditions) || '未设定'}；当前${item.status || 'armed'}`).join('\n'),
-            threads: list(state.threads).filter((item) => item.status !== 'resolved').map((item) => `${item.title}：${item.nextNaturalStep || item.status || '延续中'}`).join('\n'),
-            processes: list(state.processes).filter((item) => item.status !== 'resolved').map((item) => `${item.title}：${item.currentDirection || item.status || '自然延续'}${Number(item.progress?.max) > 0 ? `；进度${Number(item.progress?.current || 0)}/${Number(item.progress.max)}` : ''}`).join('\n'),
-            causalEffects: list(state.causalEffects).filter((item) => item.status === 'arrived').map((item) => [item.cause || item.causeRef, ...list(item.steps), item.result].filter(Boolean).join(' → ')).join('\n'),
+            tasks: activeMemory(state.tasks, (item) => item.status === 'active' && item.userVisible !== false).filter((item) => !['done','failed'].includes(item.status)).map((item) => `${item.title}：${item.progress || item.status || '待处理'}${item.deadline ? `；截止${item.deadline}` : ''}`).join('\n'),
+            events: activeMemory(state.events, (item) => item.status === 'ongoing' && (!item.location || item.location === world.location?.current)).filter((item) => uniqueEventContent(item).length).map((item) => `${item.title}｜${item.status === 'occurred' ? '已发生' : '正在发生'}：${join(uniqueEventContent(item))}`).join('\n'),
+            triggers: activeMemory(state.triggers, (item) => item.status === 'eligible').filter((item) => !['triggered','expired'].includes(item.status)).map((item) => `${item.title}：条件${join(item.conditions) || '未设定'}；当前${item.status || 'armed'}`).join('\n'),
+            threads: activeMemory(state.threads, (item) => item.priority === 'L3' && touchesRelevant(item.participantIds)).filter((item) => item.status !== 'resolved').map((item) => `${item.title}：${item.nextNaturalStep || item.status || '延续中'}`).join('\n'),
+            progression: state.progression?.activity !== 'COLD' ? [
+                state.progression?.direction ? `当前方向：${state.progression.direction}` : '',
+                state.progression?.currentMovement ? `当前变化：${state.progression.currentMovement}` : '',
+                join(state.progression?.nextRequiredChanges) ? `下一阶段仍需：${join(state.progression.nextRequiredChanges)}` : '',
+                state.progression?.blockedByDecision ? `必须停在用户决策点：${state.progression.blockedByDecision}` : '',
+            ].filter(Boolean).join('\n') : '',
+            processes: activeMemory(state.processes, (item) => item.priority === 'L3').filter((item) => item.status !== 'resolved').map((item) => `${item.title}：${item.currentDirection || item.status || '自然延续'}${Number(item.progress?.max) > 0 ? `；进度${Number(item.progress?.current || 0)}/${Number(item.progress.max)}` : ''}`).join('\n'),
+            causalEffects: activeMemory(state.causalEffects, (item) => item.status === 'active' && touchesRelevant(item.affectedIds)).filter((item) => item.status === 'active').map((item) => [item.cause || item.causeRef, ...list(item.steps), item.result].filter(Boolean).join(' → ')).join('\n'),
+            pacing: pacingBlock(),
             planner: [
                 plan.advanceDecision?.direction ? `本轮方向：${plan.advanceDecision.direction}` : '',
                 plan.advanceDecision?.mode ? `推进方式：${plan.advanceDecision.mode}；强度：${plan.advanceDecision.intensity || 'none'}` : '',
@@ -108,7 +158,7 @@
     }
 
     function canonicalLine(value) {
-        return text(value).replace(/^[-*•\d.、\s]+/, '').replace(/^(时间|地点|环境|天气|状态|既定事实|最新进展)[：:]\s*/, '').replace(/[\s，。；：:、]/g, '').toLowerCase();
+        return text(value).replace(/^[-*•\d.、\s]+/, '').replace(/^(时间|季节|地点|环境|天气|状态|当前客观状态|事实锚点|最新进展)[：:]\s*/, '').replace(/[\s，。；：:、]/g, '').toLowerCase();
     }
 
     function dedupeContent(content, seen) {
@@ -201,9 +251,11 @@
         const candidates = [];
         const seenFacts = [];
         Object.entries(WSM.Defaults.INJECTION_MODULES).forEach(([id, defaultModule]) => {
+            if (id === 'map') return; // Spatial index is sent only through an explicit player interaction.
             const config = Object.assign({}, defaultModule, modules[id] || {});
             if (config.enabled === false) return;
-            const content = dedupeContent(removeRatingNumbers(replaceIdentityTokens(supplied[id] || generated[id], state)), seenFacts);
+            const source = ['ambient','planner'].includes(id) ? (supplied[id] || generated[id]) : generated[id];
+            const content = dedupeContent(removeRatingNumbers(replaceIdentityTokens(source, state)), seenFacts);
             if (!content) return;
             const fixedInstruction = text(config.instruction);
             const editablePrompt = text(settings.modulePrompts?.[id]);
@@ -227,9 +279,11 @@
         const groups = new Map();
         const seenFacts = [];
         Object.entries(WSM.Defaults.INJECTION_MODULES).forEach(([id, defaultModule]) => {
+            if (id === 'map') return; // Never leak the background map into ordinary narration.
             const config = Object.assign({}, defaultModule, modules[id] || {});
             if (config.enabled === false) return;
-            const content = dedupeContent(removeRatingNumbers(replaceIdentityTokens(supplied[id] || generated[id], state)), seenFacts);
+            const source = ['ambient','planner'].includes(id) ? (supplied[id] || generated[id]) : generated[id];
+            const content = dedupeContent(removeRatingNumbers(replaceIdentityTokens(source, state)), seenFacts);
             if (!content) return;
             const fixedInstruction = text(config.instruction);
             const editablePrompt = text(settings.modulePrompts?.[id]);
@@ -268,5 +322,5 @@
         }).join('\n\n');
     }
 
-    WSM.Injection = { compose, composeByDepth, preview, normalizeFinalOverride, fallbackBlocks };
+    WSM.Injection = { compose, composeByDepth, preview, normalizeFinalOverride, fallbackBlocks, pacingBlock };
 })();

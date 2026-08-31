@@ -2,7 +2,7 @@
     'use strict';
     const WSM = window.WorldStateMachine = window.WorldStateMachine || {};
     const KEY = 'worldStateMachine';
-    const RULES_VERSION = 8;
+    const RULES_VERSION = 20;
     const defaults = {
         rulesVersion: RULES_VERSION,
         enabled: true,
@@ -24,6 +24,7 @@
         injectionDepth: 0,
         injectionMaxChars: 3500,
         diceEnabled: false,
+        storyPacing: { mode: 'off', allowSceneTransition: false, allowTimeSkip: false },
         blockOnPlannerError: false,
         injectionModules: WSM.Defaults.INJECTION_MODULES,
         modulePrompts: WSM.Defaults.MODULE_PROMPTS,
@@ -58,7 +59,8 @@
         root[KEY].endpoint = activeProfile.endpoint;
         root[KEY].apiKey = activeProfile.apiKey;
         root[KEY].model = activeProfile.model;
-        if (Number(saved.rulesVersion || 0) < RULES_VERSION) {
+        const needsRulesMigration = Number(saved.rulesVersion || 0) < RULES_VERSION;
+        if (needsRulesMigration) {
             // Old saved prompts otherwise permanently override new built-ins. Keep a
             // recoverable copy, then migrate the complete rule set as one unit.
             root[KEY].promptMigrationBackup = {
@@ -69,12 +71,26 @@
             root[KEY].plannerPrompt = WSM.Defaults.PLANNER_PROMPT;
             root[KEY].reconcilerPrompt = WSM.Defaults.RECONCILER_PROMPT;
             root[KEY].modulePrompts = Object.assign({}, WSM.Defaults.MODULE_PROMPTS, saved.modulePrompts || {}, {
-                // These modules implement the v8 bounded-state lifecycle. They
+                // These modules implement the bounded-state lifecycle plus the
+                // people-memory and world-layer ownership models. They
                 // must migrate together with the core prompts; the previous
                 // customized text remains available in promptMigrationBackup.
-                triggers: WSM.Defaults.MODULE_PROMPTS.triggers,
                 causalEffects: WSM.Defaults.MODULE_PROMPTS.causalEffects,
+                pacing: WSM.Defaults.MODULE_PROMPTS.pacing,
                 planner: WSM.Defaults.MODULE_PROMPTS.planner,
+                characters: WSM.Defaults.MODULE_PROMPTS.characters,
+                npcActivities: WSM.Defaults.MODULE_PROMPTS.npcActivities,
+                relationships: WSM.Defaults.MODULE_PROMPTS.relationships,
+                knowledge: WSM.Defaults.MODULE_PROMPTS.knowledge,
+                world: WSM.Defaults.MODULE_PROMPTS.world,
+                events: WSM.Defaults.MODULE_PROMPTS.events,
+                processes: WSM.Defaults.MODULE_PROMPTS.processes,
+                tasks: WSM.Defaults.MODULE_PROMPTS.tasks,
+                triggers: WSM.Defaults.MODULE_PROMPTS.triggers,
+                threads: WSM.Defaults.MODULE_PROMPTS.threads,
+                progression: WSM.Defaults.MODULE_PROMPTS.progression,
+                timeline: WSM.Defaults.MODULE_PROMPTS.timeline,
+                map: WSM.Defaults.MODULE_PROMPTS.map,
             });
             ['causalLinks', 'causalSeeds', 'scenePressure', 'actorCausality', 'backgroundQueue', 'advanceScheduler'].forEach((id) => { delete root[KEY].modulePrompts[id]; });
             root[KEY].modulePrompts.causalEffects = WSM.Defaults.MODULE_PROMPTS.causalEffects;
@@ -85,9 +101,17 @@
         }
         const savedModules = root[KEY].injectionModules || {};
         root[KEY].injectionModules = Object.fromEntries(Object.entries(WSM.Defaults.INJECTION_MODULES).map(([id, value]) => [id, Object.assign({}, value, savedModules[id] || {})]));
+        if (needsRulesMigration) ['characters','npcActivities','relationships','knowledge','world','events','processes','causalEffects','tasks','triggers','threads','progression','pacing','map'].forEach((id) => {
+            root[KEY].injectionModules[id].instruction = WSM.Defaults.INJECTION_MODULES[id].instruction;
+        });
+        if (needsRulesMigration && root[KEY].injectionModules.map) root[KEY].injectionModules.map.enabled = false;
         root[KEY].modulePrompts = Object.assign({}, WSM.Defaults.MODULE_PROMPTS, root[KEY].modulePrompts || {});
         ['causalLinks', 'causalSeeds', 'scenePressure', 'actorCausality', 'backgroundQueue', 'advanceScheduler'].forEach((id) => { delete root[KEY].modulePrompts[id]; });
         root[KEY].worldbookCompiler = Object.assign({}, defaults.worldbookCompiler, root[KEY].worldbookCompiler || {});
+        root[KEY].storyPacing = Object.assign({}, defaults.storyPacing, root[KEY].storyPacing || {});
+        if (!['off','verySlow','slow','medium','fast'].includes(root[KEY].storyPacing.mode)) root[KEY].storyPacing.mode = 'off';
+        root[KEY].storyPacing.allowSceneTransition = root[KEY].storyPacing.allowSceneTransition === true;
+        root[KEY].storyPacing.allowTimeSkip = root[KEY].storyPacing.allowTimeSkip === true;
         // Kept only as a compatibility field for older saved settings. Reading
         // and initialization are always manual from v0.9.21 onward.
         root[KEY].autoInitialize = false;

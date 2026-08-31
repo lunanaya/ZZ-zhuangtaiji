@@ -10,6 +10,14 @@ globalThis.localStorage = {
 };
 
 await import('../src/source-reader.js');
+await import('../src/context.js');
+
+const compactedArchiveContext = { chat: [
+    { is_user: true, is_system: true, name: '用户', mes: '已被用户隐藏的旧正文', extra: { isSmallSys: false } },
+    { is_user: false, is_system: true, name: '角色', mes: '已被用户隐藏的旧回复', extra: { token_count: 100 } },
+    { is_user: true, is_system: false, name: '用户', mes: '当前可见总结与正文', extra: {} },
+] };
+assert.equal(WorldStateMachine.Context.chat(compactedArchiveContext).length, 1, '手动读取也不得重新展开用户已经压缩并隐藏的旧正文');
 
 const calls = [];
 WorldStateMachine.Api = {

@@ -23,7 +23,8 @@ WorldStateMachine.Api = {
                 evidence: {
                     sourceRefs: payload.sourceRecords.map((item) => item.ref),
                     canon: ['请求 A 已逐项读取'], chronology: [], characters: ['测试角色：前段人物资料'], relationships: [],
-                    knowledge: [], locations: [], tasks: [], events: [], causal: [], currentScene: [], uncertainties: [],
+                    npcActivities: [{ characterId: '测试角色', action: '在后台整理资料', location: '资料室' }],
+                    knowledge: [], locations: [], tasks: [], events: [], triggers: [], threads: [], processes: [], timeline: [], causal: [], currentScene: [], uncertainties: [],
                 },
             };
         }
@@ -33,8 +34,13 @@ WorldStateMachine.Api = {
                     sourceRefs: [...(payload.firstHalfEvidence?.sourceRefs || []), ...payload.sourceRecords.map((item) => item.ref)],
                     canon: ['请求 A 已逐项读取', '请求 B 已逐项读取'],
                     chronology: [{ time: '测试时刻', summary: '全部资料时间线' }],
+                    timeline: [{ summary: '已经完成一次重要谈判', granularity: 'phase' }],
                     characters: ['测试角色：核心角色'],
-                    relationships: [], knowledge: [], locations: [{ name: '测试地点' }], tasks: [], events: [], causal: [],
+                    npcActivities: [{ characterId: '测试角色', action: '继续在后台整理资料', location: '资料室' }],
+                    relationships: [], knowledge: [], locations: [{ name: '测试地点' }], tasks: [], events: [],
+                    triggers: [{ title: '等待来电', conditions: ['对方完成核实'], status: 'armed', userVisible: true }],
+                    threads: [{ title: '旧约仍未说开', status: 'open', stakes: '双方关系' }],
+                    processes: [{ title: '公司权力调整', status: 'active', currentDirection: '管理权继续集中' }], causal: [],
                     currentScene: [{ location: '测试地点', environment: '当前场景' }], uncertainties: [],
                 },
             };
@@ -82,6 +88,29 @@ const uniqueRecordParts = allRecordParts.filter((item) => !item.startsWith('curr
 assert.deepEqual(sentRecordParts, uniqueRecordParts, 'two-pass preparation must preserve all unique source records in order');
 assert.ok(Math.abs(prepared.halfChars[0] - prepared.halfChars[1]) < prepared.originalChars * 0.2, 'request A/B raw source sizes should remain close enough to avoid a gateway timeout');
 
+const hugeChat = Array.from({ length: 823 }, (_, index) => ({
+    id: `huge-${index + 1}`,
+    role: index % 2 ? 'assistant' : 'user',
+    name: index % 2 ? '测试角色' : '测试用户',
+    content: index % 2
+        ? `<thinking>${'重复推理。'.repeat(6800)}</thinking><content>${'长篇正文。'.repeat(500)}</content><meow_FM><serial>No.${index}</serial><time>第${index}日</time><scene>测试地点</scene><plot>第${index}轮发生了会影响连续性的事件，并形成当前结果。</plot><seeds>保留一条后续种子。</seeds></meow_FM>`
+        : `第${index}轮用户行动：${'明确表达当前行动。'.repeat(30)}`,
+}));
+const hugeSource = {
+    ...source,
+    chat: hugeChat,
+    tavernTextContext: { totalMessages: hugeChat.length, includedMessages: hugeChat.length, truncated: false },
+    currentUserAction: hugeChat.at(-1)?.role === 'user' ? hugeChat.at(-1) : hugeChat.at(-2),
+    latestAssistantText: hugeChat.at(-1)?.role === 'assistant' ? hugeChat.at(-1) : hugeChat.at(-2),
+};
+const hugePrepared = WorldStateMachine.Engine._test.prepareSourceForStateRequests(hugeSource, { plannerPrompt, payload: { ...payload, source: hugeSource } });
+assert.ok(hugePrepared.originalChars > 15_000_000, `expected a 15MB-class chat, got ${hugePrepared.originalChars}`);
+assert.equal(hugePrepared.semanticCompaction, true);
+assert.equal(hugePrepared.coveredChatMessages, 823);
+assert.ok(hugePrepared.halfChars.every((chars) => chars <= 180000), `semantic halves must fit two-call safety capacity: ${hugePrepared.halfChars}`);
+const hugeChatRefs = new Set(hugePrepared.halves.flat().filter((item) => item.kind === 'chat-message').map((item) => item.ref));
+assert.equal(hugeChatRefs.size, 823, 'every large-chat message must remain represented in the semantic chronicle');
+
 const result = await WorldStateMachine.Engine._test.buildStateWithinLimit(plannerPrompt, { ...payload, source: null }, payload.currentState, settings, undefined, prepared);
 assert.equal(result.state.world.location.current, '测试地点');
 assert.equal(result.state.map.rootLabel, '大地图', 'omitted default modules must be filled locally');
@@ -90,6 +119,12 @@ assert.equal(result.state.characters.length, 1, 'A/B evidence for the same named
 assert.equal(result.state.characters[0].summary, '测试角色：核心角色', 'later B evidence must update the earlier character snapshot');
 assert.equal(result.state.characters[0].description, '测试角色：核心角色');
 assert.equal(result.state.characters[0].notes, '测试角色：核心角色');
+assert.equal(result.state.npcActivities[0].action, '继续在后台整理资料');
+assert.equal(result.state.triggers[0].title, '等待来电');
+assert.equal(result.state.threads[0].title, '旧约仍未说开');
+assert.equal(result.state.processes[0].title, '公司权力调整');
+assert.ok(result.state.timeline.some((item) => item.summary === '已经完成一次重要谈判'));
+assert.ok(result.state.timeline.some((item) => item.summary === '全部资料时间线'));
 assert.deepEqual(result.state.tasks, [], 'omitted arrays must be filled locally');
 assert.equal(calls.length, 2);
 assert.deepEqual(calls.map((call) => call.payload.task), ['SOURCE_READ_HALF_ONCE', 'SOURCE_READ_SECOND_HALF_ONCE']);

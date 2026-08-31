@@ -1,12 +1,14 @@
 (function () {
     'use strict';
     const WSM = window.WorldStateMachine = window.WorldStateMachine || {};
-    const CACHE_KEY = 'wsm_worldbook_compiler_cache_v1';
+    const CACHE_KEY = 'wsm_worldbook_compiler_cache_v2';
     const PROMPT_PREFIX = 'WORLD_STATE_MACHINE_WORLDBOOK_DEPTH_';
     let activeTurn = null;
     let lastDelivery = null;
     let lastStatus = { state: 'idle', message: '尚未运行', at: 0 };
     let registeredWorldbookDepths = new Set();
+    let nativeWorldbookFilterBound = false;
+    let nativeWorldbookFilterSource = null;
 
     const text = (value) => String(value ?? '').trim();
     const clone = (value) => {
@@ -25,6 +27,43 @@
             contextMessages: Math.max(2, Math.min(30, Math.round(Number(raw.contextMessages) || 8))),
             failClosed: true,
         };
+    }
+    function nativeEntryKey(entry) {
+        const explicit = text(entry?.key);
+        if (explicit) return explicit;
+        const bookName = text(entry?.world || entry?.bookName || entry?.book);
+        const entryId = text(entry?.uid ?? entry?.id);
+        return bookName && entryId ? `${encodeURIComponent(bookName)}::${encodeURIComponent(entryId)}` : '';
+    }
+    function filterNativeWorldbookEntries(payload, config = normalizeConfig()) {
+        if (!config.enabled || !config.entryKeys.length || !payload || typeof payload !== 'object') return 0;
+        const selected = new Set(config.entryKeys.map(String));
+        let removed = 0;
+        for (const key of ['globalLore','characterLore','chatLore','personaLore']) {
+            const entries = payload[key];
+            if (!Array.isArray(entries)) continue;
+            for (let index = entries.length - 1; index >= 0; index -= 1) {
+                if (!selected.has(nativeEntryKey(entries[index]))) continue;
+                entries.splice(index, 1);
+                removed += 1;
+            }
+        }
+        return removed;
+    }
+    function installNativeWorldbookFilter() {
+        const ctx = WSM.Context?.context?.();
+        const source = ctx?.eventSource || window.eventSource;
+        const events = ctx?.eventTypes || ctx?.event_types || window.event_types;
+        const eventName = events?.WORLDINFO_ENTRIES_LOADED || 'worldinfo_entries_loaded';
+        if (!source?.on || !eventName) return false;
+        if (nativeWorldbookFilterBound && nativeWorldbookFilterSource === source) return true;
+        if (nativeWorldbookFilterBound && nativeWorldbookFilterSource?.off) {
+            nativeWorldbookFilterSource.off(eventName, filterNativeWorldbookEntries);
+        }
+        source.on(eventName, filterNativeWorldbookEntries);
+        nativeWorldbookFilterBound = true;
+        nativeWorldbookFilterSource = source;
+        return true;
     }
     function hash(value) {
         const input = String(value || '');
@@ -97,18 +136,116 @@
         const available = await WSM.Context.listWorldbookEntries({ includeDisabled: options.includeDisabled === true });
         return available.filter((entry) => selected.has(entry.key) && entry.content);
     }
+    function uniqueRules(value, limit) {
+        const seen = [];
+        for (const item of (Array.isArray(value) ? value : [value]).map(text).filter(Boolean)) {
+            const key = item.toLocaleLowerCase().replace(/[\s\p{P}\p{S}]/gu, '');
+            if (!key || seen.some((entry) => entry.key === key || (Math.min(entry.key.length, key.length) >= 12 && (entry.key.includes(key) || key.includes(entry.key))))) continue;
+            seen.push({ value: item, key });
+            if (seen.length >= limit) break;
+        }
+        return seen.map((entry) => entry.value);
+    }
+    function compactRuleGroups(item) {
+        const groups = {
+            core: uniqueRules(item?.core, 3),
+            triggers: uniqueRules(item?.triggers || item?.when, 2),
+            rules: uniqueRules(item?.rules || item?.conditionalRules || item?.rule, 5),
+            background: uniqueRules(item?.background, 2),
+        };
+        let remaining = 12;
+        for (const key of ['core','rules','triggers','background']) {
+            groups[key] = groups[key].slice(0, remaining);
+            remaining -= groups[key].length;
+        }
+        return groups;
+    }
+    function fragmentText(value) { return text(value?.text || value?.content || value?.rule || value?.fact || value); }
+    function fragmentCues(value, fallback = []) {
+        const explicit = value?.cues || value?.keywords || value?.triggers || value?.when;
+        return uniqueRules([...(Array.isArray(explicit) ? explicit : explicit ? [explicit] : []), ...fallback], 8).map((cue) => cue.slice(0, 30));
+    }
+    function normalizeFragments(item, groups) {
+        const globalCues = uniqueRules(item?.triggers || item?.when, 8);
+        const raw = Array.isArray(item?.fragments) ? item.fragments : [];
+        const fragments = raw.map((fragment) => ({
+            type: ['rule','character','background','location','history','fact','exception','other'].includes(text(fragment?.type)) ? text(fragment.type) : 'other',
+            cues: fragmentCues(fragment), text: fragmentText(fragment).slice(0, 220),
+        })).filter((fragment) => fragment.text);
+        const byText = new Map(fragments.map((fragment) => [fragment.text, fragment]));
+        [...groups.rules.map((value) => ['rule', value]), ...groups.background.map((value) => ['background', value])].forEach(([type, value]) => {
+            if (!byText.has(value)) byText.set(value, { type, cues: fragmentCues({}, globalCues), text: value });
+        });
+        return [...byText.values()].slice(0, 9);
+    }
+    function sourceRuleGroups(content) {
+        const lines = text(content).replace(/<\/?[^>\n]+>/g, '\n').replace(/\r/g, '').split(/\n+/).map(text).filter(Boolean);
+        const joined = [];
+        const startsUnit = (value) => /^(?:[-·•*]|\d+[.．、]|[一二三四五六七八九十]+[、，.．])/.test(value);
+        lines.forEach((line) => {
+            const previous = joined.at(-1);
+            if (previous && !/[。！？；：:]$/.test(previous) && !startsUnit(line)) joined[joined.length - 1] = `${previous}${line}`;
+            else joined.push(line);
+        });
+        const units = joined.flatMap((line) => line.split(/(?<=[。！？；])/)).map((line) => text(line).replace(/^(?:[-·•*]|\d+[.．、]|[一二三四五六七八九十]+[、，.．])\s*/, '')).filter((line) => line.length >= 12 && !/^(?:核心原则|总结|空间与礼法|言行与身份|情节推动|触发情境|条件规则|必要背景)[：:]?$/.test(line));
+        const actionable = units.filter((line) => /(必须|不得|禁止|严禁|不可|绝无可能|除非|需要|只能|应当|应先|应以|基本准则|禁区|限制|前提|意味着|首要)/.test(line));
+        const dimensions = [
+            /(许可|权限|禁区)/, /(外出|内外有别|大门不出)/, /(陪同|仆人|仆从|侍从|旁观者|监督)/,
+            /(男女|身体|授受不亲|肢体)/, /(公开|公共|职责|体面)/, /(宴席|媒妁|传信|合法.*场合)/,
+            /(场合问|身份问|现实问|生成.*前|检查)/, /(身份|官位|家族|社会角色)/,
+        ];
+        const dimensionalRules = [];
+        dimensions.forEach((pattern) => {
+            const found = actionable.find((line) => pattern.test(line) && !dimensionalRules.includes(line));
+            if (found) dimensionalRules.push(found);
+        });
+        actionable.forEach((line) => { if (!dimensionalRules.includes(line)) dimensionalRules.push(line); });
+        const selectedRules = uniqueRules(dimensionalRules, 5);
+        const selectedKeys = new Set(selectedRules.map((line) => line.toLocaleLowerCase().replace(/[\s\p{P}\p{S}]/gu, '')));
+        const triggerLike = units.filter((line) => /(公开场合|私下|外出|内宅|内闱|宴席|媒妁|仆人传信|男女之间|场合问|身份问|现实问|生成任何.*前)/.test(line))
+            .filter((line) => !selectedKeys.has(line.toLocaleLowerCase().replace(/[\s\p{P}\p{S}]/gu, '')));
+        const coreLike = units.filter((line) => /(核心原则|黄金法则|每一个动作|每一句言语|必须在其身份|最高原则)/.test(line));
+        const backgroundLike = units.filter((line) => /(世界观|社会秩序|时代背景|礼法|身份的象征与束缚|张力正源于)/.test(line) && !actionable.includes(line));
+        return compactRuleGroups({
+            core: coreLike.map((line) => line.slice(0, 180)),
+            triggers: triggerLike.map((line) => line.slice(0, 180)),
+            rules: selectedRules.map((line) => line.slice(0, 180)),
+            background: backgroundLike.map((line) => line.slice(0, 180)),
+        });
+    }
+    function meaningfulRule(value) {
+        const rule = text(value).replace(/<\/?[^>]+>/g, '').trim();
+        if (rule.length < 12 || /^(?:核心原则|触发情境|条件规则|必要背景)[：:]?$/.test(rule)) return '';
+        return rule;
+    }
     function normalizeCompiled(item, entry) {
-        const values = (value) => (Array.isArray(value) ? value : [value]).map(text).filter(Boolean);
+        const rawFragments = Array.isArray(item?.fragments) ? item.fragments : [];
+        const fragmentRules = rawFragments.filter((fragment) => ['rule','exception'].includes(text(fragment?.type))).map(fragmentText);
+        const fragmentBackground = rawFragments.filter((fragment) => !['rule','exception'].includes(text(fragment?.type))).map(fragmentText);
+        const fragmentTriggers = rawFragments.flatMap((fragment) => fragmentCues(fragment));
+        const modelGroups = compactRuleGroups({
+            ...item,
+            rules: [...(Array.isArray(item?.rules) ? item.rules : []), ...fragmentRules],
+            background: [...(Array.isArray(item?.background) ? item.background : []), ...fragmentBackground],
+            triggers: [...(Array.isArray(item?.triggers) ? item.triggers : []), ...fragmentTriggers],
+        });
+        const localGroups = sourceRuleGroups(entry?.content);
+        const modelExecutable = [...modelGroups.core, ...modelGroups.rules].filter((line) => /(必须|不得|禁止|严禁|不可|除非|需要|只能|应当|限制|规则|原则)/.test(line)).length;
+        const needsCoverageRepair = localGroups.rules.length >= 3 && (modelGroups.rules.length < 2 || modelExecutable < 3);
+        const groups = compactRuleGroups(needsCoverageRepair ? {
+            core: [...modelGroups.core.map(meaningfulRule).filter(Boolean), ...localGroups.core],
+            triggers: [...localGroups.triggers, ...modelGroups.triggers.map(meaningfulRule).filter(Boolean)],
+            rules: [...localGroups.rules, ...modelGroups.rules.map(meaningfulRule).filter(Boolean)],
+            background: [...modelGroups.background.map(meaningfulRule).filter(Boolean), ...localGroups.background],
+        } : modelGroups);
         return {
             key: entry.key,
             bookName: entry.bookName,
             label: entry.comment || entry.bookName,
             depth: Math.max(0, Math.min(100, Math.round(Number(entry.depth ?? 4) || 0))),
             role: Number(entry.role ?? 0) || 0,
-            core: values(item?.core),
-            triggers: values(item?.triggers || item?.when),
-            rules: values(item?.rules || item?.conditionalRules || item?.rule),
-            background: values(item?.background),
+            ...groups,
+            fragments: normalizeFragments(item, groups),
         };
     }
     function compiledResultItems(result, batch = []) {
@@ -116,7 +253,7 @@
         const listed = arrays.find(Array.isArray);
         if (listed) return listed;
         if (batch.length !== 1 || !result || typeof result !== 'object') return [];
-        const looksCompiled = (value) => value && typeof value === 'object' && ['core', 'triggers', 'when', 'rules', 'conditionalRules', 'rule', 'background'].some((key) => Object.prototype.hasOwnProperty.call(value, key));
+        const looksCompiled = (value) => value && typeof value === 'object' && ['core', 'fragments', 'triggers', 'when', 'rules', 'conditionalRules', 'rule', 'background'].some((key) => Object.prototype.hasOwnProperty.call(value, key));
         if (looksCompiled(result.entry)) return [result.entry];
         if (looksCompiled(result)) return [result];
         const nested = Object.values(result).filter(looksCompiled);
@@ -124,27 +261,36 @@
     }
     function sourceFallbackRule(entry) {
         const content = text(entry?.content);
+        const cueWords = (value) => uniqueRules([
+            ...(entry?.keys || []), entry?.comment,
+            ...((text(value).match(/(?:皇权|选秀|礼法|内宅|外出|公开场合|私下|男女|侍从|仆人|宴席|媒妁|传信|官位|身份|家族|朝政|宫廷|战争|地点|秘密)/g)) || []),
+        ], 8);
+        const operational = sourceRuleGroups(content);
+        if ([...operational.core, ...operational.triggers, ...operational.rules, ...operational.background].length >= 3) {
+            return {
+                key: entry.key,
+                core: operational.core,
+                fragments: [
+                    ...operational.rules.map((value) => ({ type: 'rule', cues: cueWords(value), text: value })),
+                    ...operational.background.map((value) => ({ type: 'background', cues: cueWords(value), text: value })),
+                ].slice(0, 9),
+            };
+        }
         const pieces = content.split(/\n+|(?<=[。！？；])/).map(text).filter(Boolean);
-        const core = [];
+        const fragments = [];
         let used = 0;
         for (const piece of pieces) {
-            if (used >= 1200 || core.length >= 12) break;
+            if (used >= 1600 || fragments.length >= 9) break;
             const value = piece.slice(0, Math.max(0, 1200 - used));
-            if (value) { core.push(value); used += value.length; }
+            if (value) { fragments.push({ type: 'other', cues: cueWords(value), text: value }); used += value.length; }
         }
-        return { key: entry.key, core, triggers: entry.keys || [], rules: [], background: [] };
+        return { key: entry.key, core: [], fragments };
     }
     function ingestReadResult(source, result) {
         const config = normalizeConfig();
-        const entries = (source?.worldbooks || []).flatMap((book) => book.entries || []).filter((entry) => entry?.content);
-        const allKeys = [...new Set(entries.map((entry) => entry.key).filter(Boolean))];
-        if (allKeys.some((key) => !config.entryKeys.includes(key))) {
-            WSM.Settings.update({ worldbookCompiler: normalizeConfig({
-                ...config, enabled: true,
-                entryKeys: [...config.entryKeys, ...allKeys],
-                knownEntryKeys: [...config.knownEntryKeys, ...allKeys],
-            }) });
-        }
+        const selected = new Set(config.entryKeys);
+        const entries = (source?.worldbooks || []).flatMap((book) => book.entries || []).filter((entry) => entry?.content && selected.has(entry.key));
+        if (!entries.length) return { count: 0, report: buildReport(null) };
         const returned = compiledResultItems({ entries: result?.worldbookEntries || result?.worldRules?.entries || [] }, entries);
         const cache = loadCache();
         entries.forEach((entry) => {
@@ -187,7 +333,7 @@
             let items = [];
             try {
                 const result = await WSM.Api.complete(
-                    '你是世界书规则拆解器。一次响应完成全部条目；逐条去重、消歧并压缩，但不得改变事实、规则强度、例外、人物身份和权力边界。只输出严格 JSON：{"entries":[{"key":"原key","core":["不可违反的短规则"],"triggers":["触发词或情境"],"rules":["条件规则"],"background":["必要背景"]}]}。禁止续写正文、增加设定、输出 Markdown 或要求后续调用。',
+                    '你是通用世界书语义拆解器。世界书可能是人物、背景故事、地点、组织、制度、规则、历史或秘密。一次响应完成全部条目，不得改变事实、规则强度、例外、身份和权力边界。每条拆成两层：core只放无论当前话题为何、只要可能影响角色回复就不能缺失的0–3条核心锚点；普通人物、地点或历史细节不得因为重要就常驻。其余内容拆成fragments，每片必须是独立完整事实或规则，并附2–8个可被本轮人物名、地点、组织、事件、主题或情境命中的cues。人物被提及才检索其人物片段，进入地点才检索地点片段，谈到皇权/选秀才检索相应制度片段；禁止把所有细节塞进core。规则条目必须覆盖原文独立约束维度，不能只摘录开头、标题、口号、半句或换行残句。每原条目core最多3、fragments最多9，总计最多12。只输出严格JSON：{"entries":[{"key":"原key","core":["可为空的少量常驻锚点"],"fragments":[{"type":"rule|character|background|location|history|fact|exception|other","cues":["检索词或情境"],"text":"命中时发送的完整片段"}]}]}。禁止续写、增加设定、Markdown或后续调用。',
                     { task: 'WORLDBOOK_COMPILE_ONCE', entries: requestEntries },
                     { maxTokens: Math.min(6000, 1000 + missing.length * 500), singleAttempt: true },
                 );
@@ -226,21 +372,21 @@
         return (dialogue.length ? dialogue : normalized).slice(-count);
     }
     function fallbackText(compiled, budget) {
-        const lines = compiled.flatMap((item) => [...(item.compiled?.core || []), ...(item.compiled?.rules || [])]);
+        const lines = compiled.flatMap((item) => item.compiled?.core || []);
         return [...new Set(lines)].join('\n').slice(0, budget);
     }
     function reportEntry(value) {
         const compiled = value?.compiled || value;
         if (!compiled || typeof compiled !== 'object') return null;
+        const groups = compactRuleGroups(compiled);
+        if (![...groups.core, ...groups.triggers, ...groups.rules, ...groups.background].length) return null;
         return {
             key: text(compiled.key),
             bookName: text(compiled.bookName),
             label: text(compiled.label),
             depth: Math.max(0, Math.min(100, Math.round(Number(compiled.depth ?? 4) || 0))),
-            core: Array.isArray(compiled.core) ? compiled.core.map(text).filter(Boolean) : [],
-            triggers: Array.isArray(compiled.triggers) ? compiled.triggers.map(text).filter(Boolean) : [],
-            rules: Array.isArray(compiled.rules) ? compiled.rules.map(text).filter(Boolean) : [],
-            background: Array.isArray(compiled.background) ? compiled.background.map(text).filter(Boolean) : [],
+            ...groups,
+            fragments: (Array.isArray(compiled.fragments) ? compiled.fragments : []).map((fragment) => ({ type: text(fragment?.type || 'other'), cues: fragmentCues(fragment), text: fragmentText(fragment) })).filter((fragment) => fragment.text).slice(0, 9),
             compiledAt: Number(value?.compiledAt || 0),
         };
     }
@@ -272,7 +418,7 @@
         for (let index = 0; index < batches.length;) {
             try {
                 const result = await WSM.Api.complete(
-                    `你是逐轮世界书规则路由器。currentContext 是酒馆实际正文。只选择本轮相关规则，合并重复内容；核心硬规则只要可能影响回复就保留。不得续写剧情、增加设定或弱化禁令。只输出严格 JSON {"text":"候选纯文本规则"}，text 不超过 ${config.budget} 个汉字；没有相关规则时可为空。`,
+                    `你是逐轮世界书语义路由器。currentContext是酒馆实际正文。保留少量core；带cues的fragments只有其人物、地点、组织、历史、主题或情境与本轮相关时才选择，不得整条全发。合并重复内容，不得续写、增加设定或弱化禁令。只输出严格JSON {"text":"候选纯文本资料"}，text不超过${config.budget}个汉字；除core外没有相关片段时不添加其他内容。`,
                     { task: 'WORLDBOOK_ROUTE', batchIndex: index + 1, batchCount: batches.length, currentContext, compiledRules: batches[index] },
                     { maxTokens: 1200 },
                 );
@@ -303,27 +449,28 @@
     function localRoute(config, compiled, currentContext) {
         const contextText = text(JSON.stringify(currentContext)).toLowerCase();
         const contextTerms = relevanceTerms(contextText);
-        const scored = compiled.map((item, index) => {
-            const rule = item?.compiled || {};
-            const triggerText = [...(rule.triggers || []), rule.label, rule.bookName].map(text).join(' ').toLowerCase();
-            const body = [...(rule.core || []), ...(rule.rules || []), ...(rule.background || [])].join(' ').toLowerCase();
-            let score = 0;
-            relevanceTerms(triggerText).forEach((term) => { if (contextTerms.has(term) || contextText.includes(term)) score += 6; });
-            relevanceTerms(body).forEach((term) => { if (contextTerms.has(term)) score += 1; });
-            return { item, score, index };
-        }).sort((a, b) => b.score - a.score || a.index - b.index);
-        const relevant = scored.filter((item) => item.score > 0);
-        const chosen = (relevant.length ? relevant : scored.slice(0, 1)).map((item) => item.item);
         const groups = new Map();
-        chosen.forEach((item) => {
+        compiled.forEach((item) => {
+            const rule = item?.compiled || {};
             const depth = Math.max(0, Math.min(100, Math.round(Number(item?.compiled?.depth ?? 4) || 0)));
             if (!groups.has(depth)) groups.set(depth, []);
-            groups.get(depth).push(item);
+            const lines = [...(rule.core || [])];
+            const entryCues = [rule.label, rule.bookName, ...(rule.triggers || [])].map(text).filter(Boolean);
+            const entryMatched = entryCues.some((cue) => contextText.includes(cue.toLowerCase()));
+            const fragments = (Array.isArray(rule.fragments) ? rule.fragments : []).map((fragment, index) => {
+                const cues = fragmentCues(fragment, entryCues);
+                let score = cues.reduce((sum, cue) => sum + (contextText.includes(cue.toLowerCase()) ? 12 : 0), 0);
+                relevanceTerms(fragment.text).forEach((term) => { if (contextTerms.has(term) && !/^(人物|角色|当前|必须|不得|可以|一个|这个|进行|情况)$/.test(term)) score += 1; });
+                if (entryMatched) score += 4;
+                return { fragment, score, index };
+            }).filter((candidate) => candidate.score >= 4).sort((a, b) => b.score - a.score || a.index - b.index).slice(0, 4);
+            lines.push(...fragments.map((candidate) => candidate.fragment.text));
+            groups.get(depth).push(...lines);
         });
         const routedByDepth = {};
         const perDepthBudget = Math.max(120, Math.floor(config.budget / Math.max(1, groups.size)));
         groups.forEach((items, depth) => {
-            const value = fallbackText(items, perDepthBudget);
+            const value = uniqueRules(items, items.length).join('\n').slice(0, perDepthBudget);
             if (value) routedByDepth[depth] = value;
         });
         return { text: Object.values(routedByDepth).join('\n').slice(0, config.budget), byDepth: routedByDepth };
@@ -347,7 +494,7 @@
         const rules = compiled.map((item) => item.compiled).filter(Boolean);
         try {
             const result = await WSM.Api.complete(
-                `你是逐轮世界书规则路由器。compiledRules 是全部已浓缩世界书，currentContext 是本轮酒馆正文。只抽取本轮相关规则，核心硬规则只要可能影响回复就保留；不得续写、增加设定或弱化禁令。只输出严格 JSON：{"text":"不超过 ${config.budget} 个汉字的规则","byDepth":{"4":"按深度分组的规则"}}。同一轮只能完成一次路由，不要请求后续步骤。`,
+                `你是逐轮世界书语义路由器。compiledRules包含少量core与带cues的fragments，currentContext是本轮酒馆正文。core保留；fragments只有其人物、地点、组织、事件、主题或情境与本轮相关时才抽取。例如谈到皇权才取皇权片段，要选秀才取选秀片段；不得把同条目的全部片段一起输出。不得续写、增加设定或弱化禁令。只输出严格JSON：{"text":"不超过 ${config.budget} 个汉字的本轮资料","byDepth":{"4":"按深度分组的资料"}}。同一轮只能完成一次路由。`,
                 { task: 'WORLDBOOK_ROUTE_ONCE', currentContext, compiledRules: rules, budget: config.budget },
                 { maxTokens: 1800, singleAttempt: true },
             );
@@ -583,6 +730,7 @@
                 triggers: values(value?.triggers),
                 rules: values(value?.rules),
                 background: values(value?.background),
+                fragments: normalizeFragments({ ...value, fragments: Array.isArray(value?.fragments) ? value.fragments : [] }, compactRuleGroups(value)),
             },
         };
         saveCache(cache);
@@ -596,6 +744,7 @@
         processSource,
         processChat,
         setWorldbookPrompts,
+        installNativeWorldbookFilter,
         compileConfig,
         ingestReadResult,
         getLastStatus: () => clone(lastStatus),
@@ -618,6 +767,6 @@
         },
         updateCompiledEntry,
         clearCache() { saveCache({}); activeTurn = null; lastDelivery = null; lastStatus = { state: 'idle', message: '拆解缓存已清空', at: Date.now() }; },
-        _test: { hash, contextFromMessages, redactOriginals, injectText, fallbackText, splitCompileBatch, compiledResultItems, localRoute, sourceFallbackRule, routeKeyFromMessages },
+        _test: { hash, contextFromMessages, redactOriginals, injectText, fallbackText, splitCompileBatch, compiledResultItems, localRoute, sourceFallbackRule, sourceRuleGroups, routeKeyFromMessages, compactRuleGroups, filterNativeWorldbookEntries, nativeEntryKey },
     };
 })();

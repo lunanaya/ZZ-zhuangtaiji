@@ -31,6 +31,12 @@
         return operationProgress;
     }
     function getProgress() { return { ...operationProgress, steps: (operationProgress.steps || []).map((step) => ({ ...step })) }; }
+    function resetProgress() {
+        operationProgress = { state: 'idle', message: '', details: '', at: Date.now(), steps: [] };
+        try { window.dispatchEvent(new CustomEvent('wsm-operation-progress', { detail: operationProgress })); }
+        catch (_error) { /* Resetting display state must never interrupt clearing. */ }
+        return getProgress();
+    }
     function syncIdentities(state, names = WSM.Context.identityNames()) {
         const next = state;
         const identities = {
@@ -114,6 +120,10 @@
         delete next.updatedAt;
         delete next.runtime;
         delete next.planner;
+        ['factAnchors','characters','npcActivities','relationships','knowledge','tasks','events','triggers','threads','processes','causalEffects','timeline'].forEach((module) => {
+            (next[module] || []).forEach((item) => { if (item && typeof item === 'object') delete item.updatedRevision; });
+        });
+        if (next.progression && typeof next.progression === 'object') delete next.progression.updatedRevision;
         return next;
     }
     function summarizeSource(source) {
@@ -134,18 +144,80 @@
     }
     const COMPLETE_SOURCE_PART_CHARS = 24000;
     const MAX_COMPLETE_HALF_CHARS = 180000;
+    const TWO_PASS_SOURCE_TARGET_CHARS = 300000;
     const SOURCE_PROGRESS_FRAGMENT_CHARS = 8000;
     const FIRST_HALF_EVIDENCE_RESERVE_CHARS = 18000;
-    const FIRST_HALF_CACHE_KEY = 'wsm_two_pass_first_half_cache_v2';
-    const SOURCE_READ_PROMPT = '你是资料读取器，不是故事续写者。sourceRecords 是全部资料严格分配给请求 A 的原文；逐条读取，serializedJson 分片必须按 ref、part 顺序无损拼接理解。提取供请求 B 建立世界状态的紧凑证据，保留事实、规则、例外、人物、地点、关系、时间顺序、知识边界、任务、事件、因果、当前场景和不确定性。sourceRefs 必须覆盖输入中的每个 ref；相同事实合并，每条证据只写一句短句，不复述文风、对白或长段原文，整个 JSON 尽量控制在 7000 字内。不得省略较早资料，不得创造原文没有的内容，不要输出思考过程。只输出严格 JSON：{"evidence":{"sourceRefs":[],"canon":[],"chronology":[],"characters":[],"relationships":[],"knowledge":[],"locations":[],"tasks":[],"events":[],"causal":[],"currentScene":[],"uncertainties":[]}}。';
-    const FINAL_EVIDENCE_PROMPT = '你是第二段资料读取与证据合并器，不是故事续写者。firstHalfEvidence 是请求 A 已完整读取前半原文得到的证据，sourceRecords 是全部后半原文；必须逐条读取后半并与前半证据合并，覆盖事实、规则、例外、人物、地点、关系、时间顺序、知识边界、任务、事件、因果、当前场景和不确定性。evidence 内必须首先输出 canon；canon[0] 必须是1000字以内、覆盖后半全部资料并综合前半证据的核心连续性摘要，随后才输出 sourceRefs、currentScene、chronology、characters、relationships、knowledge、locations、tasks、events、causal、uncertainties。sourceRefs 必须覆盖 firstHalfEvidence 已有来源与后半每个 ref；相同事实合并，每项只写一句短句，不复述文风、对白或长原文，不创造内容，不输出思考。整个 JSON 尽量控制在 7000 字内，只输出闭合严格 JSON：{"evidence":{"canon":[],"sourceRefs":[],"currentScene":[],"chronology":[],"characters":[],"relationships":[],"knowledge":[],"locations":[],"tasks":[],"events":[],"causal":[],"uncertainties":[]}}。';
-    const INITIAL_STATE_PROMPT = '你是世界状态初始化器，不是故事续写者。严格依据输入的原文、firstHalfEvidence、可选 currentState 和 stateShape 建立此刻已经成立的持久世界状态。必须综合所有来源，但只把有来源且会影响连续性的事实写入 state；相同事实合并，数组项目使用短句，禁止复述长段原文、预演未来、创造设定或输出思考过程。输出紧凑状态补丁：可以省略空数组、空字符串、默认值、runtime、planner、revision、updatedAt、schemaVersion、initialized、lockedPaths，以及与 currentState 完全相同的字段；程序会在本地把省略项与默认状态或 currentState 递归合并。需要清除已有数组时必须显式输出空数组。state 内必须首先输出 world；world.facts 的第一项必须是800字以内、综合全部资料的核心连续性摘要，然后依次输出 identities、characters、relationships、knowledge、map、tasks、events、causalEffects、timeline 等仍有内容的模块。这样即使尾部达到服务上限，核心资料也已经完整落在闭合模块中。把同类细节合并，不要为每条资料复制一个状态项，不要在输出前进行长篇分析，整个 JSON 严格控制在 2200 个中文字符以内。只输出一个闭合的严格 JSON：{"state":{}}，不要输出 plan、moduleInjections、injection、Markdown 或第二个 JSON。';
+    const FIRST_HALF_CACHE_KEY = 'wsm_two_pass_first_half_cache_v3';
+    const SOURCE_READ_PROMPT = '你是资料读取器，不是故事续写者。sourceRecords 是严格分配给请求 A 的资料；chat-message 可能是程序从超长原文逐条提取的语义年表，但每个聊天楼层都已被本地扫描并保留编号、角色与最有连续性价值的内容。逐条读取，serializedJson 分片按 ref、part 顺序拼接理解。原始世界书、角色卡、Persona和完整聊天仍是权威来源，本结果只建立当前运行证据。先去重再分级：L3为身份真相、重大秘密、不可逆事实、核心关系或主线矛盾；L2为当前任务、关系变化、进程和关键情报；L1为饮食、短暂情绪、小动作和一次性日常。必须区分并提取：resourceConstraints=当前真正限制行动的资金、权限、人手、关键持有物或地点封锁；npcActivities=NPC脱离玩家视野后的实际或既定活动；triggers=尚未发生且等待条件的一次节点；threads=围绕用户经历持续未解决的剧情线；processes=即使用户不参与也会演变的世界级变化；timeline=已发生且值得回顾的重要节点。anchors只放正文中已永久成立、遗忘会造成逻辑错误且不能由其他模块替代的最终客观结果，绝不能复制世界书原设。locations只提取空间实体，按世界→城市→区域→建筑→内部空间给出parentId；同名同父级只留一个。description只写稳定空间用途，origin用一句人物+行为/原因或“世界设定”说明首次来源，禁止写事件经过与剧情意义。HOT仅限当前场景，WARM为近期可用，COLD为暂不相关。只保留会影响连续性的当前版本；不得预测结果、续写或替用户选择。模块可以为空，禁止为了填满数组制造条目；同一对象或同一事实只能出现一次。每项必须具备最小有效字段。严禁列出全部输入ref。输出总长必须少于4400个中文字符；数组硬上限：currentScene 3、progression 1、anchors 6、resourceConstraints 8、characters 10、npcActivities 6、relationships 8、knowledge 10、chronology 8、timeline 8、canon 6、locations 8、tasks 5、events 5、triggers 5、threads 5、processes 5、causal 5、uncertainties 3。每项一句，单项不超过80字，允许省略空数组。不得输出思考、Markdown或解释。必须从以下开头直接输出闭合JSON：{"evidence":{"currentScene":[],"progression":[],"anchors":[],"resourceConstraints":[],"characters":[],"npcActivities":[],"relationships":[],"knowledge":[],"chronology":[],"timeline":[],"canon":[],"locations":[],"tasks":[],"events":[],"triggers":[],"threads":[],"processes":[],"causal":[],"uncertainties":[]}}。';
+    const FINAL_EVIDENCE_PROMPT = '你是第二段资料读取与证据合并器，不是故事续写者。firstHalfEvidence 是请求 A 的有界证据，sourceRecords 是后半资料；逐条读取后半并与前半去重，只保留仍影响当前运行的最新版本。必须分别维护resourceConstraints、npcActivities、triggers、threads、processes和timeline，只有原文确实没有符合定义的内容时才为空。resourceConstraints只收录会改变行动可行性的资金、权限、人手、关键持有物或封锁，不做资产清单。原始世界书、角色卡、Persona和完整聊天仍是权威来源；不得把本结果当作替代原文的固定摘要。anchors只保留正文已永久确立且不能由其他模块替代的最终结果。L3为核心锚点，L2为活跃信息，L1为临时信息；HOT只给当前场景。不得预测、续写、创造或替用户决定。模块允许为空；同一对象或事实只保留一个最新版本。缺字段时删除，禁止输出空对象和半成品。输出总长必须少于4800个中文字符；最终数组硬上限：currentScene 3、progression 1、anchors 8、resourceConstraints 10、characters 12、npcActivities 8、relationships 10、knowledge 12、chronology 10、timeline 10、canon 6、locations 10、tasks 6、events 6、triggers 6、threads 6、processes 6、causal 6、uncertainties 3。每项一句，单项不超过80字，允许省略空数组。不得输出思考、Markdown或解释。必须从以下开头直接输出闭合JSON：{"evidence":{"currentScene":[],"progression":[],"anchors":[],"resourceConstraints":[],"characters":[],"npcActivities":[],"relationships":[],"knowledge":[],"chronology":[],"timeline":[],"canon":[],"locations":[],"tasks":[],"events":[],"triggers":[],"threads":[],"processes":[],"causal":[],"uncertainties":[]}}。';
+    const INITIAL_STATE_PROMPT = '你是世界状态初始化器，不是故事续写者。先识别事实、跨模块去重，再按priority与activity建立紧凑当前状态。world固定只含当前时间、季节、地点、天气、环境和最多8条正在生效的客观状态；天气必须存在，服从地点、季节、时间与既有气象并连续渐变。resourceConstraints只记录当前会改变行动可行性的资金、权限、人手、关键物品与地点封锁，不做资产清单，不猜测数量。人物背景、历史、未来安排和世界规则不得进入world。factAnchors只放正文已经永久确立且不能由其他模块明确表达的最终客观结果；世界书、角色卡和Persona始终是长期设定权威。L2为当前阶段重要信息，L1为临时信息；HOT仅限当前场景。当前型模块只留最新版本。progression仅在资料已明确形成当前剧情移动方向时建立一个当前版本。模块允许为空，禁止为了填满栏目制造内容；卡片缺关键字段时不创建，禁止空对象、空标题、空白卡和同一事实的多份改写。普通饮食、姿势、衣物、情绪和日用品默认不进入。重要完成节点才进入timeline。单模块通常不超过8张卡，单卡列表字段通常不超过4项；达到容量时保留L3与当前HOT/L2，其余留在原始资料。禁止预演未来、创造设定或输出分析。整个JSON严格控制在2200个中文字符以内，只输出闭合严格JSON：{"state":{}}。';
     function losslessParts(value, limit = COMPLETE_SOURCE_PART_CHARS) {
         const input = String(value ?? '');
         if (!input) return [''];
         const parts = [];
         for (let start = 0; start < input.length; start += limit) parts.push(input.slice(start, start + limit));
         return parts;
+    }
+    function boundedText(value, limit) {
+        const input = safeText(value).replace(/\s+/g, ' ');
+        if (!input || input.length <= limit) return input;
+        const tail = Math.max(40, Math.floor(limit * 0.28));
+        return `${input.slice(0, Math.max(1, limit - tail - 1))}…${input.slice(-tail)}`;
+    }
+    function taggedBlock(content, tag) {
+        const match = String(content || '').match(new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+        return safeText(match?.[1]);
+    }
+    function compactAssistantChronicle(content, limit) {
+        const raw = String(content || '');
+        const memory = taggedBlock(raw, 'meow_FM');
+        if (memory) {
+            const pick = (tag) => safeText(memory.match(new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}>`, 'i'))?.[1]);
+            const parts = [pick('serial'), pick('time'), pick('scene'), pick('plot'), pick('seeds')].filter(Boolean);
+            return boundedText(parts.join('｜'), limit);
+        }
+        const indrs = taggedBlock(raw, 'INDRS');
+        if (indrs) return boundedText(indrs, limit);
+        const withoutPrivateWork = raw
+            .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+            .replace(/<think>[\s\S]*?<\/think>/gi, '')
+            .replace(/<snow>[\s\S]*?<\/snow>/gi, '')
+            .replace(/<details>[\s\S]*?<\/details>/gi, '');
+        const contentBlock = taggedBlock(withoutPrivateWork, 'content');
+        return boundedText(contentBlock || withoutPrivateWork, limit);
+    }
+    function compactSourceChronicle(source, targetChars = TWO_PASS_SOURCE_TARGET_CHARS) {
+        const chat = Array.isArray(source?.chat) ? source.chat : [];
+        if (!chat.length) return { source, compacted: false, coveredMessages: 0 };
+        const clone = WSM.Storage?.clone ? WSM.Storage.clone(source) : structuredClone(source);
+        clone.chat = [];
+        clone.currentUserAction = null;
+        clone.latestAssistantText = null;
+        const fixedChars = JSON.stringify(clone).length;
+        const recentCount = Math.min(10, chat.length);
+        const recentReserve = Math.min(60000, Math.max(18000, targetChars - fixedChars) * 0.25);
+        const olderCount = Math.max(1, chat.length - recentCount);
+        const olderBudget = Math.max(140, Math.min(900, Math.floor((targetChars - fixedChars - recentReserve) / olderCount) - 120));
+        const recentBudget = Math.max(900, Math.min(5000, Math.floor(recentReserve / Math.max(1, recentCount)) - 120));
+        clone.chat = chat.map((message, index) => {
+            const recent = index >= chat.length - recentCount;
+            const limit = recent ? recentBudget : olderBudget;
+            const content = message?.role === 'assistant'
+                ? compactAssistantChronicle(message?.content, limit)
+                : boundedText(message?.content, limit);
+            return { ...message, content, compacted: content !== safeText(message?.content), originalChars: String(message?.content || '').length };
+        });
+        clone.currentUserAction = [...clone.chat].reverse().find((message) => message.role === 'user') || null;
+        clone.latestAssistantText = [...clone.chat].reverse().find((message) => message.role === 'assistant') || null;
+        clone.semanticChronicle = {
+            enabled: true,
+            method: 'all-message-local-scan',
+            coveredMessages: chat.length,
+            totalMessages: Number(source?.tavernTextContext?.totalMessages || chat.length),
+            recentFullResolutionMessages: recentCount,
+            note: '每条聊天均已扫描；较早助手消息优先保留meow_FM/INDRS中的时间、地点、剧情摘要和持续种子，完整原文仍在SillyTavern。',
+        };
+        return { source: clone, compacted: true, coveredMessages: chat.length };
     }
     function completeSourceRecords(source) {
         const records = [];
@@ -225,11 +297,16 @@
         };
     }
     function prepareSourceForStateRequests(source, options = {}) {
-        const serialized = JSON.stringify(source);
+        const rawSerialized = JSON.stringify(source);
+        const chronicle = rawSerialized.length > TWO_PASS_SOURCE_TARGET_CHARS
+            ? compactSourceChronicle(source, TWO_PASS_SOURCE_TARGET_CHARS)
+            : { source, compacted: false, coveredMessages: Array.isArray(source?.chat) ? source.chat.length : 0 };
+        const preparedSource = chronicle.source;
+        const serialized = JSON.stringify(preparedSource);
         const worldbookEntries = (source?.worldbooks || []).reduce((sum, book) => sum + (book.entries || []).length, 0);
-        const large = serialized.length > 50000 || worldbookEntries > 200;
-        if (!large) return { source, large: false, originalChars: serialized.length, includedChars: serialized.length, worldbookEntries, records: 1 };
-        const records = completeSourceRecords(source);
+        const large = rawSerialized.length > 50000 || worldbookEntries > 200;
+        if (!large) return { source, large: false, originalChars: rawSerialized.length, includedChars: rawSerialized.length, worldbookEntries, records: 1 };
+        const records = completeSourceRecords(preparedSource);
         const payloadWithoutSource = { ...(options.payload || {}), source: undefined };
         // Keep A and B close to an even raw-source size. The configured proxy
         // has already demonstrated that roughly 60k characters succeeds, while
@@ -243,16 +320,18 @@
         // latestAssistantText are byte-for-byte copies of chat records produced
         // by Context.buildSource; sending them again only inflates request B.
         const halves = splitCompleteRecords(records);
-        const deduplicatedSecond = removeMirroredChatRecords(source, halves[1]);
+        const deduplicatedSecond = removeMirroredChatRecords(preparedSource, halves[1]);
         halves[1] = deduplicatedSecond.records;
         const halfChars = halves.map((half) => JSON.stringify(half).length);
         const oversized = halfChars.findIndex((length) => length > MAX_COMPLETE_HALF_CHARS);
         if (oversized >= 0) {
-            throw new Error(`资料共有 ${serialized.length} 字；第 ${oversized + 1}/2 半为 ${halfChars[oversized]} 字，超过两次请求完整读取的单次安全容量 ${MAX_COMPLETE_HALF_CHARS} 字。为避免漏读和额外扣费，本次尚未调用 API；请减少所选资料。插件不会擅自发起第三次请求。`);
+            throw new Error(`资料原文共有 ${rawSerialized.length} 字；本地逐条提炼后第 ${oversized + 1}/2 半仍为 ${halfChars[oversized]} 字，超过两次请求的单次安全容量 ${MAX_COMPLETE_HALF_CHARS} 字。为避免漏读和额外扣费，本次尚未调用 API；请减少超大角色卡或世界书。插件不会擅自发起第三次请求。`);
         }
         return {
-            source: null, halves, large: true, originalChars: serialized.length,
+            source: null, halves, large: true, originalChars: rawSerialized.length,
             includedChars: serialized.length, halfChars, worldbookEntries, records: records.length,
+            semanticCompaction: chronicle.compacted,
+            coveredChatMessages: chronicle.coveredMessages,
             sentRecords: halves[0].length + halves[1].length,
             deduplicatedRecords: records.length - halves[0].length - halves[1].length,
             deduplicatedRefs: deduplicatedSecond.removedRefs,
@@ -308,6 +387,55 @@
         };
         return merge(base || WSM.Defaults.createState(), patch || {});
     }
+    const STATE_COLLECTION_KEYS = new Set(['factAnchors','resourceConstraints','characters','npcActivities','relationships','knowledge','tasks','events','triggers','threads','processes','causalEffects','timeline']);
+    function collectionIdentity(module, item = {}) {
+        if (module === 'npcActivities') return safeText(item.characterId || item.id);
+        if (module === 'relationships') return `${safeText(item.from)}>${safeText(item.to)}`;
+        return safeText(item.id || item.title || item.name || item.information || item.summary);
+    }
+    function applyStateDelta(base, delta = {}) {
+        const touchedRevision = Number(base?.revision || 0) + 1;
+        const patch = WSM.Storage.clone(delta.statePatch || delta.patch || {});
+        if (patch?.progression && typeof patch.progression === 'object' && !Array.isArray(patch.progression)) {
+            patch.progression.activity = patch.progression.activity || 'HOT';
+            patch.progression.updatedRevision = touchedRevision;
+        }
+        let next = mergeStatePatch(base || WSM.Defaults.createState(), patch);
+        const rawOps = Array.isArray(delta.collectionOps) ? [...delta.collectionOps] : [];
+        Object.entries(delta.collections || {}).forEach(([module, value]) => {
+            (value?.upsert || []).forEach((item) => rawOps.push({ module, op: 'update', id: item?.id, value: item }));
+            (value?.replace || []).forEach((item) => rawOps.push({ module, op: 'replace', id: item?.id, value: item }));
+            (value?.removeIds || []).forEach((id) => rawOps.push({ module, op: 'remove', id }));
+        });
+        rawOps.forEach((operation) => {
+            const module = safeText(operation?.module);
+            const op = safeText(operation?.op || 'update').toLowerCase();
+            if (!STATE_COLLECTION_KEYS.has(module)) return;
+            const items = Array.isArray(next[module]) ? WSM.Storage.clone(next[module]) : [];
+            const value = operation?.value && typeof operation.value === 'object' && !Array.isArray(operation.value)
+                ? WSM.Storage.clone(operation.value) : null;
+            const wanted = safeText(operation?.id) || collectionIdentity(module, value || {});
+            const valueIdentity = value ? collectionIdentity(module, value) : '';
+            const index = items.findIndex((item) => {
+                const identity = collectionIdentity(module, item);
+                return (wanted && (safeText(item?.id) === wanted || identity === wanted)) || (valueIdentity && identity === valueIdentity);
+            });
+            if (['remove','delete','archive'].includes(op)) {
+                if (index >= 0) items.splice(index, 1);
+            } else if (value) {
+                value.activity = value.activity || 'HOT';
+                value.updatedRevision = touchedRevision;
+                if (op === 'create' && index < 0) items.push(value);
+                else if (op === 'replace') {
+                    if (index >= 0) items[index] = value;
+                    else items.push(value);
+                } else if (index >= 0) items[index] = mergeStatePatch(items[index], value);
+                else items.push(value);
+            }
+            next[module] = items;
+        });
+        return next;
+    }
     function normalizeStateResult(result, baseState = null) {
         const envelopes = [result, result?.result, result?.data, result?.output].filter((item) => item && typeof item === 'object' && !Array.isArray(item));
         const wrapped = envelopes.find((item) => item.state && typeof item.state === 'object' && !Array.isArray(item.state));
@@ -316,7 +444,7 @@
         const rootKeyCount = stateKeys.reduce((count, key) => count + (Object.prototype.hasOwnProperty.call(result || {}, key) ? 1 : 0), 0);
         return rootKeyCount >= 3 ? { state: mergeStatePatch(baseState || WSM.Defaults.createState(), result), plan: {}, moduleInjections: {} } : result;
     }
-    const EVIDENCE_KEYS = ['sourceRefs','canon','chronology','characters','relationships','knowledge','locations','tasks','events','causal','currentScene','uncertainties'];
+    const EVIDENCE_KEYS = ['sourceRefs','canon','chronology','timeline','anchors','resourceConstraints','characters','npcActivities','relationships','knowledge','locations','tasks','events','triggers','threads','processes','causal','progression','currentScene','uncertainties'];
     function evidenceItemText(item) {
         if (typeof item === 'string' || typeof item === 'number') return safeText(item);
         if (!item || typeof item !== 'object') return '';
@@ -343,20 +471,69 @@
         const evidence = mergeCompleteEvidence(firstEvidence, secondEvidence);
         const state = mergeStatePatch(baseState || WSM.Defaults.createState(), {});
         const objectItem = (item) => item && typeof item === 'object' && !Array.isArray(item) ? { ...item } : {};
+        const sceneText = evidence.currentScene.map(evidenceItemText).filter(Boolean).join('\n');
+        const priorityOf = (item, text, fallback = 'L2') => {
+            const explicit = safeText(item.priority).toUpperCase();
+            if (['L1','L2','L3'].includes(explicit)) return explicit;
+            if (/(真实身份|身份真相|重大秘密|核心秘密|不可逆|死亡|血缘|亲属|婚姻|世界规则|底层规则|关键承诺|主线矛盾|事件真相)/.test(text)) return 'L3';
+            if (/(吃了|喝了|早餐|午餐|晚餐|零食|短暂情绪|微笑|皱眉|坐下|站起|穿着|拿着|日常闲聊)/.test(text)) return 'L1';
+            return fallback;
+        };
+        const activityOf = (item, text, priority) => {
+            const explicit = safeText(item.activity).toUpperCase();
+            if (['HOT','WARM','COLD'].includes(explicit)) return explicit;
+            if (item.present === true || ['active','ongoing','eligible'].includes(safeText(item.status).toLowerCase())) return 'HOT';
+            if (text && sceneText && (sceneText.includes(text.slice(0, 36)) || text.includes(sceneText.slice(0, 36)))) return 'HOT';
+            return priority === 'L3' ? 'COLD' : 'WARM';
+        };
         const mapped = (items, prefix, factory) => items.map((item, index) => {
             const text = evidenceItemText(item);
-            return factory(objectItem(item), text, `${prefix}-${hash(`${index}:${text}`)}`);
+            const source = objectItem(item);
+            const result = factory(source, text, `${prefix}-${hash(`${index}:${text}`)}`);
+            if (!result || prefix === 'location') return result;
+            const priority = priorityOf(source, text, prefix === 'timeline' ? 'L1' : prefix === 'anchor' ? 'L3' : 'L2');
+            return { ...result, priority, activity: activityOf(source, text, priority) };
         }).filter(Boolean);
-        const canon = evidence.canon.map(evidenceItemText).filter(Boolean);
-        const scene = evidence.currentScene.map(evidenceItemText).filter(Boolean);
-        state.world.facts = [...new Set([...canon, ...scene])];
-        const latestScene = evidence.currentScene.at(-1);
+        const selectRuntime = (items, limit) => items.filter((item) => item.activity === 'HOT' || (item.activity === 'WARM' && item.priority !== 'L1') || item.priority === 'L3')
+            .sort((a, b) => ({ HOT: 3, WARM: 2, COLD: 1 }[b.activity] || 0) - ({ HOT: 3, WARM: 2, COLD: 1 }[a.activity] || 0)
+                || ({ L3: 3, L2: 2, L1: 1 }[b.priority] || 0) - ({ L3: 3, L2: 2, L1: 1 }[a.priority] || 0))
+            .slice(0, limit);
+        const explicitPlaceOf = (item) => {
+            const source = objectItem(item);
+            return safeText(source.location || source.place || source.currentLocation || source.venue);
+        };
+        const latestExplicitPlace = (items) => [...items].reverse().map(explicitPlaceOf).find(Boolean) || '';
+        const scenePlace = latestExplicitPlace(evidence.currentScene);
+        // A compressed chat digest may omit currentScene while still retaining
+        // the newest explicit location in chronology/timeline. Prefer that
+        // concrete field to leaving both the world snapshot and map unset.
+        const narrativePlace = scenePlace || latestExplicitPlace(evidence.chronology) || latestExplicitPlace(evidence.timeline);
+        const scene = evidence.currentScene.map(evidenceItemText).filter(Boolean)
+            .filter((text) => !/(吃了|喝了|早餐|午餐|晚餐|零食|微笑|皱眉|坐下|站起|穿着|拿着)/.test(text))
+            .slice(-8);
+        // Canon from worldbooks/character cards remains in its source of truth.
+        // The live world snapshot only keeps current-scene facts, otherwise a
+        // large setting library is duplicated into state on first hydration.
+        state.world.currentConditions = [...new Set(scene)].slice(-8);
+        const latestScene = [...evidence.currentScene].reverse().find((item) => explicitPlaceOf(item)) || evidence.currentScene.at(-1);
         const latestSceneObject = objectItem(latestScene);
-        state.world.location.current = safeText(latestSceneObject.location || latestSceneObject.place || latestSceneObject.currentLocation || state.world.location.current);
+        state.world.location.current = safeText(narrativePlace || state.world.location.current);
         state.world.location.environment = safeText(latestSceneObject.environment || latestSceneObject.summary || evidenceItemText(latestScene) || state.world.location.environment);
+        state.world.location.weather = safeText(latestSceneObject.weather || state.world.location.weather || '天气待确认');
+        state.world.season = safeText(latestSceneObject.season || state.world.season || '季节待确认');
         const latestChronology = objectItem(evidence.chronology.at(-1));
         const latestChronologyText = evidenceItemText(evidence.chronology.at(-1));
         state.world.time.display = safeText(latestChronology.time || latestChronology.date || latestChronology.display || state.world.time.display || latestChronologyText.slice(0, 100));
+        state.factAnchors = selectRuntime(mapped(evidence.anchors, 'anchor', (item, text, id) => ({
+            ...item, id: safeText(item.id || id), fact: safeText(item.fact || item.summary || text), scope: safeText(item.scope),
+            sourceRefs: Array.isArray(item.sourceRefs) ? item.sourceRefs.slice(0, 3) : [],
+        })), 16).map((item) => ({ ...item, priority: 'L3', activity: item.activity || 'COLD' }));
+        state.resourceConstraints = selectRuntime(mapped(evidence.resourceConstraints, 'constraint', (item, text, id) => ({
+            ...item, id: safeText(item.id || id), subjectId: safeText(item.subjectId || item.subject),
+            kind: safeText(item.kind || 'other'), condition: safeText(item.condition || item.summary || text),
+            status: safeText(item.status || 'active'), amount: safeText(item.amount), scope: safeText(item.scope),
+            consequence: safeText(item.consequence || item.effect), sourceRefs: Array.isArray(item.sourceRefs) ? item.sourceRefs.slice(0, 3) : [],
+        })).filter((item) => item.condition && item.status !== 'expired'), 10);
         const mappedCharacters = mapped(evidence.characters, 'character', (item, text, id) => ({
             ...item, id: safeText(item.id || id), name: safeText(item.name || item.character || item.person || text.split(/[：:]/)[0].trim().slice(0, 80)),
             summary: safeText(item.summary || item.description || text), description: safeText(item.description || item.summary || text), notes: safeText(item.notes || item.summary || item.description || text),
@@ -367,20 +544,123 @@
             const previous = charactersByName.get(key);
             charactersByName.set(key, previous ? { ...previous, ...character, id: previous.id || character.id } : character);
         });
-        state.characters = [...charactersByName.values()];
-        state.relationships = mapped(evidence.relationships, 'relationship', (item, text, id) => ({ ...item, id: safeText(item.id || id), summary: safeText(item.summary || item.description || text) }));
-        state.knowledge = mapped([...evidence.knowledge, ...evidence.uncertainties], 'knowledge', (item, text, id) => ({
+        state.characters = selectRuntime([...charactersByName.values()], 16);
+        const mappedNpcActivities = mapped(evidence.npcActivities, 'npcActivity', (item, text, id) => ({
+            ...item, id: safeText(item.id || id), characterId: safeText(item.characterId || item.character || item.actorId || item.actor),
+            location: safeText(item.location), movement: safeText(item.movement || item.route),
+            action: safeText(item.action || item.activity || item.summary || text), currentRole: safeText(item.currentRole || item.role),
+        })).filter((item) => item.characterId && item.action);
+        const latestNpcActivity = new Map();
+        mappedNpcActivities.forEach((item) => latestNpcActivity.set(item.characterId, item));
+        state.npcActivities = selectRuntime([...latestNpcActivity.values()], 12);
+        state.relationships = selectRuntime(mapped(evidence.relationships, 'relationship', (item, text, id) => {
+            const participants = Array.isArray(item.participants) ? item.participants.map(safeText).filter(Boolean) : [];
+            return {
+                ...item,
+                id: safeText(item.id || id),
+                from: safeText(item.from || item.subject || participants[0]),
+                to: safeText(item.to || item.object || participants[1]),
+                status: safeText(item.status || item.summary || item.description || text),
+            };
+        }), 16);
+        state.knowledge = selectRuntime(mapped([...evidence.knowledge, ...evidence.uncertainties], 'knowledge', (item, text, id) => ({
             ...item, id: safeText(item.id || id), information: safeText(item.information || item.summary || text),
             status: safeText(item.status || (evidence.uncertainties.includes(item) ? 'Suspected' : 'Known')),
-        }));
-        state.map.locations = mapped(evidence.locations, 'location', (item, text, id) => ({
+        })), 24);
+        const locationEvidence = [];
+        const locationKeys = new Set();
+        const pushLocationEvidence = (value) => {
+            const source = objectItem(value);
+            const name = safeText(source.name || source.location || source.place || source.currentLocation || evidenceItemText(value).slice(0, 100));
+            if (!name) return;
+            const parentId = safeText(source.parentId);
+            const key = `${name.toLocaleLowerCase()}\u0000${parentId.toLocaleLowerCase()}`;
+            if (locationKeys.has(key)) return;
+            locationKeys.add(key);
+            locationEvidence.push({ ...source, name, parentId });
+        };
+        evidence.locations.forEach(pushLocationEvidence);
+        const countryRoots = locationEvidence.filter((item) => safeText(item.type).toLowerCase() === 'country' && !safeText(item.parentId));
+        const defaultCountry = countryRoots.length === 1 ? safeText(countryRoots[0].name) : '';
+        const originOf = (item, fallback) => {
+            const source = objectItem(item);
+            const participants = Array.isArray(source.participants) ? source.participants.map(safeText).filter(Boolean).slice(0, 2) : [];
+            const actor = safeText(source.actor || source.character || source.characterId || participants.join('、'));
+            const action = safeText(source.activity || source.action || source.summary || source.event || source.description);
+            const origin = [actor, action].filter(Boolean).join('｜');
+            return (origin || fallback).slice(0, 100);
+        };
+        const addLocationPath = (item, sourceKind, current = false) => {
+            const rawPlace = explicitPlaceOf(item);
+            if (!rawPlace) return;
+            const parts = rawPlace.split(/\s*(?:·|＞|>|\/|\\)\s*/).map((part) => part.trim()).filter(Boolean);
+            if (!parts.length) return;
+            let parentName = defaultCountry && parts[0] !== defaultCountry ? defaultCountry : '';
+            parts.forEach((name, index) => {
+                pushLocationEvidence({
+                    name,
+                    parentId: parentName,
+                    origin: originOf(item, sourceKind === 'currentScene' ? '当前场景位置' : '正文中出现'),
+                    status: current && index === parts.length - 1 ? 'visited' : 'known',
+                    priority: index === 0 ? 'L3' : 'L2',
+                    activity: current && index === parts.length - 1 ? 'HOT' : 'WARM',
+                    sourceRefs: Array.isArray(objectItem(item).sourceRefs) ? objectItem(item).sourceRefs.slice(0, 3) : [],
+                });
+                parentName = name;
+            });
+        };
+        evidence.currentScene.forEach((item) => addLocationPath(item, 'currentScene', explicitPlaceOf(item) === narrativePlace));
+        evidence.chronology.forEach((item) => addLocationPath(item, 'chronology', !scenePlace && explicitPlaceOf(item) === narrativePlace));
+        evidence.timeline.forEach((item) => addLocationPath(item, 'timeline', !scenePlace && explicitPlaceOf(item) === narrativePlace));
+        evidence.events.forEach((item) => addLocationPath(item, 'event'));
+        evidence.npcActivities.forEach((item) => addLocationPath(item, 'npcActivity'));
+        evidence.characters.forEach((item) => addLocationPath(item, 'character'));
+        state.map.locations = mapped(locationEvidence.slice(0, 32), 'location', (item, text, id) => ({
             ...item, id: safeText(item.id || id), name: safeText(item.name || item.location || item.place || text.slice(0, 100)),
-            description: safeText(item.description || item.summary || text), parentId: safeText(item.parentId), sourceRefs: Array.isArray(item.sourceRefs) ? item.sourceRefs : [],
+            description: safeText(item.description || item.spatialDescription), origin: safeText(item.origin || item.establishedBy || (item.sourceKind === 'worldbook' ? '世界设定' : '')),
+            parentId: safeText(item.parentId), sourceRefs: Array.isArray(item.sourceRefs) ? item.sourceRefs : [],
         }));
-        state.tasks = mapped(evidence.tasks, 'task', (item, text, id) => ({ ...item, id: safeText(item.id || id), title: safeText(item.title || item.name || text.slice(0, 100)), description: safeText(item.description || item.summary || text), status: safeText(item.status || 'active'), choices: Array.isArray(item.choices) ? item.choices : [] }));
-        state.events = mapped(evidence.events, 'event', (item, text, id) => ({ ...item, id: safeText(item.id || id), summary: safeText(item.summary || item.description || text), status: safeText(item.status || 'active') }));
-        state.causalEffects = mapped(evidence.causal, 'causal', (item, text, id) => ({ ...item, id: safeText(item.id || id), cause: safeText(item.cause || text), result: safeText(item.result || item.effect || text), status: safeText(item.status || 'developing'), steps: Array.isArray(item.steps) ? item.steps : [], affectedIds: Array.isArray(item.affectedIds) ? item.affectedIds : [], evidenceRefs: Array.isArray(item.evidenceRefs) ? item.evidenceRefs : [] }));
-        state.timeline = mapped(evidence.chronology, 'timeline', (item, text, id) => ({ ...item, id: safeText(item.id || id), summary: safeText(item.summary || item.description || text) }));
+        state.tasks = selectRuntime(mapped(evidence.tasks, 'task', (item, text, id) => ({ ...item, id: safeText(item.id || id), title: safeText(item.title || item.name || text.slice(0, 100)), description: safeText(item.description || item.summary || text), status: safeText(item.status || 'active') })), 8);
+        state.events = selectRuntime(mapped(evidence.events, 'event', (item, text, id) => ({ ...item, id: safeText(item.id || id), title: safeText(item.title || item.name || text.slice(0, 100)), summary: safeText(item.summary || item.description || text), status: safeText(item.status || 'ongoing') })), 8);
+        state.triggers = selectRuntime(mapped(evidence.triggers, 'trigger', (item, text, id) => ({
+            ...item, id: safeText(item.id || id), title: safeText(item.title || item.name || text.slice(0, 100)),
+            conditions: Array.isArray(item.conditions) ? item.conditions.map(safeText).filter(Boolean) : [], status: safeText(item.status || 'armed'),
+            effectsIfTriggered: Array.isArray(item.effectsIfTriggered || item.effects) ? (item.effectsIfTriggered || item.effects).map(safeText).filter(Boolean) : [],
+            blockedReasons: Array.isArray(item.blockedReasons) ? item.blockedReasons.map(safeText).filter(Boolean) : [],
+            userVisible: item.userVisible !== false, userRelevance: safeText(item.userRelevance),
+        })), 6);
+        state.threads = selectRuntime(mapped(evidence.threads, 'thread', (item, text, id) => ({
+            ...item, id: safeText(item.id || id), title: safeText(item.title || item.name || text.slice(0, 100)), status: safeText(item.status || 'open'),
+            stakes: safeText(item.stakes || item.summary || text), participantIds: Array.isArray(item.participantIds || item.participants) ? (item.participantIds || item.participants).map(safeText).filter(Boolean) : [],
+            nextNaturalStep: safeText(item.nextNaturalStep), history: Array.isArray(item.history) ? item.history.map(safeText).filter(Boolean) : [],
+        })), 8);
+        state.processes = selectRuntime(mapped(evidence.processes, 'process', (item, text, id) => ({
+            ...item, id: safeText(item.id || id), title: safeText(item.title || item.name || text.slice(0, 100)), status: safeText(item.status || 'active'),
+            kind: safeText(item.kind || 'other'), drivers: Array.isArray(item.drivers) ? item.drivers.map(safeText).filter(Boolean) : [],
+            currentDirection: safeText(item.currentDirection || item.direction || item.summary || text),
+            decayConditions: Array.isArray(item.decayConditions) ? item.decayConditions.map(safeText).filter(Boolean) : [],
+            resolutionConditions: Array.isArray(item.resolutionConditions) ? item.resolutionConditions.map(safeText).filter(Boolean) : [],
+        })), 8);
+        state.causalEffects = selectRuntime(mapped(evidence.causal, 'causal', (item, text, id) => ({ ...item, id: safeText(item.id || id), cause: safeText(item.cause || text), result: safeText(item.result || item.effect || text), status: safeText(item.status || 'developing'), steps: Array.isArray(item.steps) ? item.steps : [], affectedIds: Array.isArray(item.affectedIds) ? item.affectedIds : [], evidenceRefs: Array.isArray(item.evidenceRefs) ? item.evidenceRefs : [] })), 10);
+        const latestProgressionRaw = evidence.progression.at(-1);
+        const latestProgression = objectItem(latestProgressionRaw);
+        const latestProgressionText = evidenceItemText(latestProgressionRaw);
+        const progressionWasObject = latestProgressionRaw && typeof latestProgressionRaw === 'object' && !Array.isArray(latestProgressionRaw);
+        if (latestProgressionText) state.progression = {
+            ...state.progression,
+            priority: 'L2',
+            activity: safeText(latestProgression.activity).toUpperCase() === 'COLD' ? 'COLD' : 'WARM',
+            direction: safeText(latestProgression.direction || latestProgression.title || latestProgressionText),
+            currentMovement: safeText(latestProgression.currentMovement || latestProgression.stage || latestProgression.summary || (progressionWasObject ? '' : latestProgressionText)),
+            nextRequiredChanges: Array.isArray(latestProgression.nextRequiredChanges) ? latestProgression.nextRequiredChanges.filter(Boolean).map(safeText) : [],
+            basedOnRefs: Array.isArray(latestProgression.basedOnRefs || latestProgression.sourceRefs) ? (latestProgression.basedOnRefs || latestProgression.sourceRefs).filter(Boolean).map(safeText) : [],
+            blockedByDecision: safeText(latestProgression.blockedByDecision),
+        };
+        state.timeline = mapped([...evidence.timeline, ...evidence.chronology].slice(-40), 'timeline', (item, text, id) => ({
+            ...item, id: safeText(item.id || id), summary: safeText(item.summary || item.description || text),
+            granularity: safeText(item.granularity || 'phase'), participants: Array.isArray(item.participants) ? item.participants.map(safeText).filter(Boolean) : [],
+            location: safeText(item.location), evidence: Array.isArray(item.evidence || item.sourceRefs) ? (item.evidence || item.sourceRefs).map(safeText).filter(Boolean) : [],
+        })).filter((item) => item.summary).slice(-24);
         return { state, plan: {}, moduleInjections: {}, evidence };
     }
     async function buildStateWithinLimit(plannerPrompt, payload, _baseState, settings, signal, prepared) {
@@ -452,7 +732,7 @@
         return clock;
     }
     const INITIALIZE_SLICES = [
-        { id: 'foundation', label: '世界与地图', keys: ['identities','world','map','timeline'], maxTokens: 4000 },
+        { id: 'foundation', label: '世界、资源与地图', keys: ['identities','world','factAnchors','resourceConstraints','map','timeline'], maxTokens: 5000 },
         { id: 'people', label: '人物与知识', keys: ['characters','npcActivities','relationships','knowledge'], maxTokens: 6500 },
         { id: 'affairs', label: '任务与事件', keys: ['tasks','events','triggers','threads'], maxTokens: 4500 },
         { id: 'dynamics', label: '进程与因果', keys: ['processes','causalEffects'], maxTokens: 4000 },
@@ -467,10 +747,10 @@
         };
     }
     const SLICE_EVIDENCE_FIELDS = {
-        foundation: ['sourceRefs','canon','chronology','locations','currentScene','uncertainties'],
+        foundation: ['sourceRefs','canon','chronology','locations','resourceConstraints','currentScene','uncertainties'],
         people: ['sourceRefs','characters','relationships','knowledge','currentScene','uncertainties'],
-        affairs: ['sourceRefs','chronology','tasks','currentScene'],
-        dynamics: ['sourceRefs','chronology','tasks','uncertainties'],
+        affairs: ['sourceRefs','chronology','timeline','tasks','events','triggers','threads','currentScene'],
+        dynamics: ['sourceRefs','chronology','events','processes','causal','uncertainties'],
     };
     function sourceForInitializeSlice(source, sliceId) {
         const fields = new Set(SLICE_EVIDENCE_FIELDS[sliceId] || []);
@@ -500,7 +780,7 @@
             const prompts = Object.fromEntries(slice.keys.map((key) => [key, settings.modulePrompts?.[key] || WSM.Defaults.MODULE_PROMPTS[key]]).filter(([, value]) => value));
             try {
                 const result = await WSM.Api.complete(
-                    `你是世界状态初始化器，本次只建立“${slice.label}”切片。source 已由前序分片模型完整读取，sourceDigest 中每一项都必须综合使用。只能记录来源中已经存在或正文已经发生的事实，不得续写、推测成真或创造设定。严格遵守 ownership，只返回 JSON：{"state":{本切片字段}}；不得返回其他状态字段、plan、Markdown 或解释。`,
+                    `你是世界状态初始化器，本次只建立“${slice.label}”切片。source 已由前序分片模型完整读取，但只把当前运行需要的内容写入状态，原始资料仍是权威库。先跨模块去重，再按重要性与当前相关度筛选；L1临时细节优先省略，COLD核心信息保存但不扩写。模块允许为空，禁止凑数；一旦创建卡片就必须有最小有效字段，人物关系必须有from、to、status，人物必须有name，NPC活动必须有characterId和action，事件必须有title及summary/outcome，其余必须有标题或事实正文。缺字段就省略，禁止空对象、空白卡和同一事实多份改写。单模块通常最多8张卡，单卡数组最多4项。只能记录来源中已经存在或正文已经发生的事实，不得续写、推测成真或创造设定。严格遵守 ownership，只返回 JSON：{"state":{本切片字段}}；不得返回其他状态字段、plan、Markdown 或解释。`,
                     {
                         task: 'INITIALIZE_WORLD_SLICE', slice: slice.id, sliceIndex: index + 1, sliceCount: queue.length,
                         source: sourceForInitializeSlice(source, slice.id.split(':')[0]), stateReference: stateReference(state), stateSchema: schema, moduleOwnership: ownership, modulePrompts: prompts,
@@ -583,7 +863,7 @@
             const diceRound = settings.diceEnabled ? WSM.Dice?.createRound?.(key) : null;
             const localPlan = {
                 ...(diceRound ? { diceRound } : {}),
-                notes: ['省额度模式：生成前使用最近一次已结算状态；正文完成后以一次 API 请求统一更新全部栏目。'],
+                notes: ['省额度模式：生成前使用最近一次已结算状态；正文完成后以一次 API 检查全部栏目，但只返回并写入发生实质变化的增量。'],
             };
             current.planner = {
                 lastRunAt: Date.now(), turnKey: key, plan: localPlan,
@@ -702,6 +982,8 @@
                     chunked: true,
                     chunks: prepared.large ? 2 : 1, requestAttempts: 0, cacheHits: 0,
                     originalChars: prepared.originalChars, includedChars: prepared.includedChars,
+                    semanticCompaction: prepared.semanticCompaction === true,
+                    coveredChatMessages: Number(prepared.coveredChatMessages || 0),
                     halfChars: prepared.halfChars || [], records: prepared.records,
                 };
             }
@@ -868,9 +1150,12 @@
             lockedPaths: current.lockedPaths || [],
         };
         try {
-            const result = await WSM.Api.complete(`${settings.reconcilerPrompt}\n\n本次结算必须在同一个 JSON 响应内同时完成普通状态与世界书浓缩缓存更新。除既有 state、timelineEntry、actualChanges 字段外，返回 worldbookEntries 数组；每项沿用输入 worldbookRules 的 key，并只依据本轮 user/assistant 实际正文修正 core、triggers、rules、background。没有变化的条目可省略，禁止创造世界书原文不存在的新规则。不得要求第二次调用。`, payload, { singleAttempt: true });
-            if (!result?.state || typeof result.state !== 'object') throw new Error('结算响应缺少 state');
-            let next = WSM.Storage.enforceLocks(current, result.state);
+            const result = await WSM.Api.complete(`${settings.reconcilerPrompt}\n\n本次结算必须在同一个 JSON 响应内同时完成增量状态结算与世界书浓缩缓存更新。除 stateDelta、timelineEntry、actualChanges 字段外，返回 worldbookEntries 数组；每项沿用输入 worldbookRules 的 key，并只依据本轮 user/assistant 实际正文修正 core、triggers、rules、background。没有变化的状态模块和世界书条目必须省略，禁止为了显得完整而复述。不得要求第二次调用。`, payload, { singleAttempt: true });
+            const delta = result?.stateDelta || result?.delta;
+            const legacyState = result?.state;
+            if ((!delta || typeof delta !== 'object') && (!legacyState || typeof legacyState !== 'object')) throw new Error('结算响应缺少 stateDelta');
+            const candidate = delta && typeof delta === 'object' ? applyStateDelta(current, delta) : legacyState;
+            let next = WSM.Storage.enforceLocks(current, candidate);
             next = syncIdentities(next, current.identities);
             next = rotateTriggersForNextTurn(current, next);
             next.initialized = true;
@@ -914,6 +1199,7 @@
         const events = ctx?.event_types || window.event_types;
         const source = ctx?.eventSource || window.eventSource;
         if (!events || !source?.on) return false;
+        WSM.WorldbookCompiler?.installNativeWorldbookFilter?.();
         bound = true;
         const before = events.GENERATION_AFTER_COMMANDS || 'generation_after_commands';
         source.on(before, async (type) => {
@@ -936,6 +1222,7 @@
     }
     async function init() {
         bindSettingsEvents();
+        WSM.WorldbookCompiler?.installNativeWorldbookFilter?.();
         await setPrompt('');
         await WSM.WorldbookCompiler?.setWorldbookPrompts?.({});
         if (!bindEvents()) {
@@ -946,5 +1233,5 @@
             }, 1000);
         }
     }
-    WSM.Engine = { init, plan: ensurePlan, settle: ensureSettle, interceptor, fallbackInjection, reportProgress, getProgress, cancelRead, isReading, syncRegisteredPrompt, _test: { generationBlockReason, plannerAvailable, activeChatAvailable, setPrompt, setStatePrompts, syncRegisteredPrompt, initializeInSlices, sourceForInitializeSlice, rotateTriggersForNextTurn, completeSourceRecords, splitCompleteRecords, removeMirroredChatRecords, prepareSourceForStateRequests, buildStateWithinLimit, normalizeStateResult, mergeStatePatch, mergeCompleteEvidence, stateFromEvidence, firstHalfCacheKey } };
+    WSM.Engine = { init, plan: ensurePlan, settle: ensureSettle, interceptor, fallbackInjection, reportProgress, resetProgress, getProgress, cancelRead, isReading, syncRegisteredPrompt, _test: { generationBlockReason, plannerAvailable, activeChatAvailable, setPrompt, setStatePrompts, syncRegisteredPrompt, initializeInSlices, sourceForInitializeSlice, rotateTriggersForNextTurn, completeSourceRecords, compactSourceChronicle, splitCompleteRecords, removeMirroredChatRecords, prepareSourceForStateRequests, buildStateWithinLimit, normalizeStateResult, mergeStatePatch, applyStateDelta, mergeCompleteEvidence, stateFromEvidence, firstHalfCacheKey } };
 })();

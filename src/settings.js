@@ -2,7 +2,7 @@
     'use strict';
     const WSM = window.WorldStateMachine = window.WorldStateMachine || {};
     const KEY = 'worldStateMachine';
-    const RULES_VERSION = 20;
+    const RULES_VERSION = 22;
     const defaults = {
         rulesVersion: RULES_VERSION,
         enabled: true,
@@ -83,6 +83,7 @@
                 relationships: WSM.Defaults.MODULE_PROMPTS.relationships,
                 knowledge: WSM.Defaults.MODULE_PROMPTS.knowledge,
                 world: WSM.Defaults.MODULE_PROMPTS.world,
+                worldRules: WSM.Defaults.MODULE_PROMPTS.worldRules,
                 events: WSM.Defaults.MODULE_PROMPTS.events,
                 processes: WSM.Defaults.MODULE_PROMPTS.processes,
                 tasks: WSM.Defaults.MODULE_PROMPTS.tasks,
@@ -101,10 +102,11 @@
         }
         const savedModules = root[KEY].injectionModules || {};
         root[KEY].injectionModules = Object.fromEntries(Object.entries(WSM.Defaults.INJECTION_MODULES).map(([id, value]) => [id, Object.assign({}, value, savedModules[id] || {})]));
-        if (needsRulesMigration) ['characters','npcActivities','relationships','knowledge','world','events','processes','causalEffects','tasks','triggers','threads','progression','pacing','map'].forEach((id) => {
+        if (needsRulesMigration) ['characters','npcActivities','relationships','knowledge','world','worldRules','events','processes','causalEffects','tasks','triggers','threads','progression','pacing','map'].forEach((id) => {
             root[KEY].injectionModules[id].instruction = WSM.Defaults.INJECTION_MODULES[id].instruction;
         });
-        if (needsRulesMigration && root[KEY].injectionModules.map) root[KEY].injectionModules.map.enabled = false;
+        if (needsRulesMigration && root[KEY].injectionModules.map) root[KEY].injectionModules.map.enabled = true;
+        if (needsRulesMigration && root[KEY].injectionModules.knowledge) root[KEY].injectionModules.knowledge.enabled = true;
         root[KEY].modulePrompts = Object.assign({}, WSM.Defaults.MODULE_PROMPTS, root[KEY].modulePrompts || {});
         ['causalLinks', 'causalSeeds', 'scenePressure', 'actorCausality', 'backgroundQueue', 'advanceScheduler'].forEach((id) => { delete root[KEY].modulePrompts[id]; });
         root[KEY].worldbookCompiler = Object.assign({}, defaults.worldbookCompiler, root[KEY].worldbookCompiler || {});
@@ -121,6 +123,7 @@
         root[KEY].maxTokens = Math.max(256, Math.min(16384, Math.round(Number(root[KEY].maxTokens) || defaults.maxTokens)));
         const recentMessages = Number(root[KEY].recentMessages);
         root[KEY].recentMessages = Number.isFinite(recentMessages) ? Math.max(0, Math.min(200, Math.round(recentMessages))) : defaults.recentMessages;
+        delete root[KEY].calibrationConcurrency;
         window.extension_settings[KEY] = root[KEY];
         return root[KEY];
     }

@@ -120,7 +120,7 @@
         delete next.updatedAt;
         delete next.runtime;
         delete next.planner;
-        ['factAnchors','characters','npcActivities','relationships','knowledge','tasks','events','triggers','threads','processes','causalEffects','timeline'].forEach((module) => {
+        ['worldRules','factAnchors','characters','npcActivities','relationships','knowledge','tasks','events','triggers','threads','processes','causalEffects','timeline'].forEach((module) => {
             (next[module] || []).forEach((item) => { if (item && typeof item === 'object') delete item.updatedRevision; });
         });
         if (next.progression && typeof next.progression === 'object') delete next.progression.updatedRevision;
@@ -144,13 +144,14 @@
     }
     const COMPLETE_SOURCE_PART_CHARS = 24000;
     const MAX_COMPLETE_HALF_CHARS = 180000;
-    const TWO_PASS_SOURCE_TARGET_CHARS = 300000;
+    const TWO_PASS_SOURCE_TARGET_CHARS = 260000;
     const SOURCE_PROGRESS_FRAGMENT_CHARS = 8000;
     const FIRST_HALF_EVIDENCE_RESERVE_CHARS = 18000;
     const FIRST_HALF_CACHE_KEY = 'wsm_two_pass_first_half_cache_v3';
-    const SOURCE_READ_PROMPT = '你是资料读取器，不是故事续写者。sourceRecords 是严格分配给请求 A 的资料；chat-message 可能是程序从超长原文逐条提取的语义年表，但每个聊天楼层都已被本地扫描并保留编号、角色与最有连续性价值的内容。逐条读取，serializedJson 分片按 ref、part 顺序拼接理解。原始世界书、角色卡、Persona和完整聊天仍是权威来源，本结果只建立当前运行证据。先去重再分级：L3为身份真相、重大秘密、不可逆事实、核心关系或主线矛盾；L2为当前任务、关系变化、进程和关键情报；L1为饮食、短暂情绪、小动作和一次性日常。必须区分并提取：resourceConstraints=当前真正限制行动的资金、权限、人手、关键持有物或地点封锁；npcActivities=NPC脱离玩家视野后的实际或既定活动；triggers=尚未发生且等待条件的一次节点；threads=围绕用户经历持续未解决的剧情线；processes=即使用户不参与也会演变的世界级变化；timeline=已发生且值得回顾的重要节点。anchors只放正文中已永久成立、遗忘会造成逻辑错误且不能由其他模块替代的最终客观结果，绝不能复制世界书原设。locations只提取空间实体，按世界→城市→区域→建筑→内部空间给出parentId；同名同父级只留一个。description只写稳定空间用途，origin用一句人物+行为/原因或“世界设定”说明首次来源，禁止写事件经过与剧情意义。HOT仅限当前场景，WARM为近期可用，COLD为暂不相关。只保留会影响连续性的当前版本；不得预测结果、续写或替用户选择。模块可以为空，禁止为了填满数组制造条目；同一对象或同一事实只能出现一次。每项必须具备最小有效字段。严禁列出全部输入ref。输出总长必须少于4400个中文字符；数组硬上限：currentScene 3、progression 1、anchors 6、resourceConstraints 8、characters 10、npcActivities 6、relationships 8、knowledge 10、chronology 8、timeline 8、canon 6、locations 8、tasks 5、events 5、triggers 5、threads 5、processes 5、causal 5、uncertainties 3。每项一句，单项不超过80字，允许省略空数组。不得输出思考、Markdown或解释。必须从以下开头直接输出闭合JSON：{"evidence":{"currentScene":[],"progression":[],"anchors":[],"resourceConstraints":[],"characters":[],"npcActivities":[],"relationships":[],"knowledge":[],"chronology":[],"timeline":[],"canon":[],"locations":[],"tasks":[],"events":[],"triggers":[],"threads":[],"processes":[],"causal":[],"uncertainties":[]}}。';
-    const FINAL_EVIDENCE_PROMPT = '你是第二段资料读取与证据合并器，不是故事续写者。firstHalfEvidence 是请求 A 的有界证据，sourceRecords 是后半资料；逐条读取后半并与前半去重，只保留仍影响当前运行的最新版本。必须分别维护resourceConstraints、npcActivities、triggers、threads、processes和timeline，只有原文确实没有符合定义的内容时才为空。resourceConstraints只收录会改变行动可行性的资金、权限、人手、关键持有物或封锁，不做资产清单。原始世界书、角色卡、Persona和完整聊天仍是权威来源；不得把本结果当作替代原文的固定摘要。anchors只保留正文已永久确立且不能由其他模块替代的最终结果。L3为核心锚点，L2为活跃信息，L1为临时信息；HOT只给当前场景。不得预测、续写、创造或替用户决定。模块允许为空；同一对象或事实只保留一个最新版本。缺字段时删除，禁止输出空对象和半成品。输出总长必须少于4800个中文字符；最终数组硬上限：currentScene 3、progression 1、anchors 8、resourceConstraints 10、characters 12、npcActivities 8、relationships 10、knowledge 12、chronology 10、timeline 10、canon 6、locations 10、tasks 6、events 6、triggers 6、threads 6、processes 6、causal 6、uncertainties 3。每项一句，单项不超过80字，允许省略空数组。不得输出思考、Markdown或解释。必须从以下开头直接输出闭合JSON：{"evidence":{"currentScene":[],"progression":[],"anchors":[],"resourceConstraints":[],"characters":[],"npcActivities":[],"relationships":[],"knowledge":[],"chronology":[],"timeline":[],"canon":[],"locations":[],"tasks":[],"events":[],"triggers":[],"threads":[],"processes":[],"causal":[],"uncertainties":[]}}。';
-    const INITIAL_STATE_PROMPT = '你是世界状态初始化器，不是故事续写者。先识别事实、跨模块去重，再按priority与activity建立紧凑当前状态。world固定只含当前时间、季节、地点、天气、环境和最多8条正在生效的客观状态；天气必须存在，服从地点、季节、时间与既有气象并连续渐变。resourceConstraints只记录当前会改变行动可行性的资金、权限、人手、关键物品与地点封锁，不做资产清单，不猜测数量。人物背景、历史、未来安排和世界规则不得进入world。factAnchors只放正文已经永久确立且不能由其他模块明确表达的最终客观结果；世界书、角色卡和Persona始终是长期设定权威。L2为当前阶段重要信息，L1为临时信息；HOT仅限当前场景。当前型模块只留最新版本。progression仅在资料已明确形成当前剧情移动方向时建立一个当前版本。模块允许为空，禁止为了填满栏目制造内容；卡片缺关键字段时不创建，禁止空对象、空标题、空白卡和同一事实的多份改写。普通饮食、姿势、衣物、情绪和日用品默认不进入。重要完成节点才进入timeline。单模块通常不超过8张卡，单卡列表字段通常不超过4项；达到容量时保留L3与当前HOT/L2，其余留在原始资料。禁止预演未来、创造设定或输出分析。整个JSON严格控制在2200个中文字符以内，只输出闭合严格JSON：{"state":{}}。';
+    const SOURCE_READ_PROMPT = '你是资料读取器，不是故事续写者。sourceRecords 是严格分配给请求 A 的资料；chat-message 可能是程序从超长原文逐条提取的语义年表，但每个聊天楼层都已被本地扫描并保留编号、角色与最有连续性价值的内容。逐条读取，serializedJson 分片按 ref、part 顺序拼接理解。原始世界书、角色卡、Persona和完整聊天仍是权威来源，本结果只建立当前运行证据。先去重再分级：L3为身份真相、重大秘密、不可逆事实、核心关系或主线矛盾；L2为当前任务、关系变化、进程和关键情报；L1为饮食、短暂情绪、小动作和一次性日常。必须逐个检查并提取所有具备依据的模块，不得因为优先级较低就整栏遗漏：resourceConstraints=当前真正限制行动的资金、权限、人手、关键持有物或地点封锁；npcActivities=NPC脱离玩家视野后的实际或既定活动；triggers=尚未发生且等待条件的一次节点；threads=围绕用户经历持续未解决的剧情线；processes=即使用户不参与也会演变的世界级变化；timeline=已发生且值得回顾的重要节点。anchors只放正文中已永久成立、遗忘会造成逻辑错误且不能由其他模块替代的最终客观结果，绝不能复制世界书原设。locations只提取空间实体，按世界→城市→区域→建筑→内部空间给出parentId；同名同父级只留一个。description只写稳定空间用途，origin用一句人物+行为/原因或“世界设定”说明首次来源，禁止写事件经过与剧情意义。HOT仅限当前场景，WARM为近期可用，COLD为暂不相关。只保留会影响连续性的当前版本；不得预测结果、续写或替用户选择。确无依据时数组可以为空并由程序建立“尚未建立”占位；同一对象或同一事实只能出现一次。每项必须具备最小有效字段，npcActivities必须有characterId和action，tasks必须有title，triggers必须有title及conditions或userRelevance。严禁列出全部输入ref。输出总长必须少于4400个中文字符；数组硬上限：currentScene 3、progression 1、anchors 6、resourceConstraints 8、characters 10、npcActivities 6、relationships 8、knowledge 10、chronology 8、timeline 8、canon 6、locations 8、tasks 5、events 5、triggers 5、threads 5、processes 5、causal 5、uncertainties 3。每项一句，单项不超过80字，所有数组键都必须保留。不得输出思考、Markdown或解释。必须从以下开头直接输出闭合JSON：{"evidence":{"currentScene":[],"progression":[],"anchors":[],"resourceConstraints":[],"characters":[],"npcActivities":[],"relationships":[],"knowledge":[],"chronology":[],"timeline":[],"canon":[],"locations":[],"tasks":[],"events":[],"triggers":[],"threads":[],"processes":[],"causal":[],"uncertainties":[]}}。';
+    const FINAL_EVIDENCE_PROMPT = '你是第二段资料读取与证据合并器，不是故事续写者。firstHalfEvidence 是请求 A 的有界证据，sourceRecords 是后半资料；逐条读取后半并与前半去重，只保留仍影响当前运行的最新版本。必须逐个检查并分别维护resourceConstraints、npcActivities、tasks、events、triggers、threads、processes、causal和timeline，不得因为属于L1或信息较早就整栏遗漏；只有原文确实没有符合定义的内容时才为空并交给程序建立“尚未建立”占位。resourceConstraints只收录会改变行动可行性的资金、权限、人手、关键持有物或封锁，不做资产清单。原始世界书、角色卡、Persona和完整聊天仍是权威来源；不得把本结果当作替代原文的固定摘要。anchors只保留正文已永久确立且不能由其他模块替代的最终结果。L3为核心锚点，L2为活跃信息，L1为临时信息；HOT只给当前场景。不得预测、续写、创造或替用户决定。同一对象或事实只保留一个最新版本。缺字段时删除，禁止输出空对象和半成品；npcActivities必须有characterId和action，tasks必须有title，triggers必须有title及conditions或userRelevance。输出总长必须少于4800个中文字符；最终数组硬上限：currentScene 3、progression 1、anchors 8、resourceConstraints 10、characters 12、npcActivities 8、relationships 10、knowledge 12、chronology 10、timeline 10、canon 6、locations 10、tasks 6、events 6、triggers 6、threads 6、processes 6、causal 6、uncertainties 3。每项一句，单项不超过80字，所有数组键都必须保留。不得输出思考、Markdown或解释。必须从以下开头直接输出闭合JSON：{"evidence":{"currentScene":[],"progression":[],"anchors":[],"resourceConstraints":[],"characters":[],"npcActivities":[],"relationships":[],"knowledge":[],"chronology":[],"timeline":[],"canon":[],"locations":[],"tasks":[],"events":[],"triggers":[],"threads":[],"processes":[],"causal":[],"uncertainties":[]}}。';
+    const INITIAL_STATE_PROMPT = '你是世界状态初始化器，不是故事续写者。先识别事实、跨模块去重，再按priority与activity建立紧凑当前状态。world固定只含当前时间、季节、地点、天气、环境和最多8条正在生效的客观状态；天气必须存在，服从地点、季节、时间与既有气象并连续渐变。resourceConstraints只记录当前会改变行动可行性的资金、权限、人手、关键物品与地点封锁，不做资产清单，不猜测数量。人物背景、历史、未来安排和世界规则不得进入world。factAnchors只放正文已经永久确立且不能由其他模块明确表达的最终客观结果；世界书、角色卡和Persona始终是长期设定权威。L2为当前阶段重要信息，L1为临时信息；HOT仅限当前场景。当前型模块只留最新版本。初始化必须逐一检查stateSchema中的所有展示模块，有依据的模块至少返回一条最相关当前记录；确无依据时允许程序建立明确的“尚未建立”占位，不得用捏造设定凑数。卡片缺关键字段时不创建，禁止空对象、空标题、空白卡和同一事实的多份改写。普通饮食、姿势、衣物、情绪和日用品默认不进入。重要完成节点才进入timeline。单模块通常不超过8张卡，单卡列表字段通常不超过4项；达到容量时保留L3与当前HOT/L2，其余留在原始资料。禁止预演未来、创造设定或输出分析。整个JSON严格控制在2200个中文字符以内，只输出闭合严格JSON：{"state":{}}。';
+    const TRUTH_POLICY_PROMPT = '真实性硬规则：补全顺序为原文事实→定点回查世界书/角色卡/摘要/历史→可确定程序推导→有充分线索的推测→仅低风险模块受约束生成→明确未知。每个持久条目都返回truthStatus、basis、sourceRefs。truthStatus只允许confirmed、derived、system_generated、suspected、assumed、unknown、not_established、not_applicable、failed。confirmed必须绑定来源；derived必须有可复算依据；suspected/assumed不得写成事实或自动升级；failed必须重试读取。天气可system_generated但服从地点、季节、时间、上轮天气和特殊气候并连续演变；季节优先由日期、地点和南北半球确定，衣着只能作冷暖弱线索。人物身份、关系、秘密/知识、世界规则、任务、权限、命名地点禁止自由生成，无证据时明确unknown或not_established。L3禁止suspected、assumed、system_generated。集合可为空，但必填单值不得空字符串，至少写“未明确”并附真实性元数据。';
     function losslessParts(value, limit = COMPLETE_SOURCE_PART_CHARS) {
         const input = String(value ?? '');
         if (!input) return [''];
@@ -197,7 +198,7 @@
         const recentCount = Math.min(10, chat.length);
         const recentReserve = Math.min(60000, Math.max(18000, targetChars - fixedChars) * 0.25);
         const olderCount = Math.max(1, chat.length - recentCount);
-        const olderBudget = Math.max(140, Math.min(900, Math.floor((targetChars - fixedChars - recentReserve) / olderCount) - 120));
+        const olderBudget = Math.max(107, Math.min(900, Math.floor((targetChars - fixedChars - recentReserve) / olderCount) - 120));
         const recentBudget = Math.max(900, Math.min(5000, Math.floor(recentReserve / Math.max(1, recentCount)) - 120));
         clone.chat = chat.map((message, index) => {
             const recent = index >= chat.length - recentCount;
@@ -368,7 +369,7 @@
     function firstHalfCacheKey(prepared, settings) {
         return `a2:${hash(JSON.stringify({
             model: settings?.model || '', endpoint: settings?.useTavernApi === false ? settings?.endpoint || '' : 'tavern',
-            records: prepared?.halves?.[0] || [], prompt: SOURCE_READ_PROMPT,
+            records: prepared?.halves?.[0] || [], prompt: `${SOURCE_READ_PROMPT}\n${TRUTH_POLICY_PROMPT}`,
         }))}`;
     }
     function mergeStatePatch(base, patch) {
@@ -387,7 +388,7 @@
         };
         return merge(base || WSM.Defaults.createState(), patch || {});
     }
-    const STATE_COLLECTION_KEYS = new Set(['factAnchors','resourceConstraints','characters','npcActivities','relationships','knowledge','tasks','events','triggers','threads','processes','causalEffects','timeline']);
+    const STATE_COLLECTION_KEYS = new Set(['worldRules','factAnchors','resourceConstraints','characters','npcActivities','relationships','knowledge','tasks','events','triggers','threads','processes','causalEffects','timeline']);
     function collectionIdentity(module, item = {}) {
         if (module === 'npcActivities') return safeText(item.characterId || item.id);
         if (module === 'relationships') return `${safeText(item.from)}>${safeText(item.to)}`;
@@ -401,6 +402,31 @@
             patch.progression.updatedRevision = touchedRevision;
         }
         let next = mergeStatePatch(base || WSM.Defaults.createState(), patch);
+        const previousWeather = safeText(base?.world?.location?.weather);
+        const candidateWeather = safeText(next?.world?.location?.weather);
+        const weatherWasPatched = patch?.world?.location && Object.prototype.hasOwnProperty.call(patch.world.location, 'weather');
+        const weatherMeta = next?.world?.location?.weatherMeta || {};
+        const weatherRefs = Array.isArray(weatherMeta.sourceRefs) ? weatherMeta.sourceRefs.filter(Boolean) : [];
+        const weatherRank = (value) => {
+            const input = safeText(value);
+            if (/暴(?:雨|雪)|台风|飓风|龙卷/.test(input)) return 6;
+            if (/大(?:雨|雪)/.test(input)) return 5;
+            if (/中(?:雨|雪)/.test(input)) return 4;
+            if (/小(?:雨|雪)|毛毛雨|雨夹雪/.test(input)) return 3;
+            if (/阴/.test(input)) return 2;
+            if (/多云/.test(input)) return 1;
+            if (/晴/.test(input)) return 0;
+            return null;
+        };
+        if (weatherWasPatched && previousWeather && candidateWeather && previousWeather !== candidateWeather
+            && weatherRefs.length === 0 && weatherMeta.truthStatus !== 'confirmed') {
+            const beforeRank = weatherRank(previousWeather);
+            const afterRank = weatherRank(candidateWeather);
+            if (beforeRank != null && afterRank != null && Math.abs(afterRank - beforeRank) > 1) {
+                next.world.location.weather = previousWeather;
+                next.world.location.weatherMeta = WSM.Storage.clone(base.world.location.weatherMeta || { truthStatus: 'unknown', basis: ['天气突变缺少原文依据，已保持上一轮'], sourceRefs: [] });
+            }
+        }
         const rawOps = Array.isArray(delta.collectionOps) ? [...delta.collectionOps] : [];
         Object.entries(delta.collections || {}).forEach(([module, value]) => {
             (value?.upsert || []).forEach((item) => rawOps.push({ module, op: 'update', id: item?.id, value: item }));
@@ -425,16 +451,102 @@
             } else if (value) {
                 value.activity = value.activity || 'HOT';
                 value.updatedRevision = touchedRevision;
-                if (op === 'create' && index < 0) items.push(value);
+                const previous = index >= 0 ? items[index] : {};
+                if (op === 'create' && index < 0) items.push(WSM.Storage?.enforceTruthTransition?.(previous, value, module) || value);
                 else if (op === 'replace') {
-                    if (index >= 0) items[index] = value;
-                    else items.push(value);
-                } else if (index >= 0) items[index] = mergeStatePatch(items[index], value);
-                else items.push(value);
+                    const replacement = WSM.Storage?.enforceTruthTransition?.(previous, value, module) || value;
+                    if (index >= 0) items[index] = replacement;
+                    else items.push(replacement);
+                } else if (index >= 0) {
+                    const merged = mergeStatePatch(items[index], value);
+                    if (module === 'relationships' && items[index]?.coverageOnly === true && value.status && value.status !== '尚未读取到已确立的关系') {
+                        merged.coverageOnly = false;
+                        if (!Object.prototype.hasOwnProperty.call(value, 'truthStatus')) delete merged.truthStatus;
+                    }
+                    if (module === 'tasks' && merged.status === 'done' && Array.isArray(merged.completionConditions) && merged.completionConditions.length) {
+                        const completed = new Set(Array.isArray(merged.completedConditions) ? merged.completedConditions.map(safeText) : []);
+                        if (merged.completionConditions.some((condition) => !completed.has(safeText(condition)))) {
+                            merged.status = 'active';
+                            merged.progress = `${safeText(merged.progress)}${merged.progress ? '；' : ''}完成条件尚未全部核验`;
+                        }
+                    }
+                    items[index] = WSM.Storage?.enforceTruthTransition?.(items[index], merged, module) || merged;
+                } else items.push(WSM.Storage?.enforceTruthTransition?.({}, value, module) || value);
             }
             next[module] = items;
         });
+        // Validate every operation shape, including create/replace. A model
+        // cannot close a task by status alone while explicit conditions remain.
+        next.tasks = (next.tasks || []).map((task) => {
+            if (task?.status !== 'done' || !Array.isArray(task.completionConditions) || !task.completionConditions.length) return task;
+            const completed = new Set((Array.isArray(task.completedConditions) ? task.completedConditions : []).map(safeText));
+            if (!task.completionConditions.some((condition) => !completed.has(safeText(condition)))) return task;
+            const progress = safeText(task.progress);
+            return { ...task, status: 'active', progress: `${progress}${progress ? '；' : ''}完成条件尚未全部核验` };
+        });
         return next;
+    }
+    function applyHistoryLedger(base, changes = []) {
+        let next = WSM.Storage.clone(base || WSM.Defaults.createState());
+        const collectionModules = new Set(STATE_COLLECTION_KEYS);
+        (Array.isArray(changes) ? changes : []).forEach((change) => {
+            const rawModule = safeText(change?.module);
+            const module = ({ anchors: 'factAnchors', causal: 'causalEffects' })[rawModule] || rawModule;
+            const operation = change?.operation === 'remove' ? 'remove' : 'update';
+            const value = change?.value && typeof change.value === 'object' && !Array.isArray(change.value)
+                ? { ...WSM.Storage.clone(change.value), sourceRefs: change.sourceRefs || change.value.sourceRefs || [] }
+                : null;
+            if (module === 'world' && value) {
+                if (operation !== 'remove') next = mergeStatePatch(next, { world: value });
+                return;
+            }
+            if (module === 'progression' && value) {
+                if (operation === 'remove') next.progression = WSM.Defaults.createState().progression;
+                else next = mergeStatePatch(next, { progression: value });
+                return;
+            }
+            if (module === 'locations') {
+                next.map ||= { rootLabel: '大地图', currentLocationId: '', locations: [], routes: [] };
+                const locations = Array.isArray(next.map.locations) ? next.map.locations : [];
+                const wanted = safeText(change?.entityId || value?.id || value?.name);
+                const index = locations.findIndex((item) => safeText(item?.id) === wanted || safeText(item?.name) === wanted);
+                if (operation === 'remove') {
+                    if (index >= 0) locations.splice(index, 1);
+                } else if (value) {
+                    if (index >= 0) locations[index] = mergeStatePatch(locations[index], value);
+                    else locations.push({ ...value, id: value.id || change.entityId });
+                }
+                next.map.locations = locations;
+                return;
+            }
+            if (!collectionModules.has(module)) return;
+            next = applyStateDelta(next, {
+                collectionOps: [{ module, op: operation, id: change?.entityId || value?.id, value }],
+            });
+        });
+        return next;
+    }
+    function historyChangesFromDelta(delta = {}, sourceRefs = [], prefix = 'turn') {
+        const changes = [];
+        const push = (module, operation, entityId, value) => {
+            const changeId = `${prefix}:${changes.length + 1}:${hash(JSON.stringify({ module, operation, entityId, value }))}`;
+            changes.push({ changeId, factId: safeText(value?.factId), module, operation, entityId: safeText(entityId), value: value || {}, sourceRefs, origin: 'chat' });
+        };
+        const patch = delta.statePatch || delta.patch || {};
+        Object.entries(patch).forEach(([module, value]) => push(module, 'upsert', value?.id || '', value));
+        const operations = Array.isArray(delta.collectionOps) ? [...delta.collectionOps] : [];
+        Object.entries(delta.collections || {}).forEach(([module, value]) => {
+            (value?.upsert || []).forEach((item) => operations.push({ module, op: 'update', id: item?.id, value: item }));
+            (value?.replace || []).forEach((item) => operations.push({ module, op: 'replace', id: item?.id, value: item }));
+            (value?.removeIds || []).forEach((id) => operations.push({ module, op: 'remove', id }));
+        });
+        operations.forEach((operation) => push(
+            safeText(operation?.module),
+            ['remove','delete','archive'].includes(safeText(operation?.op).toLowerCase()) ? 'remove' : 'upsert',
+            operation?.id || operation?.value?.id,
+            operation?.value || {},
+        ));
+        return changes;
     }
     function normalizeStateResult(result, baseState = null) {
         const envelopes = [result, result?.result, result?.data, result?.output].filter((item) => item && typeof item === 'object' && !Array.isArray(item));
@@ -492,7 +604,13 @@
             const result = factory(source, text, `${prefix}-${hash(`${index}:${text}`)}`);
             if (!result || prefix === 'location') return result;
             const priority = priorityOf(source, text, prefix === 'timeline' ? 'L1' : prefix === 'anchor' ? 'L3' : 'L2');
-            return { ...result, priority, activity: activityOf(source, text, priority) };
+            const sourceRefs = Array.isArray(result.sourceRefs) ? result.sourceRefs.filter(Boolean).map(safeText)
+                : (Array.isArray(source.sourceRefs) ? source.sourceRefs.filter(Boolean).map(safeText) : []);
+            const basis = Array.isArray(result.basis) ? result.basis.filter(Boolean).map(safeText)
+                : (result.basis ? [safeText(result.basis)] : []);
+            const module = ({ anchor: 'factAnchors', constraint: 'resourceConstraints', character: 'characters', npcActivity: 'npcActivities', relationship: 'relationships', knowledge: 'knowledge', task: 'tasks', event: 'events', trigger: 'triggers', thread: 'threads', process: 'processes', causal: 'causalEffects', timeline: 'timeline' })[prefix] || prefix;
+            const prepared = { ...result, priority, activity: activityOf(source, text, priority), sourceRefs, basis };
+            return WSM.Storage?.enforceTruthTransition?.({}, prepared, module) || prepared;
         }).filter(Boolean);
         const selectRuntime = (items, limit) => items.filter((item) => item.activity === 'HOT' || (item.activity === 'WARM' && item.priority !== 'L1') || item.priority === 'L3')
             .sort((a, b) => ({ HOT: 3, WARM: 2, COLD: 1 }[b.activity] || 0) - ({ HOT: 3, WARM: 2, COLD: 1 }[a.activity] || 0)
@@ -515,15 +633,32 @@
         // The live world snapshot only keeps current-scene facts, otherwise a
         // large setting library is duplicated into state on first hydration.
         state.world.currentConditions = [...new Set(scene)].slice(-8);
+        state.world.currentConditionDetails = state.world.currentConditions.map((value) => {
+            const evidenceItem = evidence.currentScene.find((item) => evidenceItemText(item) === value);
+            const source = objectItem(evidenceItem);
+            const sourceRefs = Array.isArray(source.sourceRefs) ? source.sourceRefs.filter(Boolean).map(safeText) : [];
+            return { value, truthStatus: sourceRefs.length ? 'confirmed' : 'unknown', basis: sourceRefs.length ? ['当前客观状态来自场景原文证据'] : ['场景证据未绑定来源，等待回查'], sourceRefs };
+        });
         const latestScene = [...evidence.currentScene].reverse().find((item) => explicitPlaceOf(item)) || evidence.currentScene.at(-1);
         const latestSceneObject = objectItem(latestScene);
+        const sceneRefs = Array.isArray(latestSceneObject.sourceRefs) ? latestSceneObject.sourceRefs.filter(Boolean).map(safeText) : [];
         state.world.location.current = safeText(narrativePlace || state.world.location.current);
+        if (narrativePlace) state.world.location.currentMeta = { truthStatus: sceneRefs.length ? 'confirmed' : 'unknown', basis: [sceneRefs.length ? '当前地点来自已读取的场景/时间证据' : '地点证据没有绑定来源，等待回查'], sourceRefs: sceneRefs };
         state.world.location.environment = safeText(latestSceneObject.environment || latestSceneObject.summary || evidenceItemText(latestScene) || state.world.location.environment);
-        state.world.location.weather = safeText(latestSceneObject.weather || state.world.location.weather || '天气待确认');
-        state.world.season = safeText(latestSceneObject.season || state.world.season || '季节待确认');
+        if (latestSceneObject.environment) state.world.location.environmentMeta = { truthStatus: sceneRefs.length ? 'confirmed' : 'assumed', basis: ['环境来自当前场景证据'], sourceRefs: sceneRefs };
+        if (latestSceneObject.weather) {
+            state.world.location.weather = safeText(latestSceneObject.weather);
+            state.world.location.weatherMeta = { truthStatus: sceneRefs.length ? 'confirmed' : 'assumed', basis: ['天气来自当前场景证据'], sourceRefs: sceneRefs };
+        }
+        if (latestSceneObject.season) {
+            state.world.season = safeText(latestSceneObject.season);
+            state.world.seasonMeta = { truthStatus: sceneRefs.length ? 'confirmed' : 'assumed', basis: ['季节来自当前场景证据'], sourceRefs: sceneRefs };
+        }
         const latestChronology = objectItem(evidence.chronology.at(-1));
         const latestChronologyText = evidenceItemText(evidence.chronology.at(-1));
         state.world.time.display = safeText(latestChronology.time || latestChronology.date || latestChronology.display || state.world.time.display || latestChronologyText.slice(0, 100));
+        const timeRefs = Array.isArray(latestChronology.sourceRefs) ? latestChronology.sourceRefs.filter(Boolean).map(safeText) : [];
+        if (state.world.time.display) Object.assign(state.world.time, { truthStatus: timeRefs.length ? 'confirmed' : 'assumed', basis: ['时间来自已读取的时间顺序证据'], sourceRefs: timeRefs });
         state.factAnchors = selectRuntime(mapped(evidence.anchors, 'anchor', (item, text, id) => ({
             ...item, id: safeText(item.id || id), fact: safeText(item.fact || item.summary || text), scope: safeText(item.scope),
             sourceRefs: Array.isArray(item.sourceRefs) ? item.sourceRefs.slice(0, 3) : [],
@@ -615,7 +750,7 @@
         evidence.events.forEach((item) => addLocationPath(item, 'event'));
         evidence.npcActivities.forEach((item) => addLocationPath(item, 'npcActivity'));
         evidence.characters.forEach((item) => addLocationPath(item, 'character'));
-        state.map.locations = mapped(locationEvidence.slice(0, 32), 'location', (item, text, id) => ({
+        state.map.locations = mapped(locationEvidence, 'location', (item, text, id) => ({
             ...item, id: safeText(item.id || id), name: safeText(item.name || item.location || item.place || text.slice(0, 100)),
             description: safeText(item.description || item.spatialDescription), origin: safeText(item.origin || item.establishedBy || (item.sourceKind === 'worldbook' ? '世界设定' : '')),
             parentId: safeText(item.parentId), sourceRefs: Array.isArray(item.sourceRefs) ? item.sourceRefs : [],
@@ -664,8 +799,14 @@
         return { state, plan: {}, moduleInjections: {}, evidence };
     }
     async function buildStateWithinLimit(plannerPrompt, payload, _baseState, settings, signal, prepared) {
+        if (prepared?.calibration) {
+            const hydrated = stateFromEvidence(prepared.evidence || {}, {}, _baseState);
+            hydrated.state = applyHistoryLedger(hydrated.state, prepared.allChanges || prepared.ledger || []);
+            hydrated.calibration = { audit: prepared.audit, boundary: prepared.boundary, fingerprint: prepared.fingerprint };
+            return hydrated;
+        }
         if (!prepared?.large) {
-            const direct = await WSM.Api.complete(INITIAL_STATE_PROMPT, payload, { maxTokens: 5000, singleAttempt: true, signal, jsonContract: 'state' });
+            const direct = await WSM.Api.complete(`${INITIAL_STATE_PROMPT}\n\n${TRUTH_POLICY_PROMPT}`, payload, { maxTokens: 5000, singleAttempt: true, signal, jsonContract: 'state' });
             prepared.requestAttempts = 1;
             prepared.cacheHits = 0;
             return normalizeStateResult(direct, _baseState);
@@ -682,7 +823,7 @@
         } else {
             reportProgress('正在分批读取全部资料', 'running', `原文分片 1–${fragments[0]}/${totalFragments} · 请求 A 读取 · API 1/2 · 缓存复用 0 片 · ${prepared.halves[0].length} 项 ${prepared.halfChars[0]} 字`);
             const firstResult = await WSM.Api.complete(
-                SOURCE_READ_PROMPT,
+                `${SOURCE_READ_PROMPT}\n\n${TRUTH_POLICY_PROMPT}`,
                 { task: 'SOURCE_READ_HALF_ONCE', sourceHalfIndex: 1, sourceHalfCount: 2, sourceRecords: prepared.halves[0] },
                 { maxTokens: 5000, singleAttempt: true, signal, jsonContract: 'evidence' },
             );
@@ -709,10 +850,10 @@
                 mirroredChatRecordsReused: prepared.deduplicatedRefs || [],
             },
         };
-        const finalInputChars = JSON.stringify(finalPayload).length + FINAL_EVIDENCE_PROMPT.length;
+        const finalInputChars = JSON.stringify(finalPayload).length + FINAL_EVIDENCE_PROMPT.length + TRUTH_POLICY_PROMPT.length;
         reportProgress('正在分批读取全部资料', 'running', `原文分片 ${fragments[0] + 1}–${totalFragments}/${totalFragments} · 请求 B 读取并合并证据 · API ${apiOrdinal}/2 · 携带请求 A 全部证据 · 约 ${finalInputChars} 字`);
         const finalResult = await WSM.Api.complete(
-            FINAL_EVIDENCE_PROMPT,
+            `${FINAL_EVIDENCE_PROMPT}\n\n${TRUTH_POLICY_PROMPT}`,
             finalPayload,
             { maxTokens: 5000, stream: true, singleAttempt: true, signal, jsonContract: 'evidence' },
         );
@@ -732,7 +873,7 @@
         return clock;
     }
     const INITIALIZE_SLICES = [
-        { id: 'foundation', label: '世界、资源与地图', keys: ['identities','world','factAnchors','resourceConstraints','map','timeline'], maxTokens: 5000 },
+        { id: 'foundation', label: '世界、硬规则、资源与地图', keys: ['identities','world','worldRules','factAnchors','resourceConstraints','map','timeline'], maxTokens: 6500 },
         { id: 'people', label: '人物与知识', keys: ['characters','npcActivities','relationships','knowledge'], maxTokens: 6500 },
         { id: 'affairs', label: '任务与事件', keys: ['tasks','events','triggers','threads'], maxTokens: 4500 },
         { id: 'dynamics', label: '进程与因果', keys: ['processes','causalEffects'], maxTokens: 4000 },
@@ -741,6 +882,7 @@
         return {
             identities: state.identities,
             world: state.world,
+            worldRules: (state.worldRules || []).map((item) => ({ id: item.id, factId: item.factId, statement: item.statement })),
             characters: (state.characters || []).map((item) => ({ id: item.id, name: item.name })),
             tasks: (state.tasks || []).map((item) => ({ id: item.id, title: item.title })),
             events: (state.events || []).map((item) => ({ id: item.id, title: item.title })),
@@ -780,7 +922,7 @@
             const prompts = Object.fromEntries(slice.keys.map((key) => [key, settings.modulePrompts?.[key] || WSM.Defaults.MODULE_PROMPTS[key]]).filter(([, value]) => value));
             try {
                 const result = await WSM.Api.complete(
-                    `你是世界状态初始化器，本次只建立“${slice.label}”切片。source 已由前序分片模型完整读取，但只把当前运行需要的内容写入状态，原始资料仍是权威库。先跨模块去重，再按重要性与当前相关度筛选；L1临时细节优先省略，COLD核心信息保存但不扩写。模块允许为空，禁止凑数；一旦创建卡片就必须有最小有效字段，人物关系必须有from、to、status，人物必须有name，NPC活动必须有characterId和action，事件必须有title及summary/outcome，其余必须有标题或事实正文。缺字段就省略，禁止空对象、空白卡和同一事实多份改写。单模块通常最多8张卡，单卡数组最多4项。只能记录来源中已经存在或正文已经发生的事实，不得续写、推测成真或创造设定。严格遵守 ownership，只返回 JSON：{"state":{本切片字段}}；不得返回其他状态字段、plan、Markdown 或解释。`,
+                    `你是世界状态初始化器，本次只建立“${slice.label}”切片。source 已由前序分片模型完整读取，但只把当前运行需要的内容写入状态，原始资料仍是权威库。先跨模块去重，再按重要性与当前相关度筛选；L1临时细节优先省略，COLD核心信息保存但不扩写。集合模块允许为空，禁止凑数；一旦创建卡片就必须有最小有效字段，人物关系必须有from、to、status，人物必须有name，NPC活动必须有characterId和action，事件必须有title及summary/outcome，其余必须有标题或事实正文。缺失的持久条目先定点补查；仍不能确定时按模块权限标为unknown/not_established，不得用空白或自由生成冒充事实。单模块通常最多8张卡，单卡数组最多4项。只能记录来源中已经存在或正文已经发生的事实，不得续写、推测成真或创造设定。严格遵守 ownership，只返回 JSON：{"state":{本切片字段}}；不得返回其他状态字段、plan、Markdown 或解释。\n\n${TRUTH_POLICY_PROMPT}`,
                     {
                         task: 'INITIALIZE_WORLD_SLICE', slice: slice.id, sliceIndex: index + 1, sliceCount: queue.length,
                         source: sourceForInitializeSlice(source, slice.id.split(':')[0]), stateReference: stateReference(state), stateSchema: schema, moduleOwnership: ownership, modulePrompts: prompts,
@@ -828,6 +970,13 @@
         state.planner.injection = WSM.Injection.compose(state, state.planner?.plan || {}, state.planner?.moduleInjections || {});
         return setStatePrompts(state, state.planner?.plan || {}, state.planner?.moduleInjections || {});
     }
+    async function clearRegisteredPrompts() {
+        if (typeof localStorage !== 'undefined') {
+            try { localStorage.removeItem(FIRST_HALF_CACHE_KEY); }
+            catch (error) { console.debug('[WorldStateMachine] 无法清除本地读取缓存', error); }
+        }
+        await setPrompt('');
+    }
     async function plan(options = {}) {
         const signal = options.signal;
         throwIfCancelled(signal);
@@ -861,8 +1010,15 @@
         // button instead of silently starting a multi-call rebuild here.
         if (!explicitRead) {
             const diceRound = settings.diceEnabled ? WSM.Dice?.createRound?.(key) : null;
+            const recallQuery = [
+                WSM.Context.latestUserMessage()?.content,
+                current.world?.location?.current,
+                ...(current.characters || []).filter((item) => item.present).map((item) => item.name),
+            ].filter(Boolean).join('\n');
+            const historyRecall = WSM.Storage.retrieveHistory?.(recallQuery, { maxChars: 800, evidenceCount: 2, state: current }) || { text: '' };
             const localPlan = {
                 ...(diceRound ? { diceRound } : {}),
+                ...(historyRecall.text ? { historyRecall: historyRecall.text } : {}),
                 notes: ['省额度模式：生成前使用最近一次已结算状态；正文完成后以一次 API 检查全部栏目，但只返回并写入发生实质变化的增量。'],
             };
             current.planner = {
@@ -908,12 +1064,12 @@
         const source = await WSM.Context.buildSource({
             fullChat: initializing || refreshWorld || options.initialize,
             preserveFull: initializing || refreshWorld,
+            includeHidden: initializing || refreshWorld,
         });
         throwIfCancelled(signal);
-        // Preserve a local snapshot before selected worldbook originals are
-        // removed from `source`. Large-source detection must use the true input
-        // size; otherwise thousands of entries look deceptively small after
-        // local routing and get forced into one oversized final request.
+        // Preserve a local snapshot before adding compiled projections.
+        // Worldbook originals remain intact; large-source detection must still
+        // use the true source size rather than only the short routed projection.
         const completeSourceSnapshot = initializing || refreshWorld ? JSON.parse(JSON.stringify(source)) : null;
         if (initializing || refreshWorld) {
             const preview = summarizeSource(source);
@@ -922,9 +1078,9 @@
         const fingerprint = WSM.Context.sourceFingerprint(source);
         let compilerResult;
         try {
-            // Reading/rebuilding owns a two-call budget. Worldbook extraction is
-            // local here and is folded into the same final state request rather
-            // than spending a separate call per entry or route.
+            // Reading/rebuilding owns an explicit bounded-block budget.
+            // Worldbook routing remains local here; the calibration reader sees
+            // the source records in the same resumable block stream.
             compilerResult = await WSM.WorldbookCompiler?.processSource?.(source, { localOnly: true, signal });
             throwIfCancelled(signal);
         } catch (error) {
@@ -975,21 +1131,26 @@
             let prepared = null;
             if (initializing || refreshWorld) {
                 if (source.compiledWorldbookRules !== undefined) completeSourceSnapshot.compiledWorldbookRules = source.compiledWorldbookRules;
-                prepared = prepareSourceForStateRequests(completeSourceSnapshot, { plannerPrompt, payload });
+                // A manual read has a hard ceiling of two billable calls. Every
+                // raw source is scanned locally first; oversized chats become a
+                // deterministic all-message semantic chronicle, then A reads the
+                // first half and B reads the second half plus A's evidence.
+                prepared = prepareSourceForStateRequests(completeSourceSnapshot, { payload, plannerPrompt });
                 payload.source = prepared.source;
                 sourceSummary.sourceRead = {
-                    mode: prepared.large ? 'two-complete-halves' : 'direct-complete',
-                    chunked: true,
-                    chunks: prepared.large ? 2 : 1, requestAttempts: 0, cacheHits: 0,
-                    originalChars: prepared.originalChars, includedChars: prepared.includedChars,
+                    mode: prepared.large ? 'two-pass-local-chronicle' : 'single-pass-complete-source',
+                    chunked: false,
+                    apiLimit: prepared.large ? 2 : 1,
                     semanticCompaction: prepared.semanticCompaction === true,
-                    coveredChatMessages: Number(prepared.coveredChatMessages || 0),
-                    halfChars: prepared.halfChars || [], records: prepared.records,
+                    requestAttempts: prepared.requestAttempts, cacheHits: prepared.cacheHits,
+                    originalChars: prepared.originalChars, includedChars: prepared.includedChars,
+                    coveredChatMessages: Number(prepared.coveredChatMessages || sourceSummary.chatMessages || 0),
+                    records: prepared.records,
                 };
             }
-            if (initializing || refreshWorld) reportProgress('本地资料已就绪，正在发送给模型读取', 'running', prepared?.large
-                ? `尚未完成模型读取 · 将用 2 次 API 无遗漏覆盖 ${prepared.records} 项、${prepared.originalChars} 字资料`
-                : `尚未完成模型读取 · 正在用唯一一次 API 读取 ${prepared.originalChars} 字资料并建立状态`);
+            if (initializing || refreshWorld) reportProgress('本地全量扫描完成，正在建立基准快照', 'running', prepared?.large
+                ? `全部 ${prepared.coveredChatMessages || sourceSummary.chatMessages} 条正文及世界书已本地覆盖 · 固定最多 API 2 次`
+                : `完整资料 ${prepared.originalChars} 字 · 固定 API 1 次`);
             const result = await buildStateWithinLimit(plannerPrompt, payload, rebuildBase, settings, signal, prepared);
             throwIfCancelled(signal);
             if (sourceSummary.sourceRead && prepared) {
@@ -1026,8 +1187,30 @@
                 snapshotKind: 'generation',
                 clearHistory: rebuilding,
             });
+            if (initializing || refreshWorld) {
+                const chatMessages = Array.isArray(completeSourceSnapshot?.chat) ? completeSourceSnapshot.chat : [];
+                await WSM.Storage.setTwoPassHistoryBaseline?.(next, {
+                    fingerprint,
+                    boundary: chatMessages.length ? { messageId: safeText(chatMessages.at(-1)?.id), index: chatMessages.length - 1 } : null,
+                    messages: chatMessages,
+                    audit: {
+                        totalReadableMessages: chatMessages.length,
+                        processedMessages: chatMessages.length,
+                        failedMessages: 0,
+                        failedChunks: 0,
+                        hiddenIncluded: chatMessages.filter((message) => message?.hidden === true).length,
+                        chunks: prepared.large ? 2 : 1,
+                        referenceChunks: 0,
+                        chatChunks: prepared.large ? 2 : 1,
+                        requestAttempts: Number(prepared.requestAttempts || 0),
+                        cacheHits: Number(prepared.cacheHits || 0),
+                    },
+                });
+            }
             await setStatePrompts(next, next.planner.plan || {}, next.planner.moduleInjections || {});
-            if (initializing || refreshWorld) reportProgress('读取并初始化完成', 'success', `已建立 REV ${next.revision} · 世界书 ${sourceSummary.loadedWorldbooks.length} 本 · 正文 ${sourceSummary.chatMessages} 条`);
+            if (initializing || refreshWorld) {
+                reportProgress('两阶段读取与基准快照已建立', 'success', `完整覆盖 ${sourceSummary.chatMessages} 条正文 · 世界书 ${sourceSummary.loadedWorldbooks.length} 本 · API ${prepared.requestAttempts || 0}/2 · 缓存复用 ${prepared.cacheHits || 0} 次 · 原文仍保留在酒馆`);
+            }
             return next.planner;
         } catch (error) {
             if (signal?.aborted) {
@@ -1057,6 +1240,8 @@
         const interactiveRead = options.interactiveRead === true;
         const controller = interactiveRead ? new AbortController() : null;
         if (controller) activeReadController = controller;
+        // Manual initialization/refresh has a strict two-call ceiling. Local
+        // scanning and deterministic compaction do not consume API calls.
         const maximumCalls = options.initialize === true || options.readFullChat === true ? 2 : 0;
         planningPromise = WSM.Api.withCallBudget(maximumCalls, maximumCalls ? 'read-and-initialize' : 'pre-generation-local', () => plan({
             ...options, signal: controller?.signal || options.signal,
@@ -1117,13 +1302,16 @@
     function assistantKey(message) { return message ? `${message.id}:${hash(message.content)}` : ''; }
     function rotateTriggersForNextTurn(previous, candidate) {
         const next = candidate;
-        const previousIds = new Set((previous?.triggers || []).map((item) => safeText(item?.id)).filter(Boolean));
-        const triggeredThisRound = (next.triggers || []).some((item) => item?.status === 'triggered' && previousIds.has(safeText(item?.id)));
-        const active = (next.triggers || []).filter((item) => !['triggered','expired'].includes(item?.status));
-        // When none of the prior candidates fired, carrying their IDs forward
-        // would turn a per-turn choice pool into permanent state. Keep only
-        // genuinely fresh candidates returned for the next turn.
-        next.triggers = triggeredThisRound ? active : active.filter((item) => !previousIds.has(safeText(item?.id)));
+        const byId = new Map();
+        (next.triggers || []).filter((item) => !['triggered','expired'].includes(item?.status)).forEach((item) => {
+            const id = safeText(item?.id);
+            if (id) byId.set(id, item);
+        });
+        // An armed trigger represents a causal possibility, not a per-turn
+        // suggestion slot. Preserve it until its condition fires, becomes
+        // impossible, or is explicitly expired; never churn the whole pool
+        // merely because this turn happened to be quiet.
+        next.triggers = [...byId.values()];
         return next;
     }
     async function settle(options = {}) {
@@ -1143,6 +1331,16 @@
             plannerResult: current.planner,
             actualAssistantMessage: assistant,
             recentChat: recent,
+            simulationClock: { elapsedMinutes: Number(current.world?.time?.elapsedMinutes || 0), display: current.world?.time?.display || '' },
+            npcSchedule: buildNpcSchedule(current),
+            simulationRules: {
+                offscreenUpdateIntervalMinutes: 60,
+                updateVisibleCharactersEveryTick: true,
+                carryOffscreenCharactersBetweenDueTicks: true,
+                requirePreexistingCauseForRipple: true,
+                allowNoSignificantChange: true,
+                forbidUnscheduledOffscreenInvention: true,
+            },
             worldbookRules: worldbookReport?.entries || [],
             stateSchema: WSM.Defaults.STATE_SCHEMA,
             moduleOwnership: WSM.Defaults.MODULE_OWNERSHIP,
@@ -1150,7 +1348,7 @@
             lockedPaths: current.lockedPaths || [],
         };
         try {
-            const result = await WSM.Api.complete(`${settings.reconcilerPrompt}\n\n本次结算必须在同一个 JSON 响应内同时完成增量状态结算与世界书浓缩缓存更新。除 stateDelta、timelineEntry、actualChanges 字段外，返回 worldbookEntries 数组；每项沿用输入 worldbookRules 的 key，并只依据本轮 user/assistant 实际正文修正 core、triggers、rules、background。没有变化的状态模块和世界书条目必须省略，禁止为了显得完整而复述。不得要求第二次调用。`, payload, { singleAttempt: true });
+            const result = await WSM.Api.complete(`${settings.reconcilerPrompt}\n\n${TRUTH_POLICY_PROMPT}\n\n本次结算必须在同一个 JSON 响应内同时完成增量状态结算、到期的离屏生态推进与世界书浓缩缓存更新。先结算 user/assistant 正文；再严格按 npcSchedule 执行一个有界后台 tick：realtime 可结算正文行动，background 只能沿既存 motives、currentGoals、routine、npcActivities、tasks、processes 或已成立因果继续，carry 必须保持。允许完全无变化，禁止给离屏人物凭空安排新目标、巧合或重大事件。用 npcUpdates 报告本次真正检查结果。除 stateDelta、timelineEntry、actualChanges、npcUpdates 字段外，返回 worldbookEntries 数组；每项沿用输入 worldbookRules 的 key，并只依据本轮 user/assistant 实际正文修正 core、triggers、rules、background。没有变化的状态模块和世界书条目必须省略，禁止为了显得完整而复述。不得要求第二次调用。`, payload, { singleAttempt: true });
             const delta = result?.stateDelta || result?.delta;
             const legacyState = result?.state;
             if ((!delta || typeof delta !== 'object') && (!legacyState || typeof legacyState !== 'object')) throw new Error('结算响应缺少 stateDelta');
@@ -1164,6 +1362,7 @@
             next.runtime = Object.assign({}, current.runtime, next.runtime, {
                 lastSettledMessageId: key,
                 worldbookInjection: worldbookUpdate?.report || current.runtime?.worldbookInjection || null,
+                npcLastUpdatedElapsedMinutes: updateNpcClock(current, next, { npcUpdates: result?.npcUpdates || [] }),
             });
             // Manual final-injection edits are intentionally one generation
             // only. Once that assistant response has been reconciled, resume
@@ -1178,6 +1377,25 @@
                     next.timeline.push(entry);
                 }
             }
+            const userMessage = WSM.Context.latestUserMessage();
+            const sourceRefs = [userMessage?.id, assistant?.id].filter((id) => id !== undefined && id !== null && String(id) !== '').map((id) => `chat:${id}`);
+            let ledgerChanges = delta && typeof delta === 'object' ? historyChangesFromDelta(delta, sourceRefs, `turn:${key}`) : [];
+            if (!ledgerChanges.length && Array.isArray(result.actualChanges)) {
+                ledgerChanges = result.actualChanges.filter(Boolean).map((summary, index) => ({
+                    changeId: `turn:${key}:actual:${index + 1}`,
+                    factId: '', module: 'timeline', operation: 'upsert', entityId: `turn-${key}-${index + 1}`,
+                    value: { summary: safeText(summary), granularity: 'turn' }, sourceRefs, origin: 'chat',
+                }));
+            }
+            const changeIds = ledgerChanges.map((change) => change.changeId);
+            WSM.Storage.appendHistoryChanges?.(ledgerChanges, [userMessage, assistant].filter(Boolean).map((message, index) => ({
+                id: message.id,
+                index: Number(message.index || 0),
+                role: message.role,
+                hidden: message.hidden === true,
+                contentHash: hash(message.content),
+                changeIds: sourceRefs.includes(`chat:${message.id}`) ? changeIds : [],
+            })), { prefix: `turn:${key}` });
             return await WSM.Storage.save(next, 'reconcile', { snapshot: false });
         } catch (error) {
             const next = WSM.Storage.load();
@@ -1233,5 +1451,5 @@
             }, 1000);
         }
     }
-    WSM.Engine = { init, plan: ensurePlan, settle: ensureSettle, interceptor, fallbackInjection, reportProgress, resetProgress, getProgress, cancelRead, isReading, syncRegisteredPrompt, _test: { generationBlockReason, plannerAvailable, activeChatAvailable, setPrompt, setStatePrompts, syncRegisteredPrompt, initializeInSlices, sourceForInitializeSlice, rotateTriggersForNextTurn, completeSourceRecords, compactSourceChronicle, splitCompleteRecords, removeMirroredChatRecords, prepareSourceForStateRequests, buildStateWithinLimit, normalizeStateResult, mergeStatePatch, applyStateDelta, mergeCompleteEvidence, stateFromEvidence, firstHalfCacheKey } };
+    WSM.Engine = { init, plan: ensurePlan, settle: ensureSettle, interceptor, fallbackInjection, reportProgress, resetProgress, getProgress, cancelRead, isReading, syncRegisteredPrompt, clearRegisteredPrompts, _test: { generationBlockReason, plannerAvailable, activeChatAvailable, setPrompt, setStatePrompts, syncRegisteredPrompt, initializeInSlices, sourceForInitializeSlice, rotateTriggersForNextTurn, completeSourceRecords, compactSourceChronicle, splitCompleteRecords, removeMirroredChatRecords, prepareSourceForStateRequests, buildStateWithinLimit, normalizeStateResult, mergeStatePatch, applyStateDelta, applyHistoryLedger, historyChangesFromDelta, mergeCompleteEvidence, stateFromEvidence, firstHalfCacheKey } };
 })();

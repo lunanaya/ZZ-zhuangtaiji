@@ -3,6 +3,7 @@
     const WSM = window.WorldStateMachine = window.WorldStateMachine || {};
     const sectionMap = {
         overview: ['世界状态', (s) => ({ world: s.world, lockedPaths: s.lockedPaths || [] })],
+        worldRules: ['硬规则 / 世界秩序', (s) => s.worldRules],
         factAnchors: ['事实锚点', (s) => s.factAnchors],
         resourceConstraints: ['资源 / 约束', (s) => s.resourceConstraints],
         map: ['场景地图', (s) => s.map],
@@ -36,28 +37,31 @@
     let externalWorldbookButtonBusy = false;
     let choiceSending = false;
     let activeMapScopeId = '';
+    let activeMapMode = 'known';
+    let activeMapSearch = '';
     const dynamicWorldbookSections = new Set();
     const categories = {
         map: { icon: 'map', label: '场景地图', sections: ['map'] },
-        world: { icon: 'home', label: '世界', sections: ['overview','resourceConstraints','factAnchors','events','processes','causalEffects'] },
+        world: { icon: 'home', label: '世界', sections: ['overview','worldRules','resourceConstraints','factAnchors','events','processes','causalEffects'] },
         people: { icon: 'people', label: '人物', sections: ['characters','activities','relationships','knowledge'] },
         affairs: { icon: 'clipboard', label: '事务', sections: ['tasks','triggers','threads','progression','timeline'] },
         worldbook: { icon: 'note', label: '世界书注入', sections: [] },
         system: { icon: 'sliders', label: '系统', sections: ['sources','planner','injection'] },
     };
     const promptGroups = {
-        world: ['world','resourceConstraints','factAnchors','ambient','map','events','processes','causalEffects'],
+        world: ['world','worldRules','resourceConstraints','factAnchors','ambient','map','events','processes','causalEffects'],
         people: ['characters','npcActivities','relationships','knowledge'],
         affairs: ['tasks','triggers','threads','progression','timeline'],
         system: ['pacing','planner'],
     };
     const promptLabels = {
-        world: '世界状态', factAnchors: '事实锚点', resourceConstraints: '资源 / 约束', ambient: '环境与路人反应', map: '场景地图', characters: '人物概况', npcActivities: 'NPC活动轨迹', relationships: '人物关系', knowledge: '知识与秘密',
+        world: '世界状态', worldRules: '硬规则 / 世界秩序', factAnchors: '事实锚点', resourceConstraints: '资源 / 约束', ambient: '环境与路人反应', map: '场景地图', characters: '人物概况', npcActivities: 'NPC活动轨迹', relationships: '人物关系', knowledge: '知识与秘密',
         tasks: '当前任务', events: '世界事件', triggers: '可触发事件', threads: '长期线程', progression: '剧情推进', processes: '世界进程',
         causalEffects: '因果影响', timeline: '时间线', pacing: '剧情节奏', planner: '本轮后台判断', injection: '最终注入',
     };
     const sectionHelp = {
         overview: '只显示此刻的时间、季节、地点、天气、环境和当前正在生效的客观状态。',
+        worldRules: '保存世界底层规则、身份与权力秩序、权限、条件、例外和冲突优先级；其他模块只引用规则ID。',
         factAnchors: '只保存正文已经永久确立、遗忘会造成逻辑错误的最终客观结果；与当前无关时不会常驻发送给正文 AI。',
         resourceConstraints: '只显示当前真正会限制行动的资金、权限、人手、关键持有物与地点封锁；不是完整资产清单。',
         map: '空间索引按世界、城市、区域、建筑和内部空间逐层显示；剧情历史不写进地图，只有地点交互才发送给正文 AI。',
@@ -80,14 +84,10 @@
         return WSM.WorldbookCompiler?.getReport?.(persisted) || persisted || { entries: [] };
     }
     function finalInjectionText(state) {
-        const report = currentWorldbookReport(state);
-        const compiler = WSM.Settings.get().worldbookCompiler || {};
-        const worldbookByDepth = compiler.enabled === true && report?.delivery?.injected === true ? (report.routedByDepth || {}) : {};
         return WSM.Injection.preview(
             state,
             state.planner?.plan || {},
             state.planner?.moduleInjections || {},
-            worldbookByDepth,
         ) || '本轮没有需要额外注入的内容。';
     }
     function syncWorldbookSections(state) {
@@ -107,11 +107,12 @@
     }
 
     const definitions = {
+        worldRules: { title: '硬规则', identity: 'statement', fields: [['statement','规则正文'],['scope','适用范围'],['conditions','条件'],['exceptions','例外'],['precedence','优先级'],['delivery','投递方式'],['sourceRefs','世界书来源']] },
         factAnchors: { title: '事实锚点', identity: 'fact', fields: [['fact','事实'],['scope','影响范围'],['sourceRefs','正文依据']] },
         resourceConstraints: { title: '资源或约束', identity: 'condition', fields: [['subjectId','约束对象'],['kind','类型'],['condition','当前硬条件'],['status','状态'],['amount','数量或额度'],['scope','适用范围'],['consequence','不满足时'],['sourceRefs','依据']] },
         characters: { title: '人物', identity: 'name', fields: [['maintenanceLevel','维护等级'],['identity','身份'],['location','位置'],['present','在场'],['situation','重要处境'],['persistentConditions','持续状态'],['importantItems','重要物品'],['notes','连续性摘要']] },
         activities: { title: '活动', identity: 'action', stateKey: 'npcActivities', fields: [['characterId','人物'],['movement','移动过程'],['location','活动地点'],['action','当前活动'],['currentRole','当前作用']] },
-        relationships: { title: '关系', identity: 'status', fields: [['from','主体'],['to','对象'],['type','类型'],['status','现状'],['evidence','依据']] },
+        relationships: { title: '关系', identity: 'status', fields: [['from','主体'],['to','对象'],['type','类型'],['bondTypes','并存关系'],['dynamicPattern','动态模式'],['status','现状'],['coreContradiction','核心矛盾'],['attachments','无法割舍'],['grievances','未解决伤害'],['boundaries','阶段边界'],['reconciliationConditions','和解条件'],['perspectives','双方视角'],['expressionPatterns','场景表现'],['evidence','依据']] },
         knowledge: { title: '信息', identity: 'information', fields: [['information','内容'],['disclosure','公开状态'],['certainty','认知性质'],['knownBy','确认者'],['believedBy','相信者'],['suspectedBy','怀疑者'],['misunderstoodBy','误解者'],['unknownTo','未知者'],['source','来源/渠道'],['reliability','可靠性'],['evidence','证据'],['discoveryPaths','发现路径'],['maturityConditions','成熟条件']] },
         tasks: { title: '任务', identity: 'title', fields: [['title','名称'],['ownerIds','负责人'],['progress','当前进展'],['deadline','截止时间'],['dependencies','前置条件'],['consequences','影响']] },
         events: { title: '事件', identity: 'title', fields: [['title','名称'],['status','节点状态'],['summary','发生了什么'],['outcome','直接结果'],['location','地点'],['participantIds','相关人物'],['relatedProcessIds','关联进程'],['sourceRefs','依据']] },
@@ -121,6 +122,12 @@
         causalEffects: { title: '因果影响', identity: 'result', fields: [['causeRef','起因引用'],['cause','已经发生的起因'],['steps','必要因果路径'],['result','仍在生效的后果'],['affectedIds','影响对象'],['status','影响状态'],['reachCondition','尚缺条件'],['decayConditions','减弱或消失条件'],['evidenceRefs','依据']] },
         timeline: { title: '记录', identity: 'summary', fields: [['summary','发生的事'],['granularity','记忆粒度'],['participants','相关人物'],['location','地点'],['evidence','依据'],['actualChanges','实际变化']] },
     };
+    const commonTruthFields = [['truthStatus','真实性'],['basis','判断依据'],['sourceRefs','来源引用']];
+    Object.values(definitions).forEach((definition) => {
+        commonTruthFields.forEach((field) => {
+            if (!definition.fields.some(([key]) => key === field[0])) definition.fields.push(field);
+        });
+    });
 
     const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
     const iconPaths = {
@@ -203,6 +210,18 @@
         if (isWorldbookSection(active)) {
             const entry = currentWorldbookReport(state).entries?.find((item) => worldbookSectionId(item.key) === active) || {};
             const group = (title, values) => `【${title}】\n${(Array.isArray(values) && values.length) ? values.map((item) => `- ${item}`).join('\n') : '- （无）'}`;
+            if (Array.isArray(entry.facts) && entry.facts.length) return [
+                `世界书：${entry.bookName || '未命名世界书'}`,
+                `条目：${entry.label || entry.key || '未命名条目'}`,
+                `来源哈希：${entry.sourceHash || '未记录'}`,
+                `原文字符：${entry.originalChars || 0}`,
+                `编译字符：${entry.compiledChars || 0}`,
+                `段落覆盖：${Object.entries(entry.coverage || {}).map(([paragraph, chunks]) => `${paragraph}→${(chunks || []).join('、')}`).join('；') || '未记录'}`,
+                '',
+                `【统一事实目录】\n${entry.facts.map((fact) => `- ${fact.factId}｜owner=${fact.owner}｜delivery=${fact.delivery}｜${WSM.Facts?.render?.(fact) || fact.statement}`).join('\n')}`,
+                '',
+                `【800–1200字语义分块】\n${entry.chunks.map((chunk) => `- ${chunk.id}｜覆盖${(chunk.paragraphIds || []).join('、')}｜factIds=${(chunk.factIds || []).join('、')}｜${chunk.text}`).join('\n')}`,
+            ].join('\n');
             if (Array.isArray(entry.fragments)) return [
                 `世界书：${entry.bookName || '未命名世界书'}`,
                 `条目：${entry.label || entry.key || '未命名条目'}`,
@@ -226,16 +245,32 @@
         }
         if (active === 'overview') return [
             `时间：${state.world?.time?.display || '未设定'}`,
+            `时间真实性：${state.world?.time?.truthStatus || 'unknown'}`,
+            `时间依据：${displayValue(state.world?.time?.basis)}`,
+            `时间来源：${displayValue(state.world?.time?.sourceRefs)}`,
             `季节：${state.world?.season || '待确认'}`,
+            `季节真实性：${state.world?.seasonMeta?.truthStatus || 'unknown'}`,
+            `季节依据：${displayValue(state.world?.seasonMeta?.basis)}`,
+            `季节来源：${displayValue(state.world?.seasonMeta?.sourceRefs)}`,
             `地点：${state.world?.location?.current || '未设定'}`,
+            `地点真实性：${state.world?.location?.currentMeta?.truthStatus || 'unknown'}`,
+            `地点依据：${displayValue(state.world?.location?.currentMeta?.basis)}`,
+            `地点来源：${displayValue(state.world?.location?.currentMeta?.sourceRefs)}`,
             `天气：${state.world?.location?.weather || '未设定'}`,
+            `天气真实性：${state.world?.location?.weatherMeta?.truthStatus || 'unknown'}`,
+            `天气依据：${displayValue(state.world?.location?.weatherMeta?.basis)}`,
+            `天气来源：${displayValue(state.world?.location?.weatherMeta?.sourceRefs)}`,
             `环境：${state.world?.location?.environment || '未设定'}`,
+            `环境真实性：${state.world?.location?.environmentMeta?.truthStatus || 'unknown'}`,
+            `环境依据：${displayValue(state.world?.location?.environmentMeta?.basis)}`,
+            `环境来源：${displayValue(state.world?.location?.environmentMeta?.sourceRefs)}`,
             ...(state.world?.currentConditions || []).map((fact) => `当前客观状态：${fact}`),
+            ...(state.world?.currentConditionDetails || []).map((item) => `状态元数据：${item.value || ''}｜${item.truthStatus || 'unknown'}｜${displayValue(item.basis)}｜${displayValue(item.sourceRefs)}`),
         ].join('\n');
         if (active === 'map') return [
             `地图名称：${state.map?.rootLabel || '大地图'}`,
             `当前位置：${state.map?.currentLocationId || '未设定'}`,
-            ...(state.map?.locations || []).map((item) => `地点：${item.id || ''}｜${item.name || ''}｜${item.type || 'other'}｜${item.parentId || ''}｜${Number(item.x ?? 50)}｜${Number(item.y ?? 50)}｜${item.status || 'known'}｜${item.description || ''}｜${item.origin || ''}｜${item.priority || 'L1'}｜${item.activity || 'WARM'}｜${Number(item.updatedRevision || 0)}｜${(item.sourceRefs || []).join('、')}`),
+            ...(state.map?.locations || []).map((item) => `地点：${item.id || ''}｜${item.name || ''}｜${item.type || 'other'}｜${item.parentId || ''}｜${Number(item.x ?? 50)}｜${Number(item.y ?? 50)}｜${item.status || 'known'}｜${item.description || ''}｜${item.origin || ''}｜${item.priority || 'L1'}｜${item.activity || 'WARM'}｜${Number(item.updatedRevision || 0)}｜${(item.sourceRefs || []).join('、')}｜${item.truthStatus || 'unknown'}｜${(item.basis || []).join('、')}`),
             ...(state.map?.routes || []).map((item) => `路线：${item.from || ''}｜${item.to || ''}｜${item.status || 'open'}｜${item.description || ''}｜${Number(item.travelMinutes || 0)}｜${item.distance || ''}`),
         ].join('\n');
         if (active === 'progression') return [
@@ -244,6 +279,9 @@
             ...(state.progression?.nextRequiredChanges || []).map((value) => `下一阶段仍需：${value}`),
             ...(state.progression?.basedOnRefs || []).map((value) => `依据：${value}`),
             `用户决策点：${state.progression?.blockedByDecision || ''}`,
+            `真实性：${state.progression?.truthStatus || 'not_applicable'}`,
+            `判断依据：${displayValue(state.progression?.basis)}`,
+            `来源引用：${displayValue(state.progression?.sourceRefs)}`,
         ].join('\n');
         if (definitions[active]) return formatCollection(state[definitions[active].stateKey || active], definitions[active]);
         if (active === 'planner') {
@@ -321,7 +359,7 @@
             definition.fields.forEach(([key, label]) => {
                 const value = map[label]?.at(-1);
                 if (value === undefined) return;
-                const arrayKeys = ['persistentConditions','importantItems','evidence','knownBy','believedBy','suspectedBy','misunderstoodBy','unknownTo','ownerIds','dependencies','consequences','participantIds','relatedProcessIds','sourceRefs','conditions','effectsIfTriggered','blockedReasons','history','participants','actualChanges','drivers','decayConditions','resolutionConditions','steps','affectedIds','evidenceRefs'];
+                const arrayKeys = ['aliases','affiliationRefs','authorityRefs','knowledgeRefs','motives','currentGoals','persistentConditions','importantItems','evidence','basis','knownBy','believedBy','suspectedBy','misunderstoodBy','unknownTo','ownerIds','dependencies','locationRefs','characterRefs','ruleRefs','resourceConstraintRefs','completionConditions','completedConditions','consequences','participantIds','relatedProcessIds','relatedFactIds','sourceRefs','scope','consumers','dependencyFactIds','conditions','exceptions','bondTypes','attachments','grievances','boundaries','reconciliationConditions','effectsIfTriggered','blockedReasons','history','participants','actualChanges','drivers','decayConditions','resolutionConditions','steps','affectedIds','evidenceRefs'];
                 if (Array.isArray(old?.[key]) || arrayKeys.includes(key)) item[key] = splitValues(value);
                 else if (typeof old?.[key] === 'boolean' || key === 'present') item[key] = /^(是|true|yes|在场)$/i.test(value);
                 else if (typeof old?.[key] === 'number') item[key] = Number(value) || 0;
@@ -336,11 +374,35 @@
         if (active === 'overview') {
             state.world ||= {}; state.world.time ||= {}; state.world.location ||= {};
             if (map['时间']?.length) state.world.time.display = map['时间'].at(-1);
+            if (map['时间真实性']?.length) state.world.time.truthStatus = map['时间真实性'].at(-1);
+            if (map['时间依据']?.length) state.world.time.basis = splitValues(map['时间依据'].at(-1));
+            if (map['时间来源']?.length) state.world.time.sourceRefs = splitValues(map['时间来源'].at(-1));
             if (map['季节']?.length) state.world.season = map['季节'].at(-1);
+            state.world.seasonMeta ||= {};
+            if (map['季节真实性']?.length) state.world.seasonMeta.truthStatus = map['季节真实性'].at(-1);
+            if (map['季节依据']?.length) state.world.seasonMeta.basis = splitValues(map['季节依据'].at(-1));
+            if (map['季节来源']?.length) state.world.seasonMeta.sourceRefs = splitValues(map['季节来源'].at(-1));
             if (map['地点']?.length) state.world.location.current = map['地点'].at(-1);
+            state.world.location.currentMeta ||= {};
+            if (map['地点真实性']?.length) state.world.location.currentMeta.truthStatus = map['地点真实性'].at(-1);
+            if (map['地点依据']?.length) state.world.location.currentMeta.basis = splitValues(map['地点依据'].at(-1));
+            if (map['地点来源']?.length) state.world.location.currentMeta.sourceRefs = splitValues(map['地点来源'].at(-1));
             if (map['环境']?.length) state.world.location.environment = map['环境'].at(-1);
+            state.world.location.environmentMeta ||= {};
+            if (map['环境真实性']?.length) state.world.location.environmentMeta.truthStatus = map['环境真实性'].at(-1);
+            if (map['环境依据']?.length) state.world.location.environmentMeta.basis = splitValues(map['环境依据'].at(-1));
+            if (map['环境来源']?.length) state.world.location.environmentMeta.sourceRefs = splitValues(map['环境来源'].at(-1));
             if (map['天气']?.length) state.world.location.weather = map['天气'].at(-1);
+            state.world.location.weatherMeta ||= {};
+            if (map['天气真实性']?.length) state.world.location.weatherMeta.truthStatus = map['天气真实性'].at(-1);
+            if (map['天气依据']?.length) state.world.location.weatherMeta.basis = splitValues(map['天气依据'].at(-1));
+            if (map['天气来源']?.length) state.world.location.weatherMeta.sourceRefs = splitValues(map['天气来源'].at(-1));
             state.world.currentConditions = (map['当前客观状态'] || []).slice(0, 8);
+            const conditionMeta = (map['状态元数据'] || []).map((value) => {
+                const [condition, truthStatus, basis, sourceRefs] = String(value).split(/[|｜]/).map((item) => item.trim());
+                return { value: condition, truthStatus: truthStatus || 'unknown', basis: splitValues(basis), sourceRefs: splitValues(sourceRefs) };
+            });
+            state.world.currentConditionDetails = state.world.currentConditions.map((value) => conditionMeta.find((item) => item.value === value) || { value, truthStatus: 'unknown', basis: ['面板未提供来源'], sourceRefs: [] });
         } else if (active === 'map') {
             const parseParts = (value) => String(value || '').split(/[|｜]/).map((item) => item.trim());
             state.map ||= { rootLabel: '大地图', currentLocationId: '', locations: [], routes: [] };
@@ -349,8 +411,8 @@
             state.map.locations = (map['地点'] || []).map((value, index) => {
                 const parts = parseParts(value);
                 if (parts.length >= 8) {
-                    const [id, name, type, parentId, x, y, status, description, origin, priority, activity, updatedRevision, sourceRefs] = parts;
-                    return { id: id || `location-${Date.now()}-${index}`, name: name || id || '未命名地点', type: type || 'other', parentId: parentId || '', x: Math.max(0, Math.min(100, Number(x) || 0)), y: Math.max(0, Math.min(100, Number(y) || 0)), status: status || 'known', description: description || '', origin: parts.length >= 13 ? origin || '' : '', priority: parts.length >= 13 ? priority || 'L1' : 'L1', activity: parts.length >= 13 ? activity || 'WARM' : 'WARM', updatedRevision: parts.length >= 13 ? Number(updatedRevision) || 0 : 0, sourceRefs: splitValues(parts.length >= 13 ? sourceRefs : origin) };
+                    const [id, name, type, parentId, x, y, status, description, origin, priority, activity, updatedRevision, sourceRefs, truthStatus, basis] = parts;
+                    return { id: id || `location-${Date.now()}-${index}`, name: name || id || '未命名地点', type: type || 'other', parentId: parentId || '', x: Math.max(0, Math.min(100, Number(x) || 0)), y: Math.max(0, Math.min(100, Number(y) || 0)), status: status || 'known', description: description || '', origin: parts.length >= 13 ? origin || '' : '', priority: parts.length >= 13 ? priority || 'L1' : 'L1', activity: parts.length >= 13 ? activity || 'WARM' : 'WARM', updatedRevision: parts.length >= 13 ? Number(updatedRevision) || 0 : 0, sourceRefs: splitValues(parts.length >= 13 ? sourceRefs : origin), truthStatus: truthStatus || 'unknown', basis: splitValues(basis) };
                 }
                 const [id, name, area, status, description] = parts;
                 return { id: id || `location-${Date.now()}-${index}`, name: name || id || '未命名地点', area: area || '', type: 'other', parentId: '', x: 50, y: 50, status: status || 'known', description: description || '', sourceRefs: [] };
@@ -366,6 +428,9 @@
             state.progression.nextRequiredChanges = map['下一阶段仍需'] || [];
             state.progression.basedOnRefs = map['依据'] || [];
             state.progression.blockedByDecision = map['用户决策点']?.at(-1) || '';
+            state.progression.truthStatus = map['真实性']?.at(-1) || state.progression.truthStatus || 'unknown';
+            state.progression.basis = splitValues(map['判断依据']?.at(-1));
+            state.progression.sourceRefs = splitValues(map['来源引用']?.at(-1));
         } else if (definitions[active]) {
             const stateKey = definitions[active].stateKey || active;
             state[stateKey] = parseCollection(raw, Array.isArray(state[stateKey]) ? state[stateKey] : [], definitions[active]);
@@ -387,7 +452,11 @@
     const statusLabels = {
         active: '进行中', dormant: '暂未活动', resolved: '已结束', pending: '待开始', blocked: '受阻', done: '已完成', failed: '未完成',
         armed: '等待条件', eligible: '条件已满足', triggered: '已触发', expired: '已失效', open: '持续中', paused: '已暂停', decaying: '逐渐减弱',
-        developing: '正在形成', active: '仍在生效', arrived: '仍在生效', ongoing: '正在发生', occurred: '已经发生', discarded: '路径不成立', reached: '仍在生效', deferred: '尚未形成', sufficient: '因果充分', insufficient: '因果不足', confirmed: '已确认', believed: '人物相信', rumor: '传闻',
+        developing: '正在形成', active: '仍在生效', arrived: '仍在生效', ongoing: '正在发生', occurred: '已经发生', discarded: '路径不成立', reached: '仍在生效', deferred: '尚未形成', sufficient: '因果充分', insufficient: '因果不足', confirmed: '已确认', derived: '可确定推导', system_generated: '系统生成', suspected: '暂定推测', assumed: '运行暂定', unknown: '原文未说明', not_established: '尚未建立', not_applicable: '不适用', believed: '人物相信', rumor: '传闻',
+    };
+    const truthStatusLabels = {
+        confirmed: '已确认', derived: '可确定推导', system_generated: '系统生成', suspected: '暂定推测',
+        assumed: '运行暂定', unknown: '原文未说明', not_established: '尚未建立', not_applicable: '不适用', failed: '读取失败',
     };
     const mapStatusLabels = { known: '已知', visited: '已到访', unavailable: '暂不可达', open: '可通行', blocked: '路线受阻', unknown: '状况未知' };
     const mapTypeLabels = { world: '世界', region: '区域', country: '国家', city: '城市', district: '城区', landmark: '地标', residence: '住所', workplace: '工作地', building: '建筑', room: '房间', other: '地点' };
@@ -424,6 +493,10 @@
         if (!rendered) return '';
         return `<div class="wsm-readable-row"><span>${escape(label)}</span><div>${Array.isArray(value) ? chips(value) : escape(friendly(rendered))}</div></div>`;
     }
+    function truthDetails(item = {}) {
+        const status = String(item?.truthStatus || 'unknown').toLowerCase();
+        return `${labeled('真实性', truthStatusLabels[status] || status)}${labeled('判断依据', item?.basis)}${labeled('来源引用', item?.sourceRefs)}`;
+    }
     function userFacingItems(state, kind) {
         const items = kind === 'task' ? (state.tasks || []) : (state.triggers || []);
         const inactive = kind === 'task' ? new Set(['done', 'failed']) : new Set(['triggered', 'expired']);
@@ -452,13 +525,8 @@
         const userNames = new Set(['user', '<user>', String(state.identities?.user || '').trim().toLowerCase()].filter(Boolean));
         return (item?.knownBy || []).some((id) => userNames.has(String(id || '').trim().toLowerCase()));
     }
-    function characterIntentPanel(state, item) {
-        const identity = String(item?.id || '').trim().toLowerCase();
-        const name = String(item?.name || '').trim().toLowerCase();
-        const userName = String(state.identities?.user || '').trim().toLowerCase();
-        return ['user','<user>'].includes(identity) || (!!userName && name === userName) ? '' : intentPanel('characters', item);
-    }
     function intentPanel(module, item, actions = ['focus','intervene','investigate'], level = 'strong') {
+        if (!['map', 'tasks', 'triggers'].includes(module) || item?.placeholder === true) return '';
         const id = interactionKey(module, item);
         if (!id || !actions.length) return '';
         const heading = level === 'strong' ? '玩家意图' : '查询型交互';
@@ -467,30 +535,89 @@
             return `<button type="button" class="wsm-choice-button" data-wsm-intent-module="${escape(module)}" data-wsm-intent-item="${escape(id)}" data-wsm-intent-action="${escape(action)}" title="只向正文 AI 发送玩家意图"><span>${index + 1}</span><b>${escape(label)}</b><small>${escape(description)}</small></button>`;
         }).join('')}</div></section>`;
     }
+    function mapForView(state) {
+        const map = state.map || {};
+        const catalog = WSM.WorldbookCompiler?.getStaticCatalog?.() || {};
+        const base = [...(map.baseLocations || []), ...(catalog.locations || [])];
+        const dynamic = map.locations || [];
+        const values = new Map();
+        const semantics = new Map();
+        const aliases = new Map();
+        const resolveId = (id) => aliases.get(String(id || '')) || String(id || '');
+        const addLocation = (item, index, layer) => {
+            const itemId = String(item?.id || '');
+            const parentId = resolveId(item?.parentId);
+            const semantic = `${parentId}|${String(item?.name || '').trim().toLocaleLowerCase()}`;
+            const matched = (itemId && values.has(itemId) ? itemId : '') || semantics.get(semantic);
+            const key = matched || itemId || semantic || `location-${index}`;
+            const previous = values.get(key) || {};
+            const canonicalId = String(previous.id || itemId || key);
+            values.set(key, { ...previous, ...item, id: canonicalId, parentId, aliases: [...new Set([...(previous.aliases || []), ...(item?.aliases || []), ...(itemId && itemId !== canonicalId ? [itemId] : [])])], layer });
+            if (itemId) aliases.set(itemId, canonicalId);
+            aliases.set(canonicalId, canonicalId);
+            semantics.set(semantic, key);
+        };
+        base.forEach((item, index) => addLocation(item, index, 'worldbook'));
+        dynamic.forEach((item, index) => addLocation(item, index, 'dynamic'));
+        const routes = new Map();
+        [...(catalog.routes || []), ...(map.routes || []), ...(map.routeOverlays || [])].forEach((item, index) => {
+            const normalized = { ...item, from: resolveId(item?.from), to: resolveId(item?.to) };
+            const key = String(item?.id || `${normalized.from}>${normalized.to}>${index}`);
+            routes.set(key, { ...(routes.get(key) || {}), ...normalized });
+        });
+        const locations = [...values.values()].map((item, index) => ({
+            ...item,
+            x: Number.isFinite(Number(item.x)) ? Number(item.x) : 15 + ((index * 31) % 70),
+            y: Number.isFinite(Number(item.y)) ? Number(item.y) : 18 + ((Math.floor(index / 3) * 31 + (index % 3) * 13) % 64),
+        }));
+        return { ...map, currentLocationId: resolveId(map.currentLocationId), locations, routes: [...routes.values()] };
+    }
     function renderGameView(state) {
-        const empty = (label) => `<div class="wsm-empty-state"><span>${icon('empty')}</span><b>暂无${label}</b><small>世界会在满足因果和时间条件后自然产生内容。</small></div>`;
+        const empty = (label) => {
+            const module = definitions[active]?.stateKey || active;
+            const coverage = state.moduleCoverage?.[module];
+            const description = ({
+                checked_empty: '完整资料已校准，当前没有适合持久化的记录。',
+                coverage_only: '已检查相关对象，但尚未读取到已确立内容。',
+                unknown_empty: '当前为空，但尚不能证明原文确实没有；需要时会定点回查。',
+                failed: '来源读取失败，需要先重试，不能把空白当作未知事实。',
+                not_checked: '尚未执行初始化或完整校准。',
+            })[coverage?.status] || '世界会在满足因果和时间条件后自然产生内容。';
+            return `<div class="wsm-empty-state"><span>${icon('empty')}</span><b>暂无${label}</b><small>${escape(description)}</small></div>`;
+        };
         if (active === 'overview') {
             const world = state.world || {};
-            const facts = (world.currentConditions || []).length ? `<div class="wsm-world-facts"><b>${icon('note')}<span>当前客观状态</span></b>${(world.currentConditions || []).slice(0, 8).map((fact) => `<span>${escape(fact)}</span>`).join('')}</div>` : '';
+            const facts = (world.currentConditions || []).length ? `<div class="wsm-world-facts"><b>${icon('note')}<span>当前客观状态</span></b>${(world.currentConditions || []).slice(0, 8).map((fact) => {
+                const detail = (world.currentConditionDetails || []).find((item) => String(item?.value || '') === String(fact));
+                return `<span title="${escape(displayValue(detail?.basis))}">${escape(fact)} · ${escape(truthStatusLabels[detail?.truthStatus] || '原文未说明')}</span>`;
+            }).join('')}</div>` : '';
             return `<section class="wsm-world-summary"><div class="wsm-world-fields">
-                <div><span>${icon('clock')}</span><small>当前时间</small><b>${escape(world.time?.display || '未设定')}</b></div>
-                <div><span>${icon('weather')}</span><small>当前季节</small><b>${escape(world.season || '待确认')}</b></div>
-                <div><span>${icon('pin')}</span><small>当前位置</small><b>${escape(world.location?.current || '未设定')}</b></div>
-                <div><span>${icon('weather')}</span><small>天气</small><b>${escape(world.location?.weather || '待确认')}</b></div>
-                <div><span>${icon('home')}</span><small>环境</small><b>${escape(world.location?.environment || '未设定')}</b></div>
+                <div><span>${icon('clock')}</span><small>当前时间 · ${escape(truthStatusLabels[world.time?.truthStatus] || '原文未说明')}</small><b>${escape(world.time?.display || '未明确')}</b></div>
+                <div><span>${icon('weather')}</span><small>当前季节 · ${escape(truthStatusLabels[world.seasonMeta?.truthStatus] || '原文未说明')}</small><b>${escape(world.season || '未明确')}</b></div>
+                <div><span>${icon('pin')}</span><small>当前位置 · ${escape(truthStatusLabels[world.location?.currentMeta?.truthStatus] || '原文未说明')}</small><b>${escape(world.location?.current || '未明确')}</b></div>
+                <div><span>${icon('weather')}</span><small>天气 · ${escape(truthStatusLabels[world.location?.weatherMeta?.truthStatus] || '原文未说明')}</small><b>${escape(world.location?.weather || '未明确')}</b></div>
+                <div><span>${icon('home')}</span><small>环境 · ${escape(truthStatusLabels[world.location?.environmentMeta?.truthStatus] || '原文未说明')}</small><b>${escape(world.location?.environment || '未明确')}</b></div>
             </div>${facts}</section>`;
         }
-        if (active === 'factAnchors') return (state.factAnchors || []).filter((item) => item?.fact).map((item) => card(displayValue(item.fact), displayValue(item.scope) || '长期客观结果', labeled('正文依据', item.sourceRefs), { icon: 'note' })).join('') || empty('事实锚点');
-        if (active === 'resourceConstraints') return (state.resourceConstraints || []).filter((item) => item?.condition && !['expired','satisfied'].includes(item?.status)).map((item) => card(displayValue(item.condition), displayValue(item.scope) || '当前硬条件', `${labeled('约束对象', resolveRef(state, item.subjectId) || item.subjectId)}${labeled('类型', ({ funds: '资金', permission: '权限', capacity: '人手 / 能力', possession: '关键持有物', access: '通行许可', blockade: '地点封锁', other: '其他' }[item.kind] || item.kind))}${labeled('数量 / 额度', item.amount)}${labeled('不满足时', item.consequence)}${labeled('依据', item.sourceRefs)}`, { icon: 'lock', badge: '当前有效' })).join('') || empty('资源或硬约束');
+        if (active === 'factAnchors') return (state.factAnchors || []).filter((item) => item?.fact).map((item) => card(displayValue(item.fact), displayValue(item.scope) || '长期客观结果', truthDetails(item), { icon: 'note' })).join('') || empty('事实锚点');
+        if (active === 'worldRules') {
+            const compiled = WSM.WorldbookCompiler?.getStaticCatalog?.()?.worldRules || [];
+            const rules = WSM.Facts?.merge?.([...(state.worldRules || []), ...compiled]) || state.worldRules || [];
+            return rules.map((item) => `<article class="wsm-rule-card">${escape(displayValue(item.statement || item.factId))}</article>`).join('') || empty('硬规则');
+        }
+        if (active === 'resourceConstraints') return (state.resourceConstraints || []).filter((item) => item?.condition && !['expired','satisfied'].includes(item?.status)).map((item) => card(displayValue(item.condition), displayValue(item.scope) || '当前硬条件', `${labeled('约束对象', resolveRef(state, item.subjectId) || item.subjectId)}${labeled('类型', ({ funds: '资金', permission: '权限', capacity: '人手 / 能力', possession: '关键持有物', access: '通行许可', blockade: '地点封锁', other: '其他' }[item.kind] || item.kind))}${labeled('数量 / 额度', item.amount)}${labeled('不满足时', item.consequence)}${truthDetails(item)}`, { icon: 'lock', badge: '当前有效' })).join('') || empty('资源或硬约束');
         if (active === 'map') {
-            const mapState = state.map || {};
-            const locations = mapState.locations || [];
+            const mapState = mapForView(state);
+            const knownIds = new Set((state.map?.locations || []).filter((item) => item.knownToPlayer !== false && item.status !== 'unknown').map((item) => item.id));
+            let locations = (mapState.locations || []).filter((item) => activeMapMode === 'all' || knownIds.has(item.id) || ['known','visited'].includes(item.status) || item.knownToPlayer === true);
+            const search = activeMapSearch.trim().toLocaleLowerCase();
+            if (search) locations = locations.filter((item) => [item.name, ...(item.aliases || []), item.description, ...(item.sourceRefs || [])].some((value) => String(value || '').toLocaleLowerCase().includes(search)));
             const byId = new Map(locations.map((item) => [item.id, item]));
             const current = byId.get(mapState.currentLocationId);
             const childCounts = locations.reduce((counts, item) => counts.set(item.parentId || '', (counts.get(item.parentId || '') || 0) + 1), new Map());
             if (activeMapScopeId && !byId.has(activeMapScopeId)) activeMapScopeId = '';
             const scope = byId.get(activeMapScopeId);
-            const visible = locations.filter((item) => (item.parentId || '') === activeMapScopeId);
+            const visible = search ? locations : locations.filter((item) => (item.parentId || '') === activeMapScopeId);
             const containsCurrent = new Set();
             for (let cursor = current; cursor; cursor = byId.get(cursor.parentId)) containsCurrent.add(cursor.id);
             const scopeOptions = [{ id: '', name: mapState.rootLabel || '大地图' }, ...locations.filter((item) => childCounts.has(item.id))];
@@ -512,30 +639,30 @@
             }).join('');
             const routes = scopedRoutes.map((route) => `<div class="wsm-map-route ${route.status === 'blocked' ? 'blocked' : ''}"><b>${escape(byId.get(route.from)?.name || route.from || '?')}</b><span>→</span><b>${escape(byId.get(route.to)?.name || route.to || '?')}</b><small>${escape(route.description || route.distance || mapStatusLabels[route.status] || '可通行')}</small></div>`).join('');
             const locationActions = visible.map((item) => card(item.name || item.id, `${mapTypeLabels[item.type] || item.type || '地点'} · ${mapStatusLabels[item.status] || item.status || '已知'}`, `${labeled('空间说明', item.description)}${labeled('地点溯源', item.origin)}${intentPanel('map', item, ['travel','inspect','findPeople','actHere'])}`, { icon: 'pin' })).join('');
-            return `<section class="wsm-map-panel"><header><span>${icon('pin')}</span><div><small>当前位置</small><b>${escape(current?.name || state.world?.location?.current || '未设定')}</b></div></header><nav class="wsm-map-switcher" aria-label="地图层级切换">${switcher}</nav><div class="wsm-map-breadcrumbs">${breadcrumbs}</div><div class="wsm-map-canvas"><div class="wsm-map-compass"><i>北</i><span>西 · 东</span><i>南</i></div><svg aria-hidden="true" preserveAspectRatio="none">${routeLines}</svg>${nodes || '<p class="wsm-muted">这个层级还没有已知地点</p>'}</div>${routes ? `<div class="wsm-map-routes"><h4>本层通行路线</h4>${routes}</div>` : ''}</section>${locationActions}`;
+            return `<section class="wsm-map-panel"><header><span>${icon('pin')}</span><div><small>当前位置</small><b>${escape(current?.name || state.world?.location?.current || '未设定')}</b><small>已读取 ${escape(String(mapState.locations.length))} 个世界书/运行态地点 · 当前显示 ${escape(String(locations.length))}</small></div></header><div class="wsm-map-view-tools"><button type="button" data-map-mode="known" class="${activeMapMode === 'known' ? 'active' : ''}">角色认知地图</button><button type="button" data-map-mode="all" class="${activeMapMode === 'all' ? 'active' : ''}">全设定地图</button><input id="wsm-map-search" type="search" value="${escape(activeMapSearch)}" placeholder="搜索地点、别名或世界书来源"></div><nav class="wsm-map-switcher" aria-label="地图层级切换">${switcher}</nav><div class="wsm-map-breadcrumbs">${breadcrumbs}</div><div class="wsm-map-canvas"><div class="wsm-map-compass"><i>北</i><span>西 · 东</span><i>南</i></div><svg aria-hidden="true" preserveAspectRatio="none">${routeLines}</svg>${nodes || '<p class="wsm-muted">这个层级还没有匹配地点</p>'}</div>${routes ? `<div class="wsm-map-routes"><h4>本层通行路线</h4>${routes}</div>` : ''}</section>${locationActions}`;
         }
-        if (active === 'characters') return (state.characters || []).filter((item) => item?.name || item?.id).map((item) => card(resolveRef(state, item.id) || item.name || item.id, item.present ? '正在当前场景' : `位于 ${displayValue(item.location) || '未知地点'}`, [labeled('身份', item.identity), labeled('当前重要处境', item.situation), labeled('持续状态 / Debuff', item.persistentConditions), labeled('重要物品', item.importantItems), labeled('连续性摘要', item.notes), characterIntentPanel(state, item)].join(''), { icon: 'user', badge: item.maintenanceLevel === 'active' ? '活跃NPC' : '核心人物' })).join('') || empty('人物');
+        if (active === 'characters') return (state.characters || []).filter((item) => item?.name || item?.id).map((item) => card(resolveRef(state, item.id) || item.name || item.id, item.present ? '正在当前场景' : `位于 ${displayValue(item.location) || '未知地点'}`, [labeled('身份', item.identity), labeled('身份真实性', truthStatusLabels[item.identityMeta?.truthStatus] || '原文未说明'), labeled('所属组织引用', item.affiliationRefs), labeled('权限规则引用', item.authorityRefs), labeled('稳定动机', item.motives), labeled('当前目标', item.currentGoals), labeled('日常安排', item.routine), labeled('当前可用性', item.availability), labeled('当前重要处境', item.situation), labeled('持续状态 / Debuff', item.persistentConditions), labeled('重要物品', item.importantItems), labeled('连续性摘要', item.notes), truthDetails(item)].join(''), { icon: 'user', badge: item.maintenanceLevel === 'active' ? '活跃NPC' : '核心人物' })).join('') || empty('人物');
         if (active === 'activities') {
             const groups = (state.npcActivities || []).reduce((result, item) => { (result[item.characterId || 'unknown'] ||= []).push(item); return result; }, {});
             return Object.entries(groups).map(([characterId, entries]) => {
                 const current = entries.at(-1);
-                return card(resolveRef(state, characterId), displayValue(current?.action) || '暂无活动', `<div class="wsm-activity-trail"><div><time>当前</time><span>${icon('pin')}<small>${escape(displayValue(current?.movement || current?.location) || '移动情况未明')}</small><b>${escape(displayValue(current?.action) || '活动未记录')}</b>${current?.location && current?.movement ? `<small>${escape(displayValue(current.location))}</small>` : ''}${current?.currentRole ? `<small>${escape(displayValue(current.currentRole))}</small>` : ''}</span></div></div>${intentPanel('activities', current, ['focus','investigate'], 'weak')}`, { icon: 'process' });
+                return card(resolveRef(state, characterId), displayValue(current?.action) || '暂无活动', `<div class="wsm-activity-trail"><div><time>当前</time><span>${icon('pin')}<small>${escape(displayValue(current?.movement || current?.location) || '移动情况未明')}</small><b>${escape(displayValue(current?.action) || '活动未记录')}</b>${current?.location && current?.movement ? `<small>${escape(displayValue(current.location))}</small>` : ''}${current?.currentRole ? `<small>${escape(displayValue(current.currentRole))}</small>` : ''}</span></div></div>`, { icon: 'process' });
             }).join('') || empty('NPC活动轨迹');
         }
-        if (active === 'relationships') return (state.relationships || []).filter((item) => item?.from && item?.to && (item?.status || item?.type)).map((item) => card(`${resolveRef(state,item.from)} → ${resolveRef(state,item.to)}`, item.type || '人物关系', `${labeled('目前关系', item.status)}${labeled('形成依据', item.evidence)}${intentPanel('relationships', item, ['focus','investigate'], 'weak')}`, { icon: 'heart' })).join('') || empty('人物关系');
-        if (active === 'knowledge') return (state.knowledge || []).filter((item) => item?.information).map((item) => card(displayValue(item.information), item.source ? `来源/渠道：${displayValue(item.source)}` : '', `${labeled('公开状态', ({ confidential: '保密', restricted: '受限', public: '公开' }[item.disclosure] || item.disclosure))}${labeled('已经确认', (item.knownBy || []).map((id) => resolveRef(state,id)))}${labeled('相信但未证实', (item.believedBy || []).map((id) => resolveRef(state,id)))}${labeled('有所怀疑', (item.suspectedBy || []).map((id) => resolveRef(state,id)))}${labeled('存在误解', (item.misunderstoodBy || []).map((id) => resolveRef(state,id)))}${labeled('仍不知道', (item.unknownTo || []).map((id) => resolveRef(state,id)))}${labeled('证据', item.evidence)}${labeled('发现路径', item.discoveryPaths)}${labeled('成熟条件', item.maturityConditions)}${userKnowsKnowledge(state, item) ? intentPanel('knowledge', item, ['focus','investigate'], 'weak') : '<p class="wsm-muted">该信息未被当前玩家角色确认，仅供后台查看，不能发送给正文 AI。</p>'}`, { icon: 'lock', badge: item.certainty })).join('') || empty('知识记录');
-        if (active === 'tasks') return userFacingItems(state, 'task').filter((item) => item?.title).map((item) => card(displayValue(item.title), item.deadline ? `截止：${displayValue(item.deadline)}` : '没有明确截止时间', `${labeled('为什么与你有关', item.userRelevance)}${labeled('负责人', (item.ownerIds || []).map((id) => resolveRef(state,id)))}${labeled('当前进展', item.progress)}${labeled('开始前需要', item.dependencies)}${labeled('可能影响', item.consequences)}${intentPanel('tasks', item)}`, { icon: 'check', badge: item.status })).join('') || empty('当前可处理任务');
-        if (active === 'events') return (state.events || []).map((item) => card(item.title, item.location || '地点未明确', `${labeled('发生了什么', item.summary)}${labeled('直接结果', item.outcome)}${labeled('相关人物', (item.participantIds || []).map((id) => resolveRef(state,id)))}${labeled('关联世界进程', (item.relatedProcessIds || []).map((id) => resolveRef(state,id)))}${intentPanel('events', item, item.status === 'ongoing' ? ['focus','intervene','investigate'] : ['focus','investigate'])}`, { icon: 'event', badge: item.status })).join('') || empty('世界事件');
+        if (active === 'relationships') return (state.relationships || []).filter((item) => item?.from && item?.to && (item?.status || item?.type)).map((item) => card(`${resolveRef(state,item.from)} ↔ ${resolveRef(state,item.to)}`, item.dynamicPattern || item.type || '人物关系', `${labeled('目前关系', item.status)}${labeled('并存关系', item.bondTypes)}${labeled('核心矛盾', item.coreContradiction)}${labeled('无法割舍', item.attachments)}${labeled('未解决伤害', item.grievances)}${labeled('阶段边界', item.boundaries)}${labeled('和解条件', item.reconciliationConditions)}${labeled('双方视角', item.perspectives)}${labeled('场景表现', item.expressionPatterns)}${labeled('形成依据', item.evidence)}${truthDetails(item)}${item.coverageOnly ? '<p class="wsm-muted">已检查但尚无足够依据；不会把它当作“没有关系”，也不会自动补造。</p>' : ''}`, { icon: 'heart', badge: item.truthStatus })).join('') || empty('人物关系');
+        if (active === 'knowledge') return (state.knowledge || []).filter((item) => item?.information).map((item) => card(displayValue(item.information), item.source ? `来源/渠道：${displayValue(item.source)}` : '', `${labeled('公开状态', ({ confidential: '保密', restricted: '受限', public: '公开' }[item.disclosure] || item.disclosure))}${labeled('已经确认', (item.knownBy || []).map((id) => resolveRef(state,id)))}${labeled('相信但未证实', (item.believedBy || []).map((id) => resolveRef(state,id)))}${labeled('有所怀疑', (item.suspectedBy || []).map((id) => resolveRef(state,id)))}${labeled('存在误解', (item.misunderstoodBy || []).map((id) => resolveRef(state,id)))}${labeled('仍不知道', (item.unknownTo || []).map((id) => resolveRef(state,id)))}${labeled('证据', item.evidence)}${labeled('发现路径', item.discoveryPaths)}${labeled('成熟条件', item.maturityConditions)}${truthDetails(item)}${userKnowsKnowledge(state, item) ? '' : '<p class="wsm-muted">该信息未被当前玩家角色确认，仅供后台查看，不能发送给正文 AI。</p>'}`, { icon: 'lock', badge: item.truthStatus || item.certainty })).join('') || empty('知识记录');
+        if (active === 'tasks') return userFacingItems(state, 'task').filter((item) => item?.title).map((item) => card(displayValue(item.title), item.deadline ? `截止：${displayValue(item.deadline)}` : '没有明确截止时间', `${labeled('为什么与你有关', item.userRelevance)}${labeled('负责人', (item.ownerIds || []).map((id) => resolveRef(state,id)))}${labeled('当前进展', item.progress)}${labeled('开始前需要', item.dependencies)}${labeled('完成条件（必须核验）', item.completionConditions)}${labeled('已核验完成条件', item.completedConditions)}${labeled('地点引用', item.locationRefs)}${labeled('人物引用', item.characterRefs)}${labeled('规则引用', item.ruleRefs)}${labeled('知识引用', item.knowledgeRefs)}${labeled('资源约束引用', item.resourceConstraintRefs)}${labeled('可能影响', item.consequences)}${truthDetails(item)}${intentPanel('tasks', item)}`, { icon: 'check', badge: item.status })).join('') || empty('当前可处理任务');
+        if (active === 'events') return (state.events || []).map((item) => card(item.title, item.location || '地点未明确', `${labeled('发生了什么', item.summary)}${labeled('直接结果', item.outcome)}${labeled('相关人物', (item.participantIds || []).map((id) => resolveRef(state,id)))}${labeled('关联世界进程', (item.relatedProcessIds || []).map((id) => resolveRef(state,id)))}`, { icon: 'event', badge: item.status })).join('') || empty('世界事件');
         if (active === 'triggers') return userFacingItems(state, 'trigger').map((item) => card(item.title, '来自当前世界的可互动机会', `${labeled('为什么你能注意到', item.userRelevance)}${labeled('需要满足', item.conditions)}${labeled('满足后可能', item.effectsIfTriggered)}${labeled('目前尚缺', item.blockedReasons)}${intentPanel('triggers', item)}`, { icon: 'flag', badge: item.status })).join('') || empty('当前可触发事件');
-        if (active === 'threads') return (state.threads || []).map((item) => card(item.title, item.stakes || '长期发展的事务', `${labeled('相关人物', (item.participantIds || []).map((id) => resolveRef(state,id)))}${labeled('自然下一步', item.nextNaturalStep)}${labeled('已有发展', item.history)}${intentPanel('threads', item)}`, { icon: 'thread', badge: item.status })).join('') || empty('长期线程');
+        if (active === 'threads') return (state.threads || []).map((item) => card(item.title, item.stakes || '长期发展的事务', `${labeled('相关人物', (item.participantIds || []).map((id) => resolveRef(state,id)))}${labeled('自然下一步', item.nextNaturalStep)}${labeled('已有发展', item.history)}`, { icon: 'thread', badge: item.status })).join('') || empty('长期线程');
         if (active === 'progression') {
             const item = state.progression || {};
             if (![item.direction, item.currentMovement, item.blockedByDecision].some(Boolean) && !(item.nextRequiredChanges || []).length) return empty('剧情推进方向');
-            return card(item.direction || '当前剧情自然延续中', item.currentMovement || '尚未形成新的阶段变化', `${labeled('下一阶段仍需', item.nextRequiredChanges)}${labeled('依据模块', item.basedOnRefs)}${labeled('必须等待用户决定', item.blockedByDecision)}`, { icon: 'process', badge: '当前版本' });
+            return card(item.direction || '当前剧情自然延续中', item.currentMovement || '尚未形成新的阶段变化', `${labeled('下一阶段仍需', item.nextRequiredChanges)}${labeled('依据模块', item.basedOnRefs)}${labeled('必须等待用户决定', item.blockedByDecision)}${truthDetails(item)}`, { icon: 'process', badge: '当前版本' });
         }
-        if (active === 'processes') return (state.processes || []).map((item) => card(item.title, item.currentDirection || '自然延续中', `${labeled('为什么仍在继续', item.drivers)}${labeled('可能逐渐淡去', item.decayConditions)}${labeled('自然结束条件', item.resolutionConditions)}${Number(item.progress?.max) > 0 ? labeled('进度钟', `${Number(item.progress?.current || 0)}/${Number(item.progress.max)}${item.progress?.lastChangeReason ? ` · ${item.progress.lastChangeReason}` : ''}`) : ''}${intentPanel('processes', item, ['focus','intervene','investigate'], 'weak')}`, { icon: 'process', badge: item.status })).join('') || empty('世界进程');
-        if (active === 'causalEffects') return (state.causalEffects || []).map((item) => card(item.result || '后果仍在形成', `起因：${item.cause || resolveRef(state,item.causeRef) || '未知'}`, `${labeled('必要因果路径', item.steps)}${labeled('影响对象', (item.affectedIds || []).map((id) => resolveRef(state,id)))}${labeled('尚缺条件', item.reachCondition)}${labeled('减弱或消失条件', item.decayConditions)}${labeled('可验证依据', (item.evidenceRefs || []).map((id) => resolveRef(state,id)))}${intentPanel('causalEffects', item, ['focus','investigate'], 'weak')}`, { icon: 'causal', badge: item.status })).join('') || empty('因果影响');
-        if (active === 'timeline') return `<div class="wsm-timeline">${(state.timeline || []).filter((item) => item?.summary).slice().reverse().map((item, index) => `<article><time>${(state.timeline || []).length - index}</time><div><b>${escape(displayValue(item.summary) || '无摘要')}</b><small>${escape([item.granularity, displayValue(item.location)].filter(Boolean).join(' · '))}</small>${chips((item.participants || []).map((id) => resolveRef(state,id)))}${intentPanel('timeline', item, ['focus','investigate'], 'weak')}</div></article>`).join('')}</div>` || empty('时间线');
+        if (active === 'processes') return (state.processes || []).map((item) => card(item.title, item.currentDirection || '自然延续中', `${labeled('为什么仍在继续', item.drivers)}${labeled('可能逐渐淡去', item.decayConditions)}${labeled('自然结束条件', item.resolutionConditions)}${Number(item.progress?.max) > 0 ? labeled('进度钟', `${Number(item.progress?.current || 0)}/${Number(item.progress.max)}${item.progress?.lastChangeReason ? ` · ${item.progress.lastChangeReason}` : ''}`) : ''}`, { icon: 'process', badge: item.status })).join('') || empty('世界进程');
+        if (active === 'causalEffects') return (state.causalEffects || []).map((item) => card(item.result || '后果仍在形成', `起因：${item.cause || resolveRef(state,item.causeRef) || '未知'}`, `${labeled('必要因果路径', item.steps)}${labeled('影响对象', (item.affectedIds || []).map((id) => resolveRef(state,id)))}${labeled('尚缺条件', item.reachCondition)}${labeled('减弱或消失条件', item.decayConditions)}${labeled('可验证依据', (item.evidenceRefs || []).map((id) => resolveRef(state,id)))}`, { icon: 'causal', badge: item.status })).join('') || empty('因果影响');
+        if (active === 'timeline') return `<div class="wsm-timeline">${(state.timeline || []).filter((item) => item?.summary).slice().reverse().map((item, index) => `<article><time>${(state.timeline || []).length - index}</time><div><b>${escape(displayValue(item.summary) || '无摘要')}</b><small>${escape([item.granularity, displayValue(item.location)].filter(Boolean).join(' · '))}</small>${chips((item.participants || []).map((id) => resolveRef(state,id)))}${chips(item.relatedFactIds || [])}</div></article>`).join('')}</div>` || empty('时间线');
         if (active === 'planner') {
             const plan = state.planner?.plan || {};
             const dice = plan.diceRound;
@@ -561,9 +688,11 @@
             const counts = info.worldbookEntryCounts || {};
             const sourceRead = info.sourceRead || {};
             const fullRead = sourceRead.chunked === true;
-            const twoPassRead = sourceRead.mode === 'two-complete-halves';
+            const audit = WSM.Storage.historyAudit?.() || sourceRead.audit || {};
+            const calibrated = sourceRead.mode === 'baseline-ledger-calibration';
             return `<div class="wsm-source-grid">
-                <section class="wsm-board"><h4>基础输入</h4><div class="wsm-board-item">角色卡：${info.characterCard ? '已读取' : '未读取'}<br>Persona：${info.persona ? '已读取' : '未读取'}<br>酒馆正文：已读取 ${escape(String(info.chatMessages || 0))} / ${escape(String(info.chatTotalMessages || 0))} 条${info.chatTruncated ? '（已按设置截取）' : ''}<br>${fullRead ? `资料读取模式：${twoPassRead ? '请求 A/B 分别读取两半并合并证据，本地建立状态' : '一次请求完整读取并建状态'}${sourceRead.semanticCompaction ? ` · 超长聊天已本地逐条扫描 ${escape(String(sourceRead.coveredChatMessages || info.chatMessages || 0))} 条并生成语义年表` : ''} · 送入模型 ${escape(String(sourceRead.includedChars || sourceRead.originalChars || 0))} 字（原始资料 ${escape(String(sourceRead.originalChars || 0))} 字） · 实际 API ${escape(String(sourceRead.requestAttempts || 0))}/${twoPassRead ? '2' : '1'} 次 · 缓存复用 ${escape(String(sourceRead.cacheHits || 0))} 片` : '尚未执行手动完整读取'}</div></section>
+                <section class="wsm-board"><h4>基础输入</h4><div class="wsm-board-item">角色卡：${info.characterCard ? '已读取' : '未读取'}<br>Persona：${info.persona ? '已读取' : '未读取'}<br>酒馆正文：已读取 ${escape(String(info.chatMessages || 0))} / ${escape(String(info.chatTotalMessages || 0))} 条${info.chatTruncated ? '（已按设置截取）' : ''}<br>${fullRead ? `资料读取模式：${calibrated ? '分块变化校准 → 变更账本 → 基准快照' : '兼容读取'} · ${escape(String(sourceRead.chunks || 1))} 块 · 送入模型 ${escape(String(sourceRead.includedChars || sourceRead.originalChars || 0))} 字（原始资料 ${escape(String(sourceRead.originalChars || 0))} 字） · 本次 API ${escape(String(sourceRead.requestAttempts || 0))} 次 · 缓存复用 ${escape(String(sourceRead.cacheHits || 0))} 块` : '尚未执行手动完整读取'}</div></section>
+                ${calibrated ? `<section class="wsm-board"><h4>来源审计</h4><div class="wsm-board-item">总可读取：${escape(String(audit.totalReadableMessages || 0))}<br>已处理：${escape(String(audit.processedMessages || 0))}<br>失败：${escape(String(Number(audit.failedMessages || 0) + Number(audit.failedChunks || 0)))}<br>隐藏但已纳入：${escape(String(audit.hiddenIncluded || 0))}<br>产生状态变化：${escape(String(audit.changedMessages || 0))}<br>无长期变化：${escape(String(audit.noLongTermChangeMessages || 0))}<br>摘要遗漏：${escape(String(audit.summaryOmissions || 0))}<br>摘要冲突：${escape(String(audit.summaryConflicts || 0))}<br>无来源状态：${escape(String(audit.sourceLessChanges || 0))}</div></section>` : ''}
                 <section class="wsm-board"><h4>已读取世界书</h4>${loaded.length ? loaded.map((name) => `<div class="wsm-board-item"><b>${escape(name)}</b><small>${escape(String(counts[name] || 0))} 条启用条目</small></div>`).join('') : '<div class="wsm-board-item">没有读到任何世界书</div>'}</section>
                 ${failed.length ? `<section class="wsm-board"><h4>发现但读取失败</h4>${failed.map((name) => `<div class="wsm-board-item">${escape(name)}</div>`).join('')}</section>` : ''}
                 <section class="wsm-board"><h4>注入边界</h4><div class="wsm-board-item">最终注入由上述输入、已经结算的当前状态和本轮 Planner 约束生成。时间线只在面板展示，不进入正文注入。</div></section>
@@ -797,13 +926,13 @@
             return map;
         }, {});
         return Object.entries(groups).map(([bookName, entries]) => `<details class="wsm-injection-group wsm-worldbook-book-group">
-            <summary><span><b>${escape(bookName)}</b><small>已勾选 ${entries.filter((entry) => entry.enabled && selectedKeys.has(entry.key)).length} / ${entries.filter((entry) => entry.enabled).length} 条；只有勾选条目会拆解注入</small><em>${escape(entries[0]?.bookSource === 'character card' ? '角色卡内嵌' : '当前启用 / 角色绑定')}</em></span></summary>
-            ${entries.filter((entry) => entry.enabled).map((entry) => `<label class="wsm-worldbook-entry-preview"><input type="checkbox" data-worldbook-entry-choice value="${escape(entry.key)}" ${selectedKeys.has(entry.key) ? 'checked' : ''}><span><b>${escape(entry.comment || entry.keys?.join('、') || `条目 ${entry.id}`)}</b><small>${escape(String(entry.content || '').slice(0, 140))}</small></span></label>`).join('') || '<div class="wsm-board-item">这本书当前没有启用条目。</div>'}
+            <summary><span><b>${escape(bookName)}</b><small>已勾选 ${entries.filter((entry) => selectedKeys.has(entry.key)).length} / ${entries.length} 条（其中 ${entries.filter((entry) => entry.enabled).length} 条原文已启用）</small><em>${escape(entries[0]?.bookSource === 'character card' ? '角色卡内嵌' : '当前启用 / 角色绑定')}</em></span></summary>
+            ${entries.map((entry) => `<label class="wsm-worldbook-entry-preview"><input type="checkbox" data-worldbook-entry-choice value="${escape(entry.key)}" ${selectedKeys.has(entry.key) ? 'checked' : ''}><span><b>${escape(entry.comment || entry.keys?.join('、') || `条目 ${entry.id}`)}${entry.enabled ? '' : '（原条目已禁用）'}</b><small>${entry.enabled ? '运行时可投影 · ' : '可预编译但运行时不注入 · '}${escape(String(entry.content || '').slice(0, 140))}</small></span></label>`).join('') || '<div class="wsm-board-item">这本书当前没有可读取条目。</div>'}
         </details>`).join('') || '<div class="wsm-board-item">尚未在下拉菜单中选择世界书；读取时不会发送世界书。</div>';
     }
     function worldbookSelectionConfig(config, selectedNames, selectedEntryKeys, candidateNames) {
         const selected = new Set(selectedNames);
-        const availableKeys = new Set(worldbookEntriesCache.filter((entry) => entry.enabled && selected.has(entry.bookName)).map((entry) => entry.key));
+        const availableKeys = new Set(worldbookEntriesCache.filter((entry) => selected.has(entry.bookName)).map((entry) => entry.key));
         return WSM.WorldbookCompiler.normalizeConfig({
             ...config,
             selectedBookNames: [...selected],
@@ -840,7 +969,7 @@
             const known = new Set(config.knownBookNames);
             const selected = new Set(config.selectedBookNames.filter((name) => candidateNames.includes(name)));
             candidateNames.forEach((name) => { if (!known.has(name)) selected.add(name); });
-            const visibleKeys = new Set(worldbookEntriesCache.filter((entry) => entry.enabled && selected.has(entry.bookName)).map((entry) => entry.key));
+            const visibleKeys = new Set(worldbookEntriesCache.filter((entry) => selected.has(entry.bookName)).map((entry) => entry.key));
             const selectedEntryKeys = config.entryKeys.filter((key) => visibleKeys.has(key));
             const nextConfig = worldbookSelectionConfig(config, selected, selectedEntryKeys, candidateNames);
             if (JSON.stringify(nextConfig) !== JSON.stringify(config)) WSM.Settings.update({ worldbookCompiler: nextConfig });
@@ -899,7 +1028,7 @@
                     <div class="wsm-grid"><label>自定义字体<input id="wsm-custom-font-family" type="text" placeholder='例如："Microsoft YaHei", sans-serif'></label><label>字体大小（百分比）<input id="wsm-font-scale" type="number" min="60" max="140" step="5"></label></div>
                     <p class="wsm-settings-help">只调整状态机文字，不改变面板大小和按钮的可点击范围。建议使用 80%–100%。</p>
                     <div class="wsm-grid"><label>单次输出 Tokens<input id="wsm-max-tokens" type="number" min="256" max="16384"></label><label>注入最大字符<input id="wsm-injection-max" type="number" min="500"></label></div>
-                    <p class="wsm-settings-help">Tokens 是模型单次返回 JSON 的上限。所有计费调用都有硬限制：普通正文每轮状态机最多 1 次；读取/初始化最多 2 次；世界书手动更新最多 1 次，失败不自动重试。</p>
+                    <p class="wsm-settings-help">Tokens 是模型单次返回 JSON 的上限。普通正文每轮状态机最多 1 次；手动完整读取先本地扫描全部资料，再固定最多调用 API 2 次；世界书手动更新最多 1 次。</p>
                     <label class="wsm-check"><input id="wsm-enabled" type="checkbox">启用自动状态机</label>
                     <p class="wsm-settings-help">打开插件或切换聊天不会自动读取和初始化。只有点击“读取并初始化”或“重新读取 / 重建”才会读取完整资料。</p>
                     <label class="wsm-check"><input id="wsm-block-on-planner-error" type="checkbox">Planner失败时严格阻止正文生成</label>
@@ -907,7 +1036,7 @@
                 <section class="wsm-settings-section" data-settings-section="source">
                     <p class="wsm-settings-help">“分解正文”页面只管理聊天正文的读取范围；它与“拆解世界书”的条目选择和缓存独立，不会把聊天楼层列成世界书条目。</p>
                     <div class="wsm-grid"><label>普通轮次读取最近正文条数（0=全部可见正文）<input id="wsm-recent-messages" type="number" min="0" max="200"></label></div>
-                    <section class="wsm-rollback-panel"><b>${icon('clipboard')}<span>完整正文读取方式</span></b><p>只有点击“读取并初始化”或“重新读取 / 重建”时才读取完整聊天。资料较小时用 1 次 API 完整读取并建状态；资料较大时，请求 A/B 会按接近相同的原文字数稳定分包，分别形成前后证据，B 合并两半证据后由程序在本地建立完整状态结构，总计绝不超过 2 次 API。</p><small>原文不会抽样或跳过；聊天末尾的逐字镜像字段只传一次，也不会用第 3 次请求重试。每次输出都服从你设置的 Tokens 上限；请求 A 成功后会缓存证据，若 B 失败，下一次可直接复用 A，减少重复扣费。进度区会持续保留 A/B、分片范围、缓存和真实失败原因。</small></section>
+                    <section class="wsm-rollback-panel"><b>${icon('clipboard')}<span>本地全量扫描，API 最多两次</span></b><p>只有点击“读取当前聊天”或“重新读取 / 重建”时才扫描完整聊天。插件本地遍历每个楼层并保留来源索引；超长历史按每层提炼为有界语义年表，最近正文保留更高分辨率。请求 A 读取前半，请求 B 读取后半并合并 A 的证据，硬限制最多两次 API。</p><small>角色卡、Persona和世界书原文不被替换或删除；完整聊天仍留在酒馆作为权威来源。运行状态只保留会影响连续性的 L3/L2 和当前 L1，避免把每层回执、普通动作和短暂情绪堆进状态。</small></section>
                 </section>
                 <section class="wsm-settings-section" data-settings-section="pacing">
                     <p class="wsm-settings-help">控制正文模型每轮允许推进的最大幅度。关闭时保持正文模型原有节奏；该功能不会替模型规划剧情，也不会改变既定事实。</p>
@@ -923,7 +1052,7 @@
                     <section class="wsm-rollback-panel"><b>${icon('check')}<span>什么时候检定</span></b><p>只有结果同时具备不确定性、现实阻力和有意义的成败后果时才消耗检定骰。日常必然行为、无压力过渡、显而易见的信息、普通对话和一般思考不检定。</p><small>1=大失败，2–10=失败，11–19=成功，20=大成功。</small></section>
                 </section>
                 <section class="wsm-settings-section" data-settings-section="worldbook">
-                    <p class="wsm-settings-help">这里只拆解世界书，不分解聊天正文。下拉菜单决定下方显示哪些当前可用的书；展开书后逐条勾选。只有勾中的条目会被拆解、剔除原文并按相关性注入，其他条目继续保持酒馆原本的处理方式。</p>
+                    <p class="wsm-settings-help">这里只拆解世界书，不分解聊天正文。原文始终完整保留为唯一来源；勾中的条目会建立段落覆盖、统一事实目录与分类投影，运行时只抑制原生重复并由最终注入器按 factId 发送一次。其他条目继续保持酒馆原本的处理方式。</p>
                     <label class="wsm-check"><input id="wsm-worldbook-compiler-enabled" type="checkbox">启用拆解世界书</label>
                     <div class="wsm-grid"><label>每轮精简字数<input id="wsm-worldbook-compiler-budget" type="number" min="120" max="2000"></label><label>用于匹配的正文条数<input id="wsm-worldbook-compiler-context" type="number" min="2" max="30"></label></div>
                     <label class="wsm-check"><input id="wsm-worldbook-compiler-fail-closed" type="checkbox" checked disabled>无法确认原文已安全处理时，固定阻止正文请求</label>
@@ -985,7 +1114,12 @@
         if (status) status.textContent = progress.state === 'running' ? '正在读取…' : (state.initialized ? `REV ${state.revision} · ${state.world?.time?.display || '时间未定'}` : '等待初始化');
         operation.dataset.state = progress.state || 'idle';
         operation.querySelector('.wsm-operation-current>b').textContent = progress.message || '读取进度：等待开始';
-        operation.querySelector('.wsm-operation-current>small').textContent = progress.details || '点击后在此显示当前步骤。';
+        const audit = WSM.Storage.historyAudit?.() || state.runtime?.sourceSummary?.sourceRead?.audit;
+        const chunkAudit = audit && Number(audit.chunks || 0) > 0
+            ? ` · 校准块 ${audit.chunks}（参考资料 ${audit.referenceChunks || 0} / 聊天 ${audit.chatChunks || 0}）`
+            : '';
+        const auditText = audit ? `总可读取 ${audit.totalReadableMessages || 0} 层 · 已处理 ${audit.processedMessages || 0} · 失败 ${Number(audit.failedMessages || 0) + Number(audit.failedChunks || 0)} · 隐藏但纳入 ${audit.hiddenIncluded || 0}${chunkAudit} · 产生变化 ${audit.changedMessages || 0} · 无长期变化 ${audit.noLongTermChangeMessages || 0} · 摘要遗漏 ${audit.summaryOmissions || 0} · 冲突 ${audit.summaryConflicts || 0} · 无来源状态 ${audit.sourceLessChanges || 0}` : '';
+        operation.querySelector('.wsm-operation-current>small').textContent = progress.details || auditText || '点击后在此显示当前步骤。';
         const history = operation.querySelector('.wsm-operation-steps');
         const steps = Array.isArray(progress.steps) ? progress.steps.slice(-12) : [];
         history.hidden = steps.length < 2;
@@ -1238,7 +1372,7 @@
             renderOperationStatus();
         }
         if (action === 'clear-read') {
-            if (!window.confirm('确定清空本聊天的全部状态机内容？这会删除当前状态、剧情推进、读取缓存和全部回滚版本；不会删除 SillyTavern 聊天消息、角色卡、Persona 或原始世界书。清空后再次“读取当前聊天”会从零建立全新状态。')) return;
+            if (!window.confirm('确定彻底清空本聊天的全部状态机内容？这会删除当前状态、硬规则、世界书拆解与注入缓存、剧情推进、读取缓存、已注册的AI注入和全部回滚版本；不会删除 SillyTavern 聊天消息、角色卡、Persona 或原始世界书。清空后再次“读取当前聊天”会从零建立全新状态。')) return;
             try {
                 await WSM.Storage.clearAll();
                 WSM.Engine.resetProgress?.();
@@ -1330,11 +1464,21 @@
         }
         if (action === 'compile-worldbook-entries') {
             await saveSettings(false);
+            const status = $('#wsm-worldbook-compiler-status');
+            const button = root.querySelector('[data-action="compile-worldbook-entries"]');
+            if (status) status.textContent = '正在一次性拆解已勾选世界书，请等待 API 返回…';
+            if (button) button.disabled = true;
             try {
                 const result = await WSM.WorldbookCompiler.compileConfig(WSM.Settings.get().worldbookCompiler, { force: true });
                 await renderWorldbookCompilerSettings(WSM.Settings.get());
                 notify(`已拆解 ${result.count} 条世界书`, 'success');
-            } catch (error) { notify(`拆解失败：${error.message}`, 'error'); }
+            } catch (error) {
+                if (status) status.textContent = `拆解失败：${error.message}`;
+                notify(`拆解失败：${error.message}`, 'error');
+            } finally {
+                const currentButton = root.querySelector('[data-action="compile-worldbook-entries"]');
+                if (currentButton) currentButton.disabled = false;
+            }
         }
         if (action === 'clear-worldbook-cache') {
             WSM.WorldbookCompiler.clearCache();
@@ -1505,6 +1649,8 @@
             if (settingsTab) { consume(); activeSettingsTab = settingsTab; renderSettingsTabs(); if (settingsTab === 'worldbook') await renderWorldbookCompilerSettings(); return; }
             const mapScopeButton = target.closest('[data-map-scope]');
             if (mapScopeButton) { consume(); activeMapScopeId = mapScopeButton.dataset.mapScope || ''; render(); return; }
+            const mapModeButton = target.closest('[data-map-mode]');
+            if (mapModeButton) { consume(); activeMapMode = mapModeButton.dataset.mapMode === 'all' ? 'all' : 'known'; activeMapScopeId = ''; render(); return; }
             const tab = target.closest('[data-tab]');
             if (tab) { consume(); active = tab.dataset.tab; activeCategory = categoryForSection(active); editMode = false; render(); return; }
             const apiProfileId = target.closest('[data-api-profile-id]')?.dataset.apiProfileId;
@@ -1513,6 +1659,7 @@
             if (action) { consume(); await handleAction(action); return; }
         }, true);
         root.addEventListener('change', (event) => {
+            if (event.target?.id === 'wsm-map-search') { activeMapSearch = event.target.value || ''; activeMapScopeId = ''; render(); return; }
             const changed = event.target instanceof HTMLInputElement ? event.target : null;
             if (changed?.matches('[data-worldbook-book-choice],[data-worldbook-entry-choice]')) {
                 const current = WSM.WorldbookCompiler.normalizeConfig(WSM.Settings.get().worldbookCompiler);
@@ -1520,7 +1667,7 @@
                 const selectedBookNames = [...root.querySelectorAll('[data-worldbook-book-choice]')].filter((input) => input.checked).map((input) => input.value);
                 let selectedEntryKeys = [...root.querySelectorAll('[data-worldbook-entry-choice]')].filter((input) => input.checked).map((input) => input.value);
                 if (changed.matches('[data-worldbook-book-choice]')) {
-                    selectedEntryKeys = current.entryKeys.filter((key) => worldbookEntriesCache.some((entry) => entry.key === key && entry.enabled && selectedBookNames.includes(entry.bookName)));
+                    selectedEntryKeys = current.entryKeys.filter((key) => worldbookEntriesCache.some((entry) => entry.key === key && selectedBookNames.includes(entry.bookName)));
                     $('#wsm-worldbook-compiler-list').innerHTML = selectedWorldbookCards(selectedBookNames, selectedEntryKeys);
                 }
                 const next = worldbookSelectionConfig(current, selectedBookNames, selectedEntryKeys, candidateNames);

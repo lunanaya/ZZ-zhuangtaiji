@@ -33,7 +33,7 @@ globalThis.SillyTavern = {
             async getWorldInfo() {
                 return { entries: {
                     1: { uid: 1, comment: '开启条目', content: '开启规则', disable: false, depth: 2 },
-                    2: { uid: 2, comment: '关闭条目', content: '关闭规则', disable: true, depth: 3 },
+                    2: { uid: 2, comment: '关闭条目', content: '禁用城位于北境州。', disable: true, depth: 3 },
                 } };
             },
         };
@@ -41,6 +41,7 @@ globalThis.SillyTavern = {
 };
 
 await import('../src/context.js');
+await import('../src/facts.js');
 const nestedEntries = WorldStateMachine.Context._test.normalizeEntries({ world: { entries: [{ id: 'nested', content: { text: '嵌套正文' } }] } }, { includeDisabled: true });
 assert.equal(nestedEntries[0].content, '嵌套正文');
 const allEntries = await WorldStateMachine.Context.listWorldbookEntries({ includeDisabled: true });
@@ -50,16 +51,19 @@ assert.equal(allEntries.find((entry) => !entry.enabled).comment, '关闭条目')
 const directBook = await WorldStateMachine.Context.readWorldbook('测试世界书', undefined, { includeDisabled: true });
 assert.ok(directBook.entries.every((entry) => entry.key && entry.key !== 'undefined'));
 
+compilerConfig.entryKeys = allEntries.map((entry) => entry.key);
+compilerConfig.knownEntryKeys = [...compilerConfig.entryKeys];
 const source = await WorldStateMachine.Context.buildSource({ fullChat: true, preserveFull: true });
 assert.equal(source.worldbooks[0].entries.length, 1);
 assert.equal(source.worldbooks[0].entries[0].comment, '开启条目');
+assert.equal(compilerConfig.entryKeys.includes(allEntries.find((entry) => !entry.enabled).key), true, '原条目禁用不得自动取消其独立的“纳入编译”选择');
 
-compilerConfig.entryKeys = allEntries.map((entry) => entry.key);
-compilerConfig.knownEntryKeys = [...compilerConfig.entryKeys];
+const compilePayloads = [];
 WorldStateMachine.Api = {
     async withCallBudget(_max, _label, operation) { return operation(); },
     async complete(_prompt, payload) {
         if (payload.task === 'WORLDBOOK_COMPILE_ONCE') {
+            compilePayloads.push(payload.entries.map((entry) => entry.key));
             return { entries: payload.entries.map((entry) => ({ key: entry.key, core: [entry.content], triggers: [], rules: [], background: [] })) };
         }
         if (payload.task === 'WORLDBOOK_ROUTE_ONCE') return { text: '开启规则', byDepth: { 2: '开启规则' } };
@@ -124,15 +128,29 @@ assert.match(selectionRoute.text, /选秀启动/);
 assert.doesNotMatch(selectionRoute.text, /皇权决策/);
 const compiled = await WorldStateMachine.WorldbookCompiler.compileConfig(compilerConfig, { force: true, entries: allEntries });
 assert.equal(compiled.count, 2);
+assert.equal(WorldStateMachine.WorldbookCompiler.getReport().entries.find((entry) => entry.entryId === '2')?.sourceEnabled, false, '禁用条目可以保留预编译审计状态');
+assert.equal(WorldStateMachine.WorldbookCompiler.getStaticCatalog().locations.some((item) => item.name === '禁用城'), false, '禁用原条目不得参与运行时静态地图投影');
+const callsAfterInitialCompile = compilePayloads.length;
+await WorldStateMachine.WorldbookCompiler.compileConfig(compilerConfig, { entries: allEntries });
+assert.equal(compilePayloads.length, callsAfterInitialCompile, '内容未变时必须完整复用逐条缓存');
+const changedEntries = allEntries.map((entry) => entry.enabled ? entry : { ...entry, content: `${entry.content}（仅此条已修改）` });
+await WorldStateMachine.WorldbookCompiler.compileConfig(compilerConfig, { entries: changedEntries });
+assert.deepEqual(compilePayloads.at(-1), [allEntries.find((entry) => !entry.enabled).key], '单条原文变化只能失效对应条目的缓存');
 const processed = await WorldStateMachine.WorldbookCompiler.processSource(source);
 assert.equal(processed.blocked, undefined);
 assert.equal(processed.selected, 1);
-assert.equal(source.compiledWorldbookRules.originalEntriesRemoved, 1);
+assert.equal(source.compiledWorldbookRules.originalEntriesRemoved, 0);
+assert.equal(source.compiledWorldbookRules.originalEntriesPreserved, 1);
+assert.equal(source.worldbooks[0].entries.length, 1, 'Planner来源必须继续保留完整世界书原文');
+const losslessReport = WorldStateMachine.WorldbookCompiler.getReport();
+assert.ok(losslessReport.entries[0].facts.length > 0, '每条世界书必须建立统一事实目录');
+assert.ok(Object.keys(losslessReport.entries[0].coverage).length > 0, '每个原文段落必须有覆盖记录');
+assert.equal(losslessReport.entries[0].compiledChars, losslessReport.entries[0].originalChars, '编译版不得静默截断中部内容');
 
 const largeEntry = {
     key: WorldStateMachine.Context.worldbookEntryKey('测试世界书', 'large'),
     id: 'large', bookName: '测试世界书', comment: '超长条目', enabled: true, depth: 2,
-    content: `LARGE-START-${'世界规则。'.repeat(1800)}-LARGE-END`,
+    content: `LARGE-START-${'世界规则。'.repeat(900)}-LARGE-MIDDLE-${'世界规则。'.repeat(900)}-LARGE-END`,
 };
 compilerConfig.entryKeys = [largeEntry.key];
 compilerConfig.knownEntryKeys.push(largeEntry.key);
@@ -147,8 +165,28 @@ WorldStateMachine.Api.complete = async (_prompt, payload, options) => {
 };
 const adaptiveCompiled = await WorldStateMachine.WorldbookCompiler.compileConfig(compilerConfig, { force: true, entries: [largeEntry] });
 assert.equal(adaptiveCompiled.count, 1);
-assert.equal(largeAttempts, 1, 'worldbook compilation must not exceed its single billable request cap');
+assert.equal(largeAttempts, 0, '超出安全请求预算时不得发送首尾截断版本');
 assert.equal(successfulParts.length, 0);
 assert.match([...memory.values()].join('\n'), /LARGE-START/);
+assert.match([...memory.values()].join('\n'), /LARGE-MIDDLE/);
+assert.match([...memory.values()].join('\n'), /LARGE-END/);
+const chunks = WorldStateMachine.WorldbookCompiler._test.buildSemanticChunks(largeEntry);
+assert.ok(chunks.length > 1);
+assert.ok(chunks.every((chunk) => chunk.text.length <= 1200), '语义块不得超过1200字符');
+assert.ok(chunks.slice(0, -1).every((chunk) => chunk.text.length >= 800), '除不可避免的尾块外，语义块应达到800字符');
+
+const manyEntries = Array.from({ length: 205 }, (_, index) => ({
+    key: `many::${index}`, id: String(index), bookName: '全量地图书', comment: `星港${index}城`, enabled: true, depth: 2,
+    content: `星港${index}城位于北境${index}州；星港${index}城通往北境${index}州。`,
+}));
+compilerConfig.entryKeys = manyEntries.map((entry) => entry.key);
+compilerConfig.knownEntryKeys = [...compilerConfig.entryKeys];
+const manySource = { worldbooks: [{ name: '全量地图书', entries: manyEntries }], chat: [{ role: 'user', content: '查看星港0城' }] };
+await WorldStateMachine.WorldbookCompiler.processSource(manySource, { localOnly: true });
+assert.equal(WorldStateMachine.WorldbookCompiler.getReport().compiledCount, 205, '200条逐轮路由上限不得截断全量静态目录和审计报告');
+const staticCatalog = WorldStateMachine.WorldbookCompiler.getStaticCatalog();
+assert.ok(staticCatalog.locations.some((item) => item.name === '星港204城'), '第201条之后的世界书地点仍必须进入静态全图');
+assert.ok(staticCatalog.locations.find((item) => item.name === '星港204城')?.parentId, '世界书中的“位于”关系必须投影为父级地点引用');
+assert.ok(staticCatalog.routes.some((item) => item.description.includes('星港204城通往北境204州')), '世界书中的通往/相邻关系必须进入静态基础路线');
 
 console.log('Worldbook enabled/disabled entry smoke tests passed');

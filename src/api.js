@@ -54,7 +54,7 @@
         return endpoint.href;
     }
     const STATE_ROOT_KEYS = ['identities','world','map','characters','npcActivities','relationships','knowledge','tasks','events','triggers','threads','processes','causalEffects','timeline'];
-    const EVIDENCE_ROOT_KEYS = ['sourceRefs','canon','chronology','timeline','anchors','characters','npcActivities','relationships','knowledge','locations','tasks','events','triggers','threads','processes','causal','progression','currentScene','uncertainties'];
+    const EVIDENCE_ROOT_KEYS = ['sourceRefs','canon','chronology','timeline','anchors','characters','npcActivities','relationships','knowledge','locations','tasks','events','triggers','threads','processes','causal','progression','currentScene','uncertainties','messageResults','changes','conflicts','summaryChecks'];
     function objectKeyCount(value, keys) {
         if (!value || typeof value !== 'object' || Array.isArray(value)) return 0;
         return keys.reduce((count, key) => count + (Object.prototype.hasOwnProperty.call(value, key) ? 1 : 0), 0);

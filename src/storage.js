@@ -9,16 +9,183 @@
         catch (_) { return JSON.parse(JSON.stringify(value)); }
     };
     const RETENTION_LIMITS = Object.freeze({
-        currentConditions: 8, factAnchors: 16, resourceConstraints: 10, locations: 32, routes: 40, characters: 16, npcActivities: 12,
+        currentConditions: 8, factAnchors: 16, worldRules: 64, resourceConstraints: 10, locations: 256, routes: 256, characters: 24, npcActivities: 24,
         relationships: 16, knowledge: 24, tasks: 8, events: 8, triggers: 6,
         threads: 8, processes: 8, causalEffects: 10, timeline: 24,
     });
-    const MEMORY_MODULES = ['factAnchors','resourceConstraints','characters','npcActivities','relationships','knowledge','tasks','events','triggers','threads','processes','causalEffects','timeline'];
+    const MEMORY_MODULES = ['worldRules','factAnchors','resourceConstraints','characters','npcActivities','relationships','knowledge','tasks','events','triggers','threads','processes','causalEffects','timeline'];
     const PRIORITY_DEFAULTS = Object.freeze({
-        factAnchors: 'L3', resourceConstraints: 'L2', characters: 'L2', npcActivities: 'L1', relationships: 'L2', knowledge: 'L2', tasks: 'L2', events: 'L2',
+        worldRules: 'L3', factAnchors: 'L3', resourceConstraints: 'L2', characters: 'L2', npcActivities: 'L1', relationships: 'L2', knowledge: 'L2', tasks: 'L2', events: 'L2',
         triggers: 'L1', threads: 'L2', processes: 'L2', causalEffects: 'L2', timeline: 'L1',
     });
+    const TRUTH_STATUS_SET = new Set(Object.keys(WSM.Defaults?.TRUTH_STATUSES || {
+        confirmed: 1, derived: 1, system_generated: 1, suspected: 1, assumed: 1,
+        unknown: 1, not_established: 1, not_applicable: 1, failed: 1,
+    }));
+    const HIGH_RISK_MODULES = new Set(['worldRules','factAnchors','resourceConstraints','characters','relationships','knowledge','tasks','currentConditions']);
+    const CONJECTURAL_TRUTH = new Set(['system_generated','suspected','assumed','unknown','not_established','failed']);
+    function stringList(value) {
+        const values = Array.isArray(value) ? value : (value == null || value === '' ? [] : [value]);
+        return [...new Set(values.map((item) => readableText(item)).filter(Boolean))];
+    }
+    function evidenceRefs(item) {
+        return stringList([...(Array.isArray(item?.sourceRefs) ? item.sourceRefs : []), ...(Array.isArray(item?.evidenceRefs) ? item.evidenceRefs : []), ...(Array.isArray(item?.evidence) ? item.evidence : [])]);
+    }
+    function normalizeTruthStatus(module, item = {}) {
+        const raw = String(item.truthStatus || '').trim().toLowerCase();
+        if (TRUTH_STATUS_SET.has(raw)) return raw;
+        if (item.readFailed === true || item.status === 'read_failed') return 'failed';
+        if (module === 'relationships' && item.coverageOnly === true) return 'not_established';
+        const certainty = String(item.certainty || '').trim().toLowerCase();
+        if (['suspected','claim','believed','rumor','misunderstood'].includes(certainty)) return 'suspected';
+        if (evidenceRefs(item).length) return 'confirmed';
+        if (module === 'relationships' && (item.status || item.type)) return 'suspected';
+        if (module === 'conditions') return 'suspected';
+        if (module === 'characters' && ['user','char','character','<user>','<char>'].includes(String(item.id || '').toLowerCase())) return 'confirmed';
+        if (HIGH_RISK_MODULES.has(module) || module === 'characters') return 'unknown';
+        return 'assumed';
+    }
+    function normalizeTruthItem(module, value) {
+        const item = Object.assign({}, value || {});
+        item.sourceRefs = stringList(item.sourceRefs);
+        item.basis = stringList(item.basis);
+        item.truthStatus = normalizeTruthStatus(module, item);
+        const policyKey = ({ worldRules: 'worldRules', factAnchors: 'factAnchors', resourceConstraints: 'resourceConstraints', characters: 'characterIdentity', relationships: 'relationships', knowledge: 'knowledge', tasks: 'tasks', npcActivities: 'npcActivities' })[module];
+        const allowed = WSM.Defaults?.INFERENCE_POLICIES?.[policyKey]?.allow;
+        if (Array.isArray(allowed) && !allowed.includes(item.truthStatus)) item.truthStatus = HIGH_RISK_MODULES.has(module) ? 'unknown' : 'assumed';
+        const configuredIdentity = module === 'characters' && ['user','char','character','<user>','<char>'].includes(String(item.id || '').toLowerCase());
+        if (item.truthStatus === 'confirmed' && !evidenceRefs(item).length && !configuredIdentity) {
+            item.truthStatus = module === 'relationships' ? 'suspected' : (HIGH_RISK_MODULES.has(module) ? 'unknown' : 'assumed');
+            if (!item.basis.length) item.basis = ['旧状态没有绑定可核对来源，等待定点回查'];
+        }
+        if (item.truthStatus === 'derived' && !item.basis.length) {
+            item.truthStatus = HIGH_RISK_MODULES.has(module) ? 'unknown' : 'assumed';
+            item.basis = ['缺少可复算的推导依据'];
+        }
+        if (item.truthStatus === 'system_generated' && HIGH_RISK_MODULES.has(module)) {
+            item.truthStatus = 'unknown';
+            item.basis = ['该模块禁止系统自由生成，等待原文或设定依据'];
+        }
+        if (CONJECTURAL_TRUTH.has(item.truthStatus) && String(item.priority || '').toUpperCase() === 'L3') item.priority = 'L2';
+        return item;
+    }
+    function truthMeta(value, fallbackStatus = 'unknown', fallbackBasis = []) {
+        const meta = value && typeof value === 'object' && !Array.isArray(value) ? Object.assign({}, value) : {};
+        const status = String(meta.truthStatus || fallbackStatus).trim().toLowerCase();
+        meta.truthStatus = TRUTH_STATUS_SET.has(status) ? status : fallbackStatus;
+        meta.basis = stringList(meta.basis).length ? stringList(meta.basis) : stringList(fallbackBasis);
+        meta.sourceRefs = stringList(meta.sourceRefs);
+        return meta;
+    }
+    function validateTruthMeta(value, allowed, fallbackStatus = 'unknown', label = '字段') {
+        const meta = truthMeta(value, fallbackStatus);
+        if (!allowed.includes(meta.truthStatus)) {
+            meta.truthStatus = fallbackStatus;
+            meta.basis = [`${label}不允许使用原真实性状态，等待合格依据`];
+            meta.sourceRefs = [];
+        }
+        if (meta.truthStatus === 'confirmed' && !meta.sourceRefs.length) {
+            meta.truthStatus = fallbackStatus;
+            meta.basis = [`${label}标记为已确认但没有来源，等待定点回查`];
+        }
+        if (meta.truthStatus === 'derived' && !meta.basis.length) {
+            meta.truthStatus = fallbackStatus;
+            meta.basis = [`${label}缺少可复算的推导依据`];
+        }
+        return meta;
+    }
+    function enforceTruthTransition(previous, candidate, module) {
+        const before = normalizeTruthItem(module, previous || {});
+        const after = normalizeTruthItem(module, candidate || {});
+        if (after.truthStatus === 'confirmed' && before.truthStatus !== 'confirmed' && !evidenceRefs(after).length) {
+            after.truthStatus = before.truthStatus || 'unknown';
+            after.basis = after.basis.length ? after.basis : before.basis;
+        }
+        if (after.truthStatus === 'confirmed' && evidenceRefs(after).length) after.coverageOnly = false;
+        if (module === 'relationships' && after.truthStatus === 'suspected' && after.status !== '尚未读取到已确立的关系') after.coverageOnly = false;
+        return after;
+    }
+    function coverageId(from, to) {
+        const input = `${from}>${to}`;
+        let hash = 2166136261;
+        for (let index = 0; index < input.length; index += 1) hash = Math.imul(hash ^ input.charCodeAt(index), 16777619);
+        return `relationship-coverage-${(hash >>> 0).toString(36)}`;
+    }
+    function ensureRelationshipCoverage(state) {
+        const values = Array.isArray(state.relationships) ? state.relationships.map((item) => item?.coverageOnly === true
+            ? { ...item, activity: 'WARM', updatedRevision: Number(state.revision || 0) }
+            : Object.assign({}, item)) : [];
+        const realPairs = new Set(values.filter((item) => item.coverageOnly !== true).map((item) => `${item.from}>${item.to}`));
+        const relationships = values.filter((item) => item.coverageOnly !== true || !realPairs.has(`${item.from}>${item.to}`));
+        const existing = new Set(relationships.map((item) => `${item.from}>${item.to}`));
+        const wanted = [];
+        const addPair = (from, to) => {
+            const left = String(from || '').trim();
+            const right = String(to || '').trim();
+            const key = `${left}>${right}`;
+            if (!left || !right || left === right || existing.has(key) || wanted.some((item) => item.key === key)) return;
+            wanted.push({ from: left, to: right, key });
+        };
+        if (state.identities?.user && state.identities?.char && state.identities.user !== state.identities.char) {
+            addPair('user', 'char');
+            addPair('char', 'user');
+        }
+        const sceneCore = (state.characters || []).filter((item) => item?.present === true || item?.maintenanceLevel === 'core')
+            .map((item) => String(item?.id || '').trim()).filter((id) => id && !['user','char','character','<user>','<char>'].includes(id.toLowerCase())).slice(0, 4);
+        sceneCore.forEach((id) => {
+            if (state.identities?.user) { addPair('user', id); addPair(id, 'user'); }
+            if (state.identities?.char) { addPair('char', id); addPair(id, 'char'); }
+        });
+        wanted.slice(0, 12).forEach(({ from, to, key }) => {
+            relationships.push({
+                id: coverageId(from, to), from, to, type: '未明确', status: '尚未读取到已确立的关系',
+                formalStatus: 'unknown', romanceStage: 'unknown', conflictStage: 'unknown', coverageOnly: true,
+                truthStatus: 'not_established', basis: ['已检查当前人物与同场关系记录，尚无足够来源'], sourceRefs: [], evidence: [],
+                priority: 'L1', activity: 'WARM', updatedRevision: Number(state.revision || 0),
+            });
+            existing.add(key);
+        });
+        state.relationships = relationships;
+    }
+    const COVERAGE_PATHS = Object.freeze({
+        currentConditions: ['world','currentConditions'], worldRules: ['worldRules'], factAnchors: ['factAnchors'], resourceConstraints: ['resourceConstraints'], locations: ['map','locations'],
+        characters: ['characters'], npcActivities: ['npcActivities'], relationships: ['relationships'], knowledge: ['knowledge'], tasks: ['tasks'],
+        events: ['events'], triggers: ['triggers'], threads: ['threads'], processes: ['processes'], causalEffects: ['causalEffects'], timeline: ['timeline'],
+    });
+    function refreshModuleCoverage(state) {
+        const previous = state.moduleCoverage && typeof state.moduleCoverage === 'object' && !Array.isArray(state.moduleCoverage) ? state.moduleCoverage : {};
+        const audit = state.runtime?.sourceSummary?.sourceRead?.audit;
+        const completeAudit = Number(audit?.failedMessages || 0) === 0
+            && Number(audit?.totalReadableMessages || 0) > 0
+            && Number(audit?.processedMessages || 0) === Number(audit?.totalReadableMessages || 0);
+        const next = {};
+        Object.entries(COVERAGE_PATHS).forEach(([module, path]) => {
+            const values = path.reduce((value, key) => value?.[key], state);
+            const items = Array.isArray(values) ? values : [];
+            const realItems = items.filter((item) => item?.placeholder !== true && (module !== 'relationships' || item?.coverageOnly !== true));
+            const old = previous[module] && typeof previous[module] === 'object' ? previous[module] : {};
+            let status;
+            if (realItems.length) status = 'has_records';
+            else if (module === 'relationships' && items.length) status = 'coverage_only';
+            else if (!state.initialized) status = 'not_checked';
+            else if (old.status === 'checked_empty' || completeAudit) status = 'checked_empty';
+            else if (old.status === 'failed') status = 'failed';
+            else status = 'unknown_empty';
+            const basis = ({
+                has_records: `已保存${realItems.length}条有效记录`,
+                coverage_only: '已检查主要人物组合，但尚未读取到已确立关系',
+                checked_empty: '完整资料校准已覆盖可读取来源，未提取到适合持久化的记录',
+                unknown_empty: '当前数组为空，但旧状态没有足够审计信息证明原文确实没有',
+                failed: old.basis || '读取失败，必须先重试来源读取',
+                not_checked: '尚未执行初始化或完整校准',
+            })[status];
+            next[module] = { status, basis, checkedRevision: Number(state.revision || 0) };
+        });
+        state.moduleCoverage = next;
+        return state;
+    }
     function defaultActivity(module, item) {
+        if (module === 'worldRules') return item?.delivery === 'resident' ? 'HOT' : 'WARM';
         if (module === 'factAnchors') return 'COLD';
         if (module === 'characters') return item?.present === true ? 'HOT' : 'WARM';
         if (module === 'npcActivities') return 'HOT';
@@ -31,7 +198,9 @@
     }
     function prepareLifecycle(values, module, revision) {
         return (Array.isArray(values) ? values : []).map((item) => {
-            const next = Object.assign({}, item || {});
+            const next = normalizeTruthItem(module, item);
+            next.sourceRefs = next.sourceRefs.slice(-4);
+            next.basis = next.basis.slice(-4);
             const priority = String(next.priority || '').toUpperCase();
             const activity = String(next.activity || '').toUpperCase();
             next.priority = ['L1','L2','L3'].includes(priority)
@@ -99,6 +268,7 @@
     function hasText(value) { return String(value ?? '').trim().length > 0; }
     function validMemoryItem(module, item) {
         if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+        if (module === 'worldRules') return hasText(item.statement);
         if (module === 'factAnchors') return hasText(item.fact);
         if (module === 'resourceConstraints') return hasText(item.condition) && !['expired','satisfied'].includes(String(item.status || '').toLowerCase());
         if (module === 'characters') return hasText(item.name) || hasText(item.id);
@@ -115,6 +285,7 @@
         return true;
     }
     function memoryKey(module, item, index) {
+        if (module === 'worldRules') return item?.factId || item?.id || item?.statement;
         if (module === 'factAnchors') return item?.fact;
         if (module === 'resourceConstraints') return item?.id || `${item?.subjectId || ''}>${item?.kind || ''}>${item?.scope || ''}`;
         if (module === 'characters') return item?.name || item?.id;
@@ -177,11 +348,52 @@
                 granularity: 'phase',
                 participants: trimArray(group.flatMap((item) => item?.participants || []), 10),
                 location: group.map((item) => item?.location).filter(Boolean).at(-1) || '',
+                relatedFactIds: trimArray(group.flatMap((item) => item?.relatedFactIds || []), 12),
                 evidence: trimArray(group.flatMap((item) => item?.evidence || []), 8),
             });
         }
         const combined = [...core, ...compressed, ...recent];
         return uniqueRecent(combined, Math.max(limit, core.length + recent.length), (item) => String(item?.id || item?.summary || ''));
+    }
+    function ensureInitializedModuleCoverage(state) {
+        if (!state.initialized || !state.runtime?.sourceSummary) return state;
+        const revision = Number(state.revision || 0);
+        const meta = { placeholder: true, priority: 'L2', activity: 'COLD', updatedRevision: revision, truthStatus: 'not_applicable', basis: ['完整初始化未找到满足该模块定义的当前记录'], sourceRefs: [] };
+        const fill = (module, item) => {
+            const values = Array.isArray(state[module]) ? state[module] : [];
+            const real = values.filter((entry) => entry?.placeholder !== true);
+            state[module] = real.length ? real : [Object.assign({}, meta, item)];
+        };
+        fill('worldRules', { id: 'initial-empty-world-rule', factId: 'initial-empty-world-rule', owner: 'worldRules', consumers: ['worldRules'], delivery: 'local', statement: '当前没有读取到需要额外建立的世界硬规则', scope: [], conditions: [], exceptions: [], precedence: 0, dependencyFactIds: [] });
+        fill('factAnchors', { id: 'initial-empty-fact-anchor', fact: '当前没有需要额外固定的永久事实锚点', scope: '当前故事' });
+        fill('resourceConstraints', { id: 'initial-empty-resource-constraint', subjectId: 'current-scene', kind: 'other', condition: '当前没有识别到会限制行动的硬性资源或权限条件', status: 'active', amount: '', scope: '当前场景', consequence: '' });
+        fill('characters', { id: 'char', name: state.identities?.char || '当前角色', maintenanceLevel: 'core', identity: '身份尚未明确', location: state.world?.location?.current || '未明确', present: true, motives: [], currentGoals: [], persistentConditions: [], importantItems: [], notes: '等待后续正文建立更多人物连续性' });
+        const activityOwner = (state.characters || []).find((item) => !['user','<user>'].includes(String(item?.id || '').toLowerCase())) || state.characters?.[0];
+        fill('npcActivities', { id: 'initial-empty-npc-activity', characterId: activityOwner?.id || 'char', location: activityOwner?.location || state.world?.location?.current || '未明确', movement: '', action: '当前活动尚未从已读取资料中明确', currentRole: '等待后续正文更新' });
+        fill('relationships', { id: 'initial-empty-relationship', from: 'user', to: activityOwner?.id || 'char', participants: ['user', activityOwner?.id || 'char'], type: '未明确', status: '尚未读取到已确立的关系', coverageOnly: true, bondTypes: [], evidence: [] });
+        fill('knowledge', { id: 'initial-empty-knowledge', information: '当前没有需要单独维护的已确认信息或秘密', disclosure: 'public', knownBy: [], believedBy: [], suspectedBy: [], misunderstoodBy: [], unknownTo: [], source: '', certainty: 'confirmed', reliability: '不适用', evidence: [], discoveryPaths: [], maturityConditions: [] });
+        fill('tasks', { id: 'initial-empty-task', title: '当前没有已成立且可以主动推进的任务', status: 'blocked', ownerIds: ['user'], dependencies: [], completionConditions: [], completedConditions: [], consequences: [], userVisible: true, userRelevance: '等待正文建立明确目标' });
+        fill('events', { id: 'initial-empty-event', title: '当前没有需要单独记录的重要事件', status: 'occurred', summary: '完整读取尚未识别出满足事件模块定义的当前节点', outcome: '', location: state.world?.location?.current || '未明确', participantIds: [], relatedProcessIds: [] });
+        fill('triggers', { id: 'initial-empty-trigger', title: '当前没有满足定义的可触发事件', conditions: ['等待正文建立明确触发条件'], status: 'armed', effectsIfTriggered: [], blockedReasons: ['尚无已确认的一次性条件节点'], userVisible: true, userRelevance: '当前仅作模块状态说明' });
+        fill('threads', { id: 'initial-empty-thread', title: '当前没有已建立的长期线程', status: 'paused', stakes: '等待正文形成可持续多轮的未解决事项', participantIds: [], nextNaturalStep: '', history: [] });
+        fill('processes', { id: 'initial-empty-process', title: '当前没有正在演变的世界进程', status: 'paused', kind: 'other', drivers: [], currentDirection: '尚未建立', decayConditions: [], resolutionConditions: [] });
+        fill('causalEffects', { id: 'initial-empty-causal-effect', causeRef: '', cause: '当前没有已确认的持续性起因', steps: [], result: '当前没有需要维护的持续因果后果', affectedIds: [], status: 'deferred', reachCondition: '等待正文建立明确因果', decayConditions: [], evidenceRefs: [] });
+        fill('timeline', { id: 'initial-empty-timeline', summary: '当前没有可确认的重要历史节点', granularity: 'core', participants: [], location: state.world?.location?.current || '未明确', relatedFactIds: [], evidence: [] });
+        state.map ||= { rootLabel: '大地图', currentLocationId: '', baseLocations: [], locations: [], routes: [], routeOverlays: [] };
+        const dynamicLocations = (Array.isArray(state.map.locations) ? state.map.locations : []).filter((item) => item?.placeholder !== true);
+        const baseLocations = Array.isArray(state.map.baseLocations) ? state.map.baseLocations : [];
+        if (dynamicLocations.length || baseLocations.length) state.map.locations = dynamicLocations;
+        const mapLocations = [...dynamicLocations, ...baseLocations];
+        if (!mapLocations.length) {
+            const location = { ...meta, id: 'initial-unknown-location', name: state.world?.location?.current || '当前位置未明确', type: 'other', parentId: '', description: '等待正文或设定建立具体空间信息', status: 'known', knownToPlayer: true, openState: 'unknown', origin: '完整初始化未读取到明确地点' };
+            state.map.locations = [location];
+            state.map.currentLocationId = location.id;
+        }
+        state.progression ||= {};
+        if (![state.progression.direction, state.progression.currentMovement, state.progression.blockedByDecision].some(hasText) && !(state.progression.nextRequiredChanges || []).some(hasText)) {
+            state.progression = { ...meta, direction: '当前剧情方向尚未明确', currentMovement: '等待正文形成可识别的阶段变化', nextRequiredChanges: [], basedOnRefs: [], blockedByDecision: '' };
+        }
+        return state;
     }
     function compactState(state) {
         const revision = Number(state.revision || 0);
@@ -191,8 +403,13 @@
         });
         MEMORY_MODULES.forEach((module) => { state[module] = prepareLifecycle(state[module], module, revision); });
         state.world.currentConditions = trimArray(state.world.currentConditions, RETENTION_LIMITS.currentConditions);
+        const activeConditionSet = new Set(state.world.currentConditions);
+        state.world.currentConditionDetails = (Array.isArray(state.world.currentConditionDetails) ? state.world.currentConditionDetails : [])
+            .filter((item) => activeConditionSet.has(String(item?.value || ''))).slice(-RETENTION_LIMITS.currentConditions);
         state.factAnchors = activeFirst(state.factAnchors, RETENTION_LIMITS.factAnchors, () => false, (item) => semanticText(item?.fact))
             .map((item) => trimFields(item, { sourceRefs: 4 }));
+        state.worldRules = activeFirst(state.worldRules, Math.max(RETENTION_LIMITS.worldRules, state.worldRules.length), (item) => item?.delivery === 'resident', (item) => String(item?.factId || item?.id || item?.statement || ''))
+            .map((item) => trimFields(item, { consumers: 12, scope: 12, conditions: 8, exceptions: 8, dependencyFactIds: 12, sourceRefs: 8 }));
         state.resourceConstraints = activeFirst(removeExpiredL1(state.resourceConstraints.filter((item) => !['expired','satisfied'].includes(String(item?.status || '').toLowerCase())), revision, (item) => item?.status === 'active'), RETENTION_LIMITS.resourceConstraints, (item) => item?.status === 'active', (item) => String(item?.id || `${item?.subjectId || ''}>${item?.kind || ''}>${item?.scope || ''}`))
             .map((item) => trimFields(item, { sourceRefs: 4 }));
         state.progression ||= { priority: 'L2', activity: 'WARM', direction: '', currentMovement: '', nextRequiredChanges: [], basedOnRefs: [], blockedByDecision: '', updatedRevision: 0 };
@@ -238,18 +455,20 @@
             if (keptLocationIds.size + chain.length <= RETENTION_LIMITS.locations) chain.forEach((id) => keptLocationIds.add(id));
         });
         const locationPool = state.map.locations.filter((item) => keptLocationIds.has(item.id));
-        state.map.locations = locationPool.map((item) => trimFields(item, { sourceRefs: 4 }));
+        state.map.locations = locationPool.map((item) => trimFields(item, { currentCharacterIds: 12, sourceRefs: 4 }));
         state.map.routes = uniqueRecent(state.map.routes.filter((item) => keptLocationIds.has(item.from) && keptLocationIds.has(item.to)), RETENTION_LIMITS.routes, (item) => `${item.from}>${item.to}`);
+        state.map.baseLocations = Array.isArray(state.map.baseLocations) ? state.map.baseLocations : [];
+        state.map.routeOverlays = Array.isArray(state.map.routeOverlays) ? state.map.routeOverlays : [];
 
         const uniqueCharacters = uniqueRecent(state.characters, Math.max(RETENTION_LIMITS.characters, state.characters.length));
         const coreCharacters = uniqueCharacters.filter((item) => item?.maintenanceLevel === 'core' || ['user','char','<user>','<char>'].includes(String(item?.id || '').toLowerCase()));
         const activeCharacters = uniqueCharacters.filter((item) => !coreCharacters.includes(item));
         const keptCharacters = new Set([...coreCharacters, ...activeCharacters.filter((item) => item?.present === true), ...activeCharacters].slice(0, Math.max(RETENTION_LIMITS.characters, coreCharacters.length)));
         state.characters = uniqueCharacters.filter((item) => keptCharacters.has(item))
-            .map((item) => trimFields(item, { persistentConditions: 4, importantItems: 4, sourceRefs: 4 }));
+            .map((item) => trimFields(item, { aliases: 8, affiliationRefs: 8, authorityRefs: 8, knowledgeRefs: 12, motives: 6, currentGoals: 6, persistentConditions: 4, importantItems: 4, sourceRefs: 4 }));
         state.npcActivities = uniqueRecent(state.npcActivities, RETENTION_LIMITS.npcActivities, (item) => String(item?.characterId || item?.id || ''));
-        state.relationships = activeFirst(removeExpiredL1(state.relationships, revision), RETENTION_LIMITS.relationships, () => false, (item) => `${String(item?.from || '')}>${String(item?.to || '')}`)
-            .map((item) => trimFields(item, { evidence: 4 }));
+        state.relationships = activeFirst(removeExpiredL1(state.relationships, revision), RETENTION_LIMITS.relationships, (item) => item?.coverageOnly !== true, (item) => `${String(item?.from || '')}>${String(item?.to || '')}`)
+            .map((item) => trimFields(item, { bondTypes: 6, attachments: 6, grievances: 6, boundaries: 8, reconciliationConditions: 8, evidence: 6, basis: 4, sourceRefs: 6 }));
         const uniqueKnowledge = uniqueRecent(state.knowledge, Math.max(RETENTION_LIMITS.knowledge, state.knowledge.length), (item) => String(item?.information || item?.id || ''));
         const coreKnowledge = uniqueKnowledge.filter((item) => String(item?.priority || '').toUpperCase() === 'L3');
         const otherKnowledge = uniqueKnowledge.filter((item) => !coreKnowledge.includes(item));
@@ -266,7 +485,7 @@
             relatedRefs: 6, evidence: 5, discoveryPaths: 4, maturityConditions: 4,
         }));
         state.tasks = activeFirst(removeExpiredL1(state.tasks.filter((item) => !['done','failed'].includes(item?.status)), revision, (item) => item?.status === 'active'), RETENTION_LIMITS.tasks, (item) => ['active','blocked'].includes(item?.status), (item) => String(item?.title || item?.id || ''))
-            .map((item) => trimFields(item, { ownerIds: 6, dependencies: 4, consequences: 4, sourceRefs: 4 }));
+            .map((item) => trimFields(item, { ownerIds: 6, dependencies: 8, locationRefs: 8, characterRefs: 8, ruleRefs: 8, knowledgeRefs: 8, resourceConstraintRefs: 8, completionConditions: 8, completedConditions: 8, consequences: 4, sourceRefs: 4 }));
         state.events = activeFirst(removeExpiredL1(state.events, revision, (item) => item?.status === 'ongoing'), RETENTION_LIMITS.events, (item) => item?.status === 'ongoing', (item) => String(item?.title || item?.id || ''))
             .map((item) => trimFields(item, { participantIds: 8, relatedProcessIds: 4, sourceRefs: 4 }));
         state.triggers = activeFirst(state.triggers.filter((item) => !['triggered','expired'].includes(item?.status)), RETENTION_LIMITS.triggers, (item) => item?.status === 'eligible', (item) => String(item?.title || item?.id || ''))
@@ -277,8 +496,8 @@
             .map((item) => trimFields(item, { drivers: 4, decayConditions: 3, resolutionConditions: 3 }));
         state.causalEffects = activeFirst(removeExpiredL1(state.causalEffects.filter((item) => !['resolved','discarded'].includes(item?.status)), revision, (item) => item?.status === 'active'), RETENTION_LIMITS.causalEffects, (item) => item?.status === 'active', (item) => String(item?.id || `${item?.causeRef || ''}|${item?.result || ''}`))
             .map((item) => trimFields(item, { steps: 4, affectedIds: 8, decayConditions: 3, evidenceRefs: 4 }));
-        state.timeline = compactTimeline(state.timeline, RETENTION_LIMITS.timeline).map((item) => trimFields(item, { participants: 8, evidence: 4, actualChanges: 4 }));
-        return state;
+        state.timeline = compactTimeline(state.timeline, RETENTION_LIMITS.timeline).map((item) => trimFields(item, { participants: 8, relatedFactIds: 12, evidence: 4, actualChanges: 4 }));
+        return ensureInitializedModuleCoverage(state);
     }
     function context() { return window.SillyTavern?.getContext?.() || null; }
     function metadata() {
@@ -356,11 +575,28 @@
         const incomingVersion = Number(value?.schemaVersion || 0);
         const state = Object.assign(WSM.Defaults.createState(), clone(value || {}));
         state.identities = Object.assign({ user: '', char: '' }, state.identities || {});
+        state.moduleCoverage = state.moduleCoverage && typeof state.moduleCoverage === 'object' && !Array.isArray(state.moduleCoverage) ? state.moduleCoverage : {};
         state.world = Object.assign(WSM.Defaults.createState().world, state.world || {});
-        state.world.time = Object.assign({ display: '', iso: '', timezone: '', elapsedMinutes: 0 }, state.world.time || {});
-        state.world.location = Object.assign({ current: '', environment: '', weather: '' }, state.world.location || {});
+        state.world.time = Object.assign({ display: '', iso: '', timezone: '', elapsedMinutes: 0, truthStatus: 'unknown', basis: [], sourceRefs: [] }, state.world.time || {});
+        state.world.time = Object.assign(state.world.time, truthMeta(state.world.time, 'unknown'));
+        state.world.location = Object.assign({
+            current: '', currentMeta: { truthStatus: 'unknown', basis: [], sourceRefs: [] },
+            environment: '', environmentMeta: { truthStatus: 'unknown', basis: [], sourceRefs: [] },
+            weather: '', weatherMeta: { truthStatus: 'unknown', basis: [], sourceRefs: [] },
+        }, state.world.location || {});
         state.world.season = String(state.world.season || '').trim();
-        state.world.currentConditions = Array.isArray(state.world.currentConditions) ? state.world.currentConditions.map(readableText).filter(Boolean) : [];
+        state.world.seasonMeta = truthMeta(state.world.seasonMeta, 'unknown');
+        state.world.location.currentMeta = truthMeta(state.world.location.currentMeta, 'unknown');
+        state.world.location.environmentMeta = truthMeta(state.world.location.environmentMeta, 'unknown');
+        state.world.location.weatherMeta = truthMeta(state.world.location.weatherMeta, 'unknown');
+        const rawCurrentConditions = Array.isArray(state.world.currentConditions) ? state.world.currentConditions : [];
+        const savedConditionDetails = Array.isArray(state.world.currentConditionDetails) ? state.world.currentConditionDetails : [];
+        state.world.currentConditions = rawCurrentConditions.map((item) => readableText(item?.value ?? item)).filter(Boolean);
+        state.world.currentConditionDetails = state.world.currentConditions.map((condition, index) => {
+            const embedded = rawCurrentConditions[index] && typeof rawCurrentConditions[index] === 'object' && !Array.isArray(rawCurrentConditions[index]) ? rawCurrentConditions[index] : {};
+            const saved = savedConditionDetails.find((item) => String(item?.value || '') === condition) || {};
+            return normalizeTruthItem('currentConditions', { ...saved, ...embedded, value: condition });
+        });
         if (incomingVersion < 17 && Array.isArray(state.world.facts)) {
             state.factAnchors = [
                 ...(Array.isArray(state.factAnchors) ? state.factAnchors : []),
@@ -371,7 +607,43 @@
             ];
         }
         delete state.world.facts;
-        state.map = Object.assign({ rootLabel: '大地图', currentLocationId: '', locations: [], routes: [] }, state.map || {});
+        state.map = Object.assign({ rootLabel: '大地图', currentLocationId: '', baseLocations: [], locations: [], routes: [], routeOverlays: [] }, state.map || {});
+        // Compiler projections are resolved live from the immutable per-entry
+        // cache by the map UI/injector. Do not copy them into chat state: doing
+        // so would leave stale locations behind after a source entry changes.
+        const baseLocationValues = (Array.isArray(state.map.baseLocations) ? state.map.baseLocations : [])
+            .filter((item) => !String(item?.id || '').startsWith('location_wb_'));
+        const baseLocationMap = new Map();
+        baseLocationValues.forEach((item, index) => {
+            const location = Object.assign({}, item || {});
+            location.id = String(location.id || `worldbook-location-${index + 1}`);
+            location.name = String(location.name || location.id);
+            location.aliases = stringList(location.aliases);
+            location.parentId = String(location.parentId || '');
+            location.type = String(location.type || mapTypeFromName(location.name));
+            location.description = cleanSpatialDescription(location.description);
+            location.sourceRefs = stringList(location.sourceRefs);
+            location.accessRuleRefs = stringList(location.accessRuleRefs);
+            location.routeRefs = stringList(location.routeRefs);
+            location.secretRefs = stringList(location.secretRefs);
+            location.characterRefs = stringList(location.characterRefs);
+            location.organizationRefs = stringList(location.organizationRefs);
+            location.taskRefs = stringList(location.taskRefs);
+            const key = `${location.parentId}|${location.name.toLocaleLowerCase()}`;
+            const previous = baseLocationMap.get(key);
+            baseLocationMap.set(key, previous ? {
+                ...previous, ...location,
+                aliases: stringList([...previous.aliases, ...location.aliases]),
+                sourceRefs: stringList([...previous.sourceRefs, ...location.sourceRefs]),
+                accessRuleRefs: stringList([...previous.accessRuleRefs, ...location.accessRuleRefs]),
+                routeRefs: stringList([...previous.routeRefs, ...location.routeRefs]),
+                secretRefs: stringList([...previous.secretRefs, ...location.secretRefs]),
+                characterRefs: stringList([...previous.characterRefs, ...location.characterRefs]),
+                organizationRefs: stringList([...previous.organizationRefs, ...location.organizationRefs]),
+                taskRefs: stringList([...previous.taskRefs, ...location.taskRefs]),
+            } : location);
+        });
+        state.map.baseLocations = [...baseLocationMap.values()];
         const rawLocations = Array.isArray(state.map.locations) ? state.map.locations : [];
         state.map.locations = rawLocations.map((item, index) => {
             const location = Object.assign({}, item || {});
@@ -391,7 +663,16 @@
             const locationAge = Math.max(0, Number(state.revision || 0) - location.updatedRevision);
             if (location.activity === 'HOT' && locationAge > 4) location.activity = 'WARM';
             if (location.activity === 'WARM' && locationAge > 12) location.activity = 'COLD';
-            location.sourceRefs = Array.isArray(location.sourceRefs) ? location.sourceRefs.filter(Boolean).map(String) : [];
+            location.sourceRefs = stringList(location.sourceRefs);
+            location.basis = stringList(location.basis);
+            const rawTruth = String(location.truthStatus || '').toLowerCase();
+            location.truthStatus = TRUTH_STATUS_SET.has(rawTruth) ? rawTruth : (location.sourceRefs.length ? 'confirmed' : 'unknown');
+            if (!['confirmed','derived','unknown','failed','not_applicable'].includes(location.truthStatus)) location.truthStatus = 'unknown';
+            if (location.truthStatus === 'derived' && !location.basis.length) {
+                location.truthStatus = 'unknown';
+                location.basis = ['命名地点缺少可复算的推导依据'];
+            }
+            if (CONJECTURAL_TRUTH.has(location.truthStatus) && location.priority === 'L3') location.priority = 'L2';
             location.x = Number.isFinite(Number(location.x)) ? Math.max(0, Math.min(100, Number(location.x))) : null;
             location.y = Number.isFinite(Number(location.y)) ? Math.max(0, Math.min(100, Number(location.y))) : null;
             return location;
@@ -413,7 +694,8 @@
                 x: null, y: null, area: '', description: String(options.description || ''),
                 origin: String(options.origin || '当前状态自动建立'), status: options.status || 'known',
                 priority: options.priority || 'L2', activity: options.activity || 'WARM',
-                updatedRevision: Number(state.revision || 0), sourceRefs: [],
+                updatedRevision: Number(state.revision || 0), sourceRefs: stringList(options.sourceRefs),
+                truthStatus: options.truthStatus || 'derived', basis: stringList(options.basis || [`由已保存的地点字段“${cleanName}”建立空间索引`]),
             };
             state.map.locations.push(location);
             locationsByName.set(cleanName, location);
@@ -433,7 +715,7 @@
             if (!parent) {
                 let id = stableMapId('area', location.area);
                 while (usedIds.has(id)) id = `${id}-area`;
-                parent = { id, name: location.area, type: mapTypeFromName(location.area, 'region'), parentId: '', x: null, y: null, area: '', description: '', origin: '旧地图层级迁移', status: 'known', priority: 'L3', activity: 'WARM', updatedRevision: Number(state.revision || 0), sourceRefs: [] };
+                parent = { id, name: location.area, type: mapTypeFromName(location.area, 'region'), parentId: '', x: null, y: null, area: '', description: '', origin: '旧地图层级迁移', status: 'known', priority: 'L2', activity: 'WARM', updatedRevision: Number(state.revision || 0), sourceRefs: [], truthStatus: 'derived', basis: [`由旧地图区域“${location.area}”迁移`] };
                 state.map.locations.push(parent);
                 locationsByName.set(parent.name, parent);
                 usedIds.add(parent.id);
@@ -499,23 +781,65 @@
             description: String(item?.description || ''), travelMinutes: Number.isFinite(Number(item?.travelMinutes)) ? Number(item.travelMinutes) : 0,
             distance: String(item?.distance || ''),
         })).filter((item) => item.from && item.to);
-        if (!state.initialized && state.world.time.display === '未设定') state.world.time.display = '';
-        if (!state.initialized && state.world.location.current === '未设定') state.world.location.current = '';
-        ['factAnchors','resourceConstraints','characters','npcActivities','relationships','knowledge','tasks','events','triggers','threads','processes','causalEffects','timeline','lockedPaths'].forEach((key) => {
+        if (!state.initialized && ['未设定','未明确'].includes(state.world.time.display)) state.world.time.display = '';
+        if (!state.initialized && ['未设定','未明确'].includes(state.world.location.current)) state.world.location.current = '';
+        ['worldRules','factAnchors','resourceConstraints','characters','npcActivities','relationships','knowledge','tasks','events','triggers','threads','processes','causalEffects','timeline','lockedPaths'].forEach((key) => {
             state[key] = Array.isArray(state[key]) ? state[key] : [];
         });
         const inferSeason = () => {
             const display = String(state.world.time.display || '');
             const named = display.match(/[春夏秋冬]季?/)?.[0];
-            if (named) return named.endsWith('季') ? named : `${named}季`;
+            if (named) return { value: named.endsWith('季') ? named : `${named}季`, basis: [`时间字段明确包含“${named}”`] };
             const month = Number(display.match(/(?:^|\D)(1[0-2]|0?[1-9])月/)?.[1] || state.world.time.iso?.match(/^\d{4}-(1[0-2]|0[1-9])-/)?.[1]);
-            if (!month) return '';
+            if (!month) return null;
             const northern = month >= 3 && month <= 5 ? '春季' : month >= 6 && month <= 8 ? '夏季' : month >= 9 && month <= 11 ? '秋季' : '冬季';
-            if (!/(澳大利亚|新西兰|南半球|阿根廷|智利|南非)/.test(String(state.world.location.current || ''))) return northern;
-            return ({ 春季: '秋季', 夏季: '冬季', 秋季: '春季', 冬季: '夏季' })[northern];
+            const location = String(state.world.location.current || '');
+            if (/(澳大利亚|新西兰|南半球|阿根廷|智利|南非)/.test(location)) {
+                return { value: ({ 春季: '秋季', 夏季: '冬季', 秋季: '春季', 冬季: '夏季' })[northern], basis: [`月份为${month}月`, `地点“${location}”位于南半球`] };
+            }
+            if (/(北半球|中国|日本|韩国|朝鲜|美国|加拿大|俄罗斯|英国|法国|德国|欧洲|北京|上海|东京|纽约|伦敦|巴黎|莫斯科)/.test(location)) {
+                return { value: northern, basis: [`月份为${month}月`, `地点“${location}”位于北半球`] };
+            }
+            return null;
         };
-        if (!state.world.season) state.world.season = inferSeason() || (state.initialized ? '季节待确认' : '');
-        if (!state.world.location.weather && state.initialized) state.world.location.weather = '天气待确认';
+        const unknownScalar = (value) => !String(value || '').trim() || /^(?:未设定|未明确|待确认|季节待确认|天气待确认)$/.test(String(value || '').trim());
+        if (state.initialized) {
+            state.world.time.display = unknownScalar(state.world.time.display) ? '未明确' : String(state.world.time.display).trim();
+            if (state.world.time.display === '未明确') state.world.time = Object.assign(state.world.time, truthMeta(state.world.time, 'unknown', ['原文尚未明确当前时间']));
+            else if (incomingVersion < 21 && state.world.time.truthStatus === 'unknown') state.world.time = Object.assign(state.world.time, truthMeta({ truthStatus: 'assumed', basis: ['旧状态未绑定时间来源，等待回查'] }, 'assumed'));
+
+            state.world.location.current = unknownScalar(state.world.location.current) ? '未明确' : String(state.world.location.current).trim();
+            state.world.location.environment = unknownScalar(state.world.location.environment) ? '未明确' : String(state.world.location.environment).trim();
+            if (state.world.location.current === '未明确') state.world.location.currentMeta = truthMeta(state.world.location.currentMeta, 'unknown', ['原文尚未明确当前地点']);
+            else if (incomingVersion < 21 && state.world.location.currentMeta.truthStatus === 'unknown') state.world.location.currentMeta = truthMeta({}, 'unknown', ['旧状态未绑定地点来源，等待回查']);
+            if (state.world.location.environment === '未明确') state.world.location.environmentMeta = truthMeta(state.world.location.environmentMeta, 'unknown', ['原文尚未明确环境']);
+            else if (incomingVersion < 21 && state.world.location.environmentMeta.truthStatus === 'unknown') state.world.location.environmentMeta = truthMeta({}, 'assumed', ['旧状态未绑定环境来源，等待回查']);
+
+            if (unknownScalar(state.world.season)) {
+                const inferred = inferSeason();
+                state.world.season = inferred?.value || '未明确';
+                state.world.seasonMeta = inferred
+                    ? truthMeta({ truthStatus: 'derived', basis: inferred.basis }, 'derived')
+                    : truthMeta({ truthStatus: 'unknown', basis: ['缺少可同时确定月份与南北半球的依据'] }, 'unknown');
+            } else if (incomingVersion < 21 && state.world.seasonMeta.truthStatus === 'unknown') {
+                state.world.seasonMeta = truthMeta({ truthStatus: 'assumed', basis: ['旧状态未绑定季节来源，等待日期与地点校验'] }, 'assumed');
+            }
+
+            if (unknownScalar(state.world.location.weather)) {
+                state.world.location.weather = '多云';
+                state.world.location.weatherMeta = truthMeta({
+                    truthStatus: 'system_generated',
+                    basis: [`原文未指定天气；以${state.world.location.current}、${state.world.season}、${state.world.time.display}为约束生成温和默认天气`],
+                }, 'system_generated');
+            } else if (incomingVersion < 21 && state.world.location.weatherMeta.truthStatus === 'unknown') {
+                state.world.location.weatherMeta = truthMeta({ truthStatus: 'assumed', basis: ['旧状态未绑定天气来源；后续只允许连续变化'] }, 'assumed');
+            }
+            state.world.time = Object.assign(state.world.time, validateTruthMeta(state.world.time, ['confirmed','derived','assumed','unknown','failed','not_applicable'], 'unknown', '时间'));
+            state.world.seasonMeta = validateTruthMeta(state.world.seasonMeta, WSM.Defaults?.INFERENCE_POLICIES?.season?.allow || ['confirmed','derived','assumed','unknown','failed'], 'unknown', '季节');
+            state.world.location.currentMeta = validateTruthMeta(state.world.location.currentMeta, WSM.Defaults?.INFERENCE_POLICIES?.namedLocations?.allow || ['confirmed','derived','unknown','failed','not_applicable'], 'unknown', '地点');
+            state.world.location.environmentMeta = validateTruthMeta(state.world.location.environmentMeta, ['confirmed','derived','system_generated','suspected','assumed','unknown','failed','not_applicable'], 'unknown', '环境');
+            state.world.location.weatherMeta = validateTruthMeta(state.world.location.weatherMeta, WSM.Defaults?.INFERENCE_POLICIES?.weather?.allow || ['confirmed','derived','system_generated','assumed','unknown','failed'], 'unknown', '天气');
+        }
         state.progression = Object.assign({}, WSM.Defaults.createState().progression, state.progression && typeof state.progression === 'object' && !Array.isArray(state.progression) ? state.progression : {});
         state.progression.priority = ['L1','L2','L3'].includes(String(state.progression.priority || '').toUpperCase()) ? String(state.progression.priority).toUpperCase() : 'L2';
         state.progression.activity = ['HOT','WARM','COLD'].includes(String(state.progression.activity || '').toUpperCase()) ? String(state.progression.activity).toUpperCase() : 'WARM';
@@ -526,6 +850,16 @@
         state.progression.blockedByDecision = String(state.progression.blockedByDecision || '').trim();
         const progressionRevision = Number(state.progression.updatedRevision);
         const hasProgression = !!(state.progression.direction || state.progression.currentMovement || state.progression.blockedByDecision || state.progression.nextRequiredChanges.length);
+        state.progression.sourceRefs = stringList(state.progression.sourceRefs);
+        state.progression.basis = stringList(state.progression.basis);
+        if (!hasProgression) state.progression.truthStatus = 'not_applicable';
+        else {
+            state.progression = normalizeTruthItem('progression', state.progression);
+            if (state.progression.truthStatus === 'assumed' && state.progression.basedOnRefs.length) {
+                state.progression.truthStatus = 'derived';
+                if (!state.progression.basis.length) state.progression.basis = ['由既存任务、线程、人物、事件或进程归纳'];
+            }
+        }
         state.progression.updatedRevision = Number.isFinite(progressionRevision) && (progressionRevision > 0 || !hasProgression)
             ? progressionRevision : Number(state.revision || 0);
         if (!state.causalEffects.length) {
@@ -556,7 +890,11 @@
         state.npcActivities = uniqueRecent(state.npcActivities.filter((item) => item?.characterId && item?.action), RETENTION_LIMITS.npcActivities, (item) => String(item.characterId));
         state.runtime = Object.assign({}, WSM.Defaults.createState().runtime, state.runtime || {});
         state.runtime.npcLastUpdatedElapsedMinutes = Object.assign({}, state.runtime.npcLastUpdatedElapsedMinutes || {});
-        if (state.initialized && incomingVersion < 6) state.runtime.needsWorldRefresh = true;
+        // v22 adds fact ownership, hard rules, static/dynamic map projection,
+        // richer relationships/tasks and NPC life fields. Existing facts stay
+        // intact, but flag one explicit re-read so these projections can be
+        // populated from their sources instead of guessed during migration.
+        if (state.initialized && incomingVersion < 22) state.runtime.needsWorldRefresh = true;
         state.characters = state.characters.map((item) => {
             const character = Object.assign({}, item || {});
             const rawName = String(character.name || '').trim();
@@ -574,14 +912,30 @@
             character.maintenanceLevel = ['core','active'].includes(character.maintenanceLevel)
                 ? character.maintenanceLevel
                 : (['user','char','character','<user>','<char>'].includes(stableId) || character.present === true ? 'core' : 'active');
-            character.identity = String(character.identity || '').trim();
+            character.sourceRefs = stringList(character.sourceRefs);
+            character.basis = stringList(character.basis);
+            character.identity = String(character.identity || '').trim() || '未明确';
+            character.aliases = stringList(character.aliases);
+            character.affiliationRefs = stringList(character.affiliationRefs);
+            character.authorityRefs = stringList(character.authorityRefs);
+            character.knowledgeRefs = stringList(character.knowledgeRefs);
+            character.motives = stringList(character.motives);
+            character.currentGoals = stringList(character.currentGoals || character.goals);
+            character.routine = readableText(character.routine);
+            character.availability = readableText(character.availability);
+            const identityHasSource = character.sourceRefs.length > 0;
+            character.identityMeta = truthMeta(character.identityMeta, character.identity === '未明确' ? 'unknown' : (identityHasSource ? 'confirmed' : 'unknown'),
+                character.identity === '未明确' ? ['原文或角色资料尚未明确身份'] : (identityHasSource ? ['身份来自已绑定的角色或原文来源'] : ['身份字段缺少来源，等待定点回查']));
+            if (!['confirmed','unknown','failed','not_applicable'].includes(character.identityMeta.truthStatus)) character.identityMeta.truthStatus = 'unknown';
             character.situation = readableText(character.situation || character.status);
             character.persistentConditions = Array.isArray(character.persistentConditions)
-                ? character.persistentConditions
+                ? character.persistentConditions.map((condition) => normalizeTruthItem('conditions', typeof condition === 'string' ? { name: condition } : condition))
                 : (Array.isArray(character.injuries) ? character.injuries.map((value) => ({ name: String(value), effect: '', recovery: '根据时间、治疗和行动自然更新' })) : []);
             character.importantItems = Array.isArray(character.importantItems)
-                ? character.importantItems
+                ? character.importantItems.map((item) => normalizeTruthItem('resourceConstraints', typeof item === 'string' ? { name: item } : item))
                 : (Array.isArray(character.heldItems) ? character.heldItems.map((value) => ({ name: String(value), status: '当前持有', significance: '由旧人物状态迁移，后续按剧情价值复核' })) : []);
+            character.persistentConditions = character.persistentConditions.map((condition) => normalizeTruthItem('conditions', condition));
+            character.importantItems = character.importantItems.map((item) => normalizeTruthItem('resourceConstraints', item));
             ['status','pose','clothing','heldItems','injuries','resources','goals','currentAction','memories'].forEach((field) => delete character[field]);
             delete character.lastUpdatedElapsedMinutes;
             return character;
@@ -654,24 +1008,392 @@
         state.triggers = state.triggers.map((item) => {
             const next = Object.assign({}, item);
             next.title = String(next.title || next.name || next.id || '').trim();
-            if (next.earliestAt && !next.conditions?.some((condition) => String(condition).includes(next.earliestAt))) next.conditions = [...(next.conditions || []), `世界时间达到${next.earliestAt}`];
+            next.conditions = stringList(next.conditions);
+            next.effectsIfTriggered = stringList(next.effectsIfTriggered);
+            next.blockedReasons = stringList(next.blockedReasons);
+            if (next.earliestAt && !next.conditions.some((condition) => String(condition).includes(next.earliestAt))) next.conditions = [...next.conditions, `世界时间达到${next.earliestAt}`];
             delete next.earliestAt;
             return next;
         });
-        state.tasks = state.tasks.map((item) => { const next = { ...item }; next.title = readableText(next.title || next.name); next.progress = readableText(next.progress); delete next.choices; return next; });
+        state.tasks = state.tasks.map((item) => {
+            const next = { ...item };
+            next.title = readableText(next.title || next.name);
+            next.progress = readableText(next.progress);
+            ['ownerIds','dependencies','locationRefs','characterRefs','ruleRefs','knowledgeRefs','resourceConstraintRefs','completionConditions','completedConditions','consequences'].forEach((field) => { next[field] = stringList(next[field]); });
+            delete next.choices;
+            return next;
+        });
         state.triggers = state.triggers.map((item) => { const next = { ...item }; delete next.choices; return next; });
         state.processes = state.processes.map((item) => { const next = Object.assign({}, item); delete next.lastUpdatedAt; return next; });
-        state.timeline = state.timeline.map((item) => { const next = Object.assign({}, item); next.summary = readableText(next.summary); delete next.at; return next; });
+        state.timeline = state.timeline.map((item) => { const next = Object.assign({}, item); next.summary = readableText(next.summary); next.relatedFactIds = stringList(next.relatedFactIds); delete next.at; return next; });
         state.factAnchors = state.factAnchors.map((item) => ({ ...item, fact: readableText(item?.fact), scope: readableText(item?.scope) }));
-        state.relationships = state.relationships.map((item) => ({ ...item, type: readableText(item?.type), status: readableText(item?.status), evidence: Array.isArray(item?.evidence) ? item.evidence.map(readableText).filter(Boolean) : [] }));
+        state.relationships = state.relationships.map((item) => ({
+            ...item,
+            participants: stringList(item?.participants || [item?.from, item?.to]),
+            type: readableText(item?.type) || '未明确',
+            bondTypes: stringList(item?.bondTypes),
+            dynamicPattern: readableText(item?.dynamicPattern),
+            mutuality: ['mutual','asymmetric','unknown'].includes(item?.mutuality) ? item.mutuality : 'unknown',
+            status: readableText(item?.status) || '尚未读取到已确立的关系',
+            coreContradiction: readableText(item?.coreContradiction),
+            attachments: stringList(item?.attachments),
+            grievances: stringList(item?.grievances),
+            boundaries: stringList(item?.boundaries),
+            reconciliationConditions: stringList(item?.reconciliationConditions),
+            perspectives: item?.perspectives && typeof item.perspectives === 'object' && !Array.isArray(item.perspectives) ? item.perspectives : {},
+            expressionPatterns: item?.expressionPatterns && typeof item.expressionPatterns === 'object' && !Array.isArray(item.expressionPatterns) ? item.expressionPatterns : {},
+            evidence: Array.isArray(item?.evidence) ? item.evidence.map(readableText).filter(Boolean) : [],
+        }));
         state.knowledge = state.knowledge.map((item) => ({ ...item, information: readableText(item?.information), source: readableText(item?.source), evidence: Array.isArray(item?.evidence) ? item.evidence.map(readableText).filter(Boolean) : [] }));
         state.threads = state.threads.map((item) => ({ ...item, title: readableText(item?.title), stakes: readableText(item?.stakes), nextNaturalStep: readableText(item?.nextNaturalStep), history: Array.isArray(item?.history) ? item.history.map(readableText).filter(Boolean) : [] }));
         state.processes = state.processes.map((item) => ({ ...item, title: readableText(item?.title), currentDirection: readableText(item?.currentDirection), drivers: Array.isArray(item?.drivers) ? item.drivers.map(readableText).filter(Boolean) : [] }));
         state.causalEffects = state.causalEffects.map((item) => ({ ...item, cause: readableText(item?.cause), result: readableText(item?.result), steps: Array.isArray(item?.steps) ? item.steps.map(readableText).filter(Boolean) : [] }));
-        state.schemaVersion = 20;
-        return compactState(state);
+        state.worldRules = state.worldRules.map((item) => {
+            const fact = WSM.Facts?.normalize?.(item, { owner: 'worldRules', delivery: item?.delivery || 'conditional' }) || item;
+            return { ...item, ...fact, id: item?.id || fact.factId, owner: 'worldRules' };
+        });
+        const factStatements = {
+            factAnchors: (item) => item.fact,
+            resourceConstraints: (item) => item.condition,
+            characters: (item) => `${item.name || item.id}：${item.identity || ''}`,
+            npcActivities: (item) => item.action,
+            relationships: (item) => item.status || item.type,
+            knowledge: (item) => item.information,
+            tasks: (item) => item.title,
+            events: (item) => item.summary || item.outcome || item.title,
+            triggers: (item) => item.title,
+            threads: (item) => item.title,
+            processes: (item) => item.currentDirection || item.title,
+            causalEffects: (item) => item.result,
+            timeline: (item) => item.summary,
+        };
+        Object.entries(factStatements).forEach(([module, statementOf]) => {
+            state[module] = state[module].map((item) => {
+                const fact = WSM.Facts?.normalize?.({ ...item, owner: module, statement: statementOf(item) }, { owner: module, delivery: item?.delivery || 'conditional' });
+                if (!fact) return item;
+                return {
+                    ...item,
+                    factId: item.factId || fact.factId,
+                    owner: module,
+                    consumers: stringList(item.consumers || fact.consumers),
+                    delivery: item.delivery || fact.delivery,
+                    dependencyFactIds: stringList(item.dependencyFactIds || fact.dependencyFactIds),
+                };
+            });
+        });
+        ensureRelationshipCoverage(state);
+        state.schemaVersion = 22;
+        return refreshModuleCoverage(compactState(state));
     }
     function load() { return normalizeState(envelope().state); }
+    function emptyHistoryMemory() {
+        return {
+            version: 1,
+            status: 'idle',
+            fingerprint: '',
+            startedAt: 0,
+            completedAt: 0,
+            boundary: null,
+            baseline: null,
+            messages: {},
+            chunks: {},
+            ledger: [],
+            conflicts: [],
+            summaryChecks: [],
+            audit: null,
+            pendingMessages: null,
+            pendingLedger: null,
+            pendingConflicts: null,
+            pendingSummaryChecks: null,
+            pendingAudit: null,
+        };
+    }
+    function historyMemoryBox() {
+        const box = envelope();
+        const current = box.historyMemory;
+        if (!current || typeof current !== 'object' || Array.isArray(current)) box.historyMemory = emptyHistoryMemory();
+        return box.historyMemory;
+    }
+    function loadHistoryMemory() { return clone(historyMemoryBox()); }
+    async function beginHistoryCalibration(manifest = {}) {
+        const box = envelope();
+        const previous = historyMemoryBox();
+        const reusable = previous.fingerprint && previous.fingerprint === String(manifest.fingerprint || '');
+        const hasActiveBaseline = !!(previous.baseline?.state && Array.isArray(previous.ledger));
+        const allowedChunkKeys = new Set((Array.isArray(manifest.chunkKeys) ? manifest.chunkKeys : []).map(String));
+        // Chunk keys hash the prompt version, kind and exact source records, so
+        // unchanged blocks remain safe to reuse even when appending new chat
+        // floors changes the overall archive fingerprint.
+        const reusableChunks = Object.fromEntries(Object.entries(previous.chunks || {})
+            // Failed ancestors are tiny routing markers for deterministic
+            // resume splitting. Keep them even when the current expanded queue
+            // contains only their child keys, otherwise a later resume can
+            // accidentally retry the known-bad large parent.
+            .filter(([key, value]) => !allowedChunkKeys.size || allowedChunkKeys.has(key) || value?.status === 'failed'));
+        box.historyMemory = {
+            ...emptyHistoryMemory(),
+            ...(hasActiveBaseline || reusable ? previous : {}),
+            version: 1,
+            status: hasActiveBaseline ? 'complete' : 'running',
+            calibrationStatus: 'running',
+            fingerprint: String(manifest.fingerprint || ''),
+            startedAt: Date.now(),
+            completedAt: 0,
+            boundary: clone(previous.boundary || (!hasActiveBaseline ? manifest.boundary : null)),
+            pendingBoundary: clone(manifest.boundary || null),
+            messages: clone(hasActiveBaseline ? (previous.messages || {}) : (manifest.messages || previous.messages || {})),
+            pendingMessages: clone(manifest.messages || {}),
+            chunks: clone(reusableChunks),
+            ledger: hasActiveBaseline || reusable ? clone(previous.ledger || []) : [],
+            conflicts: hasActiveBaseline || reusable ? clone(previous.conflicts || []) : [],
+            summaryChecks: hasActiveBaseline || reusable ? clone(previous.summaryChecks || []) : [],
+            audit: clone(hasActiveBaseline ? previous.audit : (manifest.audit || null)),
+            pendingLedger: null,
+            pendingConflicts: null,
+            pendingSummaryChecks: null,
+            pendingAudit: clone(manifest.audit || null),
+        };
+        await persist();
+        return clone(box.historyMemory);
+    }
+    function readHistoryCalibrationChunk(fingerprint, chunkKey) {
+        const memory = historyMemoryBox();
+        if (!fingerprint || memory.fingerprint !== String(fingerprint) || !chunkKey) return null;
+        const chunk = memory.chunks?.[chunkKey];
+        return chunk?.status === 'processed' && chunk.result ? clone(chunk) : null;
+    }
+    async function writeHistoryCalibrationChunk(fingerprint, chunkKey, value = {}) {
+        if (!fingerprint || !chunkKey) return null;
+        const memory = historyMemoryBox();
+        if (memory.fingerprint !== String(fingerprint)) throw new Error('校准来源已经变化，拒绝把分块结果写入另一份聊天档案');
+        memory.chunks ||= {};
+        memory.chunks[chunkKey] = {
+            key: chunkKey,
+            status: value.status === 'failed' ? 'failed' : 'processed',
+            kind: String(value.kind || 'chat'),
+            index: Number(value.index || 0),
+            total: Number(value.total || 0),
+            sourceRefs: Array.isArray(value.sourceRefs) ? value.sourceRefs.map(String) : [],
+            uniqueMessageIds: Array.isArray(value.uniqueMessageIds) ? value.uniqueMessageIds.map(String) : [],
+            chars: Number(value.chars || 0),
+            result: value.result && typeof value.result === 'object' ? clone(value.result) : null,
+            error: String(value.error || ''),
+            at: Date.now(),
+        };
+        await persist();
+        return clone(memory.chunks[chunkKey]);
+    }
+    async function completeHistoryCalibration(value = {}) {
+        const memory = historyMemoryBox();
+        if (value.fingerprint && memory.fingerprint !== String(value.fingerprint)) throw new Error('聊天在校准期间发生变化；已保存已完成块，请重新开始以继续校准');
+        // The ledger is complete here, but it does not become the active recall
+        // authority until Engine has successfully replayed and saved its
+        // baseline snapshot.  This keeps a failed hydration from mixing a new
+        // ledger with the user's still-active old state.
+        const failed = value.status === 'failed';
+        memory.calibrationStatus = failed ? 'failed' : 'calibrated';
+        memory.status = failed
+            ? (memory.baseline?.state ? 'complete' : 'failed')
+            : (memory.baseline?.state ? 'complete' : 'calibrated');
+        memory.completedAt = Date.now();
+        if (!failed) {
+            memory.pendingLedger = Array.isArray(value.ledger) ? clone(value.ledger) : [];
+            memory.pendingConflicts = Array.isArray(value.conflicts) ? clone(value.conflicts) : [];
+            memory.pendingSummaryChecks = Array.isArray(value.summaryChecks) ? clone(value.summaryChecks) : [];
+        }
+        memory.pendingAudit = clone(value.audit || memory.pendingAudit);
+        (Array.isArray(value.messageResults) ? value.messageResults : []).forEach((item) => {
+            const id = String(item?.messageId || '').replace(/^chat:/, '');
+            if (!id || !memory.pendingMessages?.[id]) return;
+            memory.pendingMessages[id] = {
+                ...memory.pendingMessages[id],
+                processed: item.status !== 'read_failed',
+                status: String(item.status || ''),
+                changeIds: Array.isArray(item.changeIds) ? item.changeIds.map(String) : [],
+            };
+        });
+        if (!failed && value.boundary) memory.boundary = clone(value.boundary);
+        await persist();
+        return clone(memory);
+    }
+    async function setHistoryBaseline(state, details = {}) {
+        const memory = historyMemoryBox();
+        const snapshot = clone(state || {});
+        delete snapshot.planner;
+        delete snapshot.runtime;
+        memory.baseline = {
+            createdAt: Date.now(),
+            boundary: clone(details.boundary || memory.boundary || null),
+            state: snapshot,
+        };
+        if (Array.isArray(memory.pendingLedger)) memory.ledger = memory.pendingLedger;
+        if (Array.isArray(memory.pendingConflicts)) memory.conflicts = memory.pendingConflicts;
+        if (Array.isArray(memory.pendingSummaryChecks)) memory.summaryChecks = memory.pendingSummaryChecks;
+        if (memory.pendingMessages && typeof memory.pendingMessages === 'object') memory.messages = memory.pendingMessages;
+        if (memory.pendingAudit) memory.audit = memory.pendingAudit;
+        memory.status = 'complete';
+        memory.calibrationStatus = 'complete';
+        delete memory.pendingBoundary;
+        memory.pendingMessages = null;
+        memory.pendingLedger = null;
+        memory.pendingConflicts = null;
+        memory.pendingSummaryChecks = null;
+        memory.pendingAudit = null;
+        if (details.audit) memory.audit = clone(details.audit);
+        await persist();
+        return clone(memory.baseline);
+    }
+    async function setTwoPassHistoryBaseline(state, details = {}) {
+        const box = envelope();
+        const snapshot = clone(state || {});
+        delete snapshot.planner;
+        delete snapshot.runtime;
+        const messages = Object.fromEntries((Array.isArray(details.messages) ? details.messages : []).map((message, index) => {
+            const id = String(message?.id ?? index);
+            return [id, {
+                id,
+                index: Number(message?.index ?? index),
+                role: String(message?.role || ''),
+                hidden: message?.hidden === true,
+                contentHash: String(message?.contentHash || ''),
+                processed: true,
+                status: 'covered_by_two_pass',
+                changeIds: [],
+            }];
+        }));
+        box.historyMemory = {
+            ...emptyHistoryMemory(),
+            status: 'complete',
+            calibrationStatus: 'complete',
+            fingerprint: String(details.fingerprint || ''),
+            startedAt: Date.now(),
+            completedAt: Date.now(),
+            boundary: clone(details.boundary || null),
+            baseline: { createdAt: Date.now(), boundary: clone(details.boundary || null), state: snapshot },
+            messages,
+            audit: clone(details.audit || null),
+        };
+        await persist();
+        return clone(box.historyMemory.baseline);
+    }
+    function appendHistoryChanges(changes = [], messageRecords = [], options = {}) {
+        const memory = historyMemoryBox();
+        memory.messages ||= {};
+        const newMessages = [];
+        (Array.isArray(messageRecords) ? messageRecords : []).forEach((message) => {
+            const id = String(message?.id ?? '').trim();
+            if (!id) return;
+            const wasKnown = !!memory.messages[id];
+            memory.messages[id] = {
+                id,
+                index: Number(message.index || 0),
+                role: String(message.role || ''),
+                hidden: message.hidden === true,
+                contentHash: String(message.contentHash || ''),
+                processed: true,
+                changeIds: Array.isArray(message.changeIds) ? message.changeIds.map(String) : [],
+            };
+            if (!wasKnown) newMessages.push(memory.messages[id]);
+        });
+        const existing = new Set((memory.ledger || []).map((item) => String(item.changeId || '')));
+        (Array.isArray(changes) ? changes : []).forEach((change, index) => {
+            if (!change || typeof change !== 'object') return;
+            const sourceRefs = Array.isArray(change.sourceRefs) ? change.sourceRefs.map(String).filter(Boolean) : [];
+            const changeId = String(change.changeId || `${options.prefix || 'change'}:${Date.now()}:${index}`);
+            if (existing.has(changeId)) return;
+            existing.add(changeId);
+            memory.ledger.push({ ...clone(change), changeId, sourceRefs, recordedAt: Number(change.recordedAt || Date.now()) });
+        });
+        if (memory.audit && newMessages.length) {
+            const changed = newMessages.filter((message) => message.changeIds.length).length;
+            memory.audit.totalReadableMessages = Number(memory.audit.totalReadableMessages || 0) + newMessages.length;
+            memory.audit.processedMessages = Number(memory.audit.processedMessages || 0) + newMessages.length;
+            memory.audit.hiddenIncluded = Number(memory.audit.hiddenIncluded || 0) + newMessages.filter((message) => message.hidden).length;
+            memory.audit.changedMessages = Number(memory.audit.changedMessages || 0) + changed;
+            memory.audit.noLongTermChangeMessages = Number(memory.audit.noLongTermChangeMessages || 0) + newMessages.length - changed;
+            memory.audit.incrementalChanges = Number(memory.audit.incrementalChanges || 0) + changes.length;
+            memory.audit.lastIncrementalAt = Date.now();
+        }
+        if (newMessages.length) memory.lastProcessedMessageId = newMessages.at(-1).id;
+        return clone(memory);
+    }
+    function historyTerms(value) {
+        const input = String(value || '').toLocaleLowerCase();
+        const ignored = new Set(['这个','那个','然后','现在','还是','可以','已经','什么','怎么','一下','进入','继续','用户','角色','当前']);
+        const terms = new Set((input.match(/[a-z0-9_]{2,}|[\u3400-\u9fff]{2,}/g) || []).filter((item) => !ignored.has(item)));
+        for (const run of input.match(/[\u3400-\u9fff]{3,}/g) || []) {
+            for (let index = 0; index < run.length - 1; index += 1) {
+                const part = run.slice(index, index + 2);
+                if (!ignored.has(part)) terms.add(part);
+            }
+        }
+        return [...terms];
+    }
+    function changeText(change) {
+        const value = change?.value ?? change?.patch ?? change?.summary ?? '';
+        const rendered = readableText(value);
+        return [change?.module, change?.entityId, change?.factId, rendered].map((item) => String(item || '').trim()).filter(Boolean).join('｜');
+    }
+    function evidenceExcerpt(content, terms, limit = 220) {
+        const input = String(content || '').replace(/\s+/g, ' ').trim();
+        if (input.length <= limit) return input;
+        const lower = input.toLocaleLowerCase();
+        const at = terms.map((term) => lower.indexOf(term)).filter((index) => index >= 0).sort((a, b) => a - b)[0] ?? 0;
+        const start = Math.max(0, at - Math.floor(limit * 0.35));
+        const end = Math.min(input.length, start + limit);
+        return `${start > 0 ? '…' : ''}${input.slice(start, end)}${end < input.length ? '…' : ''}`;
+    }
+    function retrieveHistory(query, options = {}) {
+        const memory = historyMemoryBox();
+        if (memory.status !== 'complete' || !Array.isArray(memory.ledger) || !memory.ledger.length) return { text: '', matches: [], evidence: [] };
+        const terms = historyTerms(query);
+        if (!terms.length) return { text: '', matches: [], evidence: [] };
+        const userName = String(options.state?.identities?.user || '').toLocaleLowerCase();
+        const recallAllowed = (change) => {
+            if (String(change?.module) !== 'knowledge') return true;
+            const value = change?.value || {};
+            if (String(value.disclosure || '').toLowerCase() === 'public') return true;
+            const known = [...(value.knownBy || []), ...(value.believedBy || []), ...(value.suspectedBy || [])].map((item) => String(item).toLocaleLowerCase());
+            return known.some((item) => ['user','<user>'].includes(item) || (userName && item === userName));
+        };
+        const ranked = memory.ledger.filter(recallAllowed).map((change, index) => {
+            const value = changeText(change).toLocaleLowerCase();
+            let score = 0;
+            terms.forEach((term) => {
+                if (value.includes(term)) score += term.length >= 4 ? 10 : 3;
+            });
+            if (change.operation === 'remove') score += 1;
+            return { change, index, score };
+        }).filter((item) => item.score > 0)
+            .sort((a, b) => b.score - a.score || b.index - a.index)
+            .slice(0, Math.max(1, Number(options.limit || 6)));
+        if (!ranked.length) return { text: '', matches: [], evidence: [] };
+        const refs = [...new Set(ranked.flatMap((item) => item.change.sourceRefs || []).filter((ref) => String(ref).startsWith('chat:')))];
+        // Resolve only the 1–2 hit floors.  Do not normalize or copy the entire
+        // archive on every turn merely to obtain two evidence excerpts.
+        const wantedIds = refs.slice(0, Math.max(0, Number(options.evidenceCount ?? 2))).map((ref) => String(ref).slice(5));
+        const hitMessages = WSM.Context?.messagesByIds
+            ? WSM.Context.messagesByIds(wantedIds, WSM.Context.context?.(), { includeHidden: true })
+            : (WSM.Context?.chat?.(WSM.Context.context?.(), { includeHidden: true }) || []).filter((message) => wantedIds.includes(String(message.id)));
+        const byId = new Map(hitMessages.map((message) => [String(message.id), message]));
+        const evidence = refs.slice(0, Math.max(0, Number(options.evidenceCount ?? 2))).map((ref) => {
+            const id = String(ref).slice(5);
+            const message = byId.get(id);
+            return message ? { ref, role: message.role, excerpt: evidenceExcerpt(message.content, terms) } : null;
+        }).filter(Boolean);
+        const lines = ranked.map(({ change }) => {
+            const source = (change.sourceRefs || []).slice(0, 2).join('、');
+            const op = change.operation === 'remove' ? '已失效' : '历史记录';
+            return `${op}${source ? `（${source}）` : ''}：${changeText(change)}`;
+        });
+        evidence.forEach((item) => lines.push(`原文证据（${item.ref}）：${item.excerpt}`));
+        const maxChars = Math.max(200, Math.min(1200, Number(options.maxChars || 800)));
+        return { text: lines.join('\n').slice(0, maxChars), matches: ranked.map((item) => clone(item.change)), evidence };
+    }
+    function historyAudit() {
+        const memory = historyMemoryBox();
+        return clone(memory.calibrationStatus === 'failed' && memory.pendingAudit ? memory.pendingAudit : memory.audit);
+    }
     function readSourceReadCache(cacheKey) {
         if (!cacheKey) return null;
         const evidence = envelope()?.sourceReadCache?.[cacheKey]?.evidence;
@@ -724,7 +1446,11 @@
         box.state = WSM.Defaults.createState();
         box.history = [];
         delete box.sourceReadCache;
+        delete box.historyMemory;
         await persist();
+        WSM.WorldbookCompiler?.clearCache?.();
+        await WSM.WorldbookCompiler?.setWorldbookPrompts?.({});
+        await WSM.Engine?.clearRegisteredPrompts?.();
         window.dispatchEvent(new CustomEvent('wsm-state-changed', { detail: { reason: 'clear-all' } }));
         return clone(box.state);
     }
@@ -790,5 +1516,11 @@
         result.lockedPaths = clone(locks);
         return result;
     }
-    WSM.Storage = { load, save, history, rollbackPreviousGeneration, clearAll, organizeState, enforceLocks, clone, readSourceReadCache, writeSourceReadCache, _test: { compactState, compactTimeline, memoryItemCount, RETENTION_LIMITS } };
+    WSM.Storage = {
+        load, save, history, rollbackPreviousGeneration, clearAll, organizeState, enforceLocks, enforceTruthTransition, clone,
+        readSourceReadCache, writeSourceReadCache,
+        loadHistoryMemory, beginHistoryCalibration, readHistoryCalibrationChunk, writeHistoryCalibrationChunk,
+        completeHistoryCalibration, setHistoryBaseline, setTwoPassHistoryBaseline, appendHistoryChanges, retrieveHistory, historyAudit,
+        _test: { normalizeState, compactState, compactTimeline, ensureInitializedModuleCoverage, memoryItemCount, RETENTION_LIMITS, historyTerms, evidenceExcerpt, changeText, normalizeTruthItem, ensureRelationshipCoverage, refreshModuleCoverage, truthMeta },
+    };
 })();

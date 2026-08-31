@@ -1,7 +1,7 @@
 (function () {
     'use strict';
     const WSM = window.WorldStateMachine = window.WorldStateMachine || {};
-    const CACHE_KEY = 'wsm_worldbook_compiler_cache_v2';
+    const CACHE_KEY = 'wsm_worldbook_compiler_cache_v3';
     const PROMPT_PREFIX = 'WORLD_STATE_MACHINE_WORLDBOOK_DEPTH_';
     let activeTurn = null;
     let lastDelivery = null;
@@ -165,6 +165,109 @@
         const explicit = value?.cues || value?.keywords || value?.triggers || value?.when;
         return uniqueRules([...(Array.isArray(explicit) ? explicit : explicit ? [explicit] : []), ...fallback], 8).map((cue) => cue.slice(0, 30));
     }
+    function paragraphRecords(entry) {
+        const raw = String(entry?.content || '').replace(/\r\n?/g, '\n');
+        const blocks = raw.split(/\n\s*\n+/).map((value) => value.trim()).filter(Boolean);
+        return (blocks.length ? blocks : (raw.trim() ? [raw.trim()] : [])).map((content, index) => ({
+            id: `p${index + 1}`,
+            index: index + 1,
+            content,
+            sourceRef: `worldbook:${text(entry?.bookName) || 'unknown'}:${text(entry?.id ?? entry?.key) || 'entry'}:p${index + 1}`,
+        }));
+    }
+    function semanticParts(value, maximum = 400) {
+        const input = text(value);
+        if (!input) return [];
+        if (input.length <= maximum) return [input];
+        const sentences = input.split(/(?<=[。！？；!?;])\s*/).map(text).filter(Boolean);
+        const parts = [];
+        let current = '';
+        const push = () => { if (current) parts.push(current); current = ''; };
+        sentences.forEach((sentence) => {
+            if (sentence.length > maximum) {
+                push();
+                for (let offset = 0; offset < sentence.length; offset += maximum) parts.push(sentence.slice(offset, offset + maximum));
+                return;
+            }
+            if (current && current.length + sentence.length > maximum) push();
+            current += sentence;
+        });
+        push();
+        return parts;
+    }
+    function buildSemanticChunks(entry, paragraphs = paragraphRecords(entry)) {
+        const units = paragraphs.flatMap((paragraph) => semanticParts(paragraph.content).map((content, partIndex) => ({
+            content, paragraphId: paragraph.id, partIndex, sourceRef: paragraph.sourceRef,
+        })));
+        const chunks = [];
+        let current = null;
+        units.forEach((unit) => {
+            if (!current || current.text.length + unit.content.length + (current.text ? 1 : 0) > 1200) {
+                current = { id: `chunk_${String(chunks.length + 1).padStart(3, '0')}`, title: text(entry?.comment || entry?.bookName || `世界书分块${chunks.length + 1}`), paragraphIds: [], sourceRefs: [], factIds: [], dependencyFactIds: [], text: '' };
+                chunks.push(current);
+            }
+            current.text = [current.text, unit.content].filter(Boolean).join('\n');
+            if (!current.paragraphIds.includes(unit.paragraphId)) current.paragraphIds.push(unit.paragraphId);
+            if (!current.sourceRefs.includes(unit.sourceRef)) current.sourceRefs.push(unit.sourceRef);
+        });
+        return chunks;
+    }
+    function entryOwner(entry, sentence = '') {
+        const heading = `${text(entry?.comment)} ${text(entry?.bookName)}`;
+        const value = `${heading} ${sentence}`;
+        if (/(秘密|真相|隐瞒|不知情|知情者|线索|谜底|暗中)/.test(value)) return 'knowledge';
+        if (/(地图|地点|地区|国家|城市|街区|建筑|宫殿|房间|路线|位于|相邻|通往)/.test(value)) return 'map';
+        if (/(人物|角色|姓名|身份档案|生平|性格|NPC)/i.test(heading)) return 'characters';
+        if (/(任务|目标|委托|完成条件)/.test(heading)) return 'tasks';
+        if (/(物品|道具|装备|持有|库存)/.test(heading)) return 'resourceConstraints';
+        if (/(必须|不得|禁止|严禁|不可|只能|除非|例外|权限|法律|皇权|阶级|礼法|规则|原则|前置条件)/.test(value)) return 'worldRules';
+        return 'worldbook';
+    }
+    function sentenceFacts(entry, chunks) {
+        const facts = [];
+        chunks.forEach((chunk) => {
+            const pieces = chunk.text.split(/(?<=[。！？；!?;])\s*|\n+/).map(text).filter(Boolean);
+            pieces.forEach((statement, index) => {
+                const owner = entryOwner(entry, statement);
+                const sourceRefs = [...chunk.sourceRefs];
+                const factId = `wb_${hash(`${entry.key}|${chunk.id}|${index}|${statement}`)}`;
+                const scope = [...new Set((statement.match(/(?:政治|法律|身份|宫廷|礼仪|地点|路线|权限|人物|关系|秘密|任务|物品|魔法|物理|组织|历史)/g) || []))];
+                const conditions = (statement.match(/(?:当|若|如果|只有|仅当)[^，。；]{2,80}/g) || []).map(text);
+                const exceptions = (statement.match(/(?:除非|例外(?:是|为)?|但若|但在)[^。；]{2,100}/g) || []).map(text);
+                const situationalCues = /(公共场所|公开场合|旁观者|路人)/.test(statement) ? ['公共场所','公开场合','旁观者','路人','飞机','车站','餐厅','街道'] : [];
+                const cues = uniqueRules([...(entry.keys || []), entry.comment, ...scope, ...situationalCues, ...(statement.match(/[\u3400-\u9fff]{2,8}/g) || []).slice(0, 6)], 14);
+                const knowledgeBoundary = owner === 'knowledge' ? {
+                    knownBy: [], believedBy: [], suspectedBy: [], misunderstoodBy: [], unknownTo: ['user'],
+                    discoveryPaths: [], maturityConditions: [],
+                } : null;
+                facts.push(WSM.Facts.normalize({
+                    factId, owner, consumers: owner === 'worldRules' ? ['characters','relationships','tasks','map','worldbook'] : [owner, 'worldbook'],
+                    delivery: owner === 'worldRules' && entry.constant === true ? 'resident' : (owner === 'worldbook' ? 'lookup' : 'conditional'),
+                    scope, sourceRefs, statement, conditions, exceptions,
+                    precedence: owner === 'worldRules' ? 70 : 50, cues, depth: entry.depth, type: owner === 'worldRules' ? 'rule' : owner,
+                    priority: owner === 'worldRules' ? 'L3' : 'L2', knowledgeBoundary,
+                }));
+                chunk.factIds.push(factId);
+            });
+        });
+        return facts;
+    }
+    function mergeModelFacts(localFacts, item, entry) {
+        const modelFacts = (Array.isArray(item?.facts) ? item.facts : []).map((fact) => WSM.Facts.normalize(fact, {
+            owner: entryOwner(entry, text(fact?.statement || fact?.text)), sourceRefs: [`worldbook:${entry.bookName}:${entry.id ?? entry.key}`], depth: entry.depth,
+        })).filter((fact) => fact.statement);
+        if (!modelFacts.length) return localFacts;
+        const result = [...localFacts];
+        modelFacts.forEach((modelFact) => {
+            const canonical = modelFact.statement.replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase();
+            const index = result.findIndex((fact) => {
+                const value = fact.statement.replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase();
+                return value === canonical || (Math.min(value.length, canonical.length) >= 12 && (value.includes(canonical) || canonical.includes(value)));
+            });
+            if (index >= 0) result[index] = WSM.Facts.merge([result[index], { ...modelFact, factId: result[index].factId, sourceRefs: [...result[index].sourceRefs, ...modelFact.sourceRefs] }])[0];
+        });
+        return result;
+    }
     function normalizeFragments(item, groups) {
         const globalCues = uniqueRules(item?.triggers || item?.when, 8);
         const raw = Array.isArray(item?.fragments) ? item.fragments : [];
@@ -238,12 +341,36 @@
             rules: [...localGroups.rules, ...modelGroups.rules.map(meaningfulRule).filter(Boolean)],
             background: [...modelGroups.background.map(meaningfulRule).filter(Boolean), ...localGroups.background],
         } : modelGroups);
+        const paragraphs = paragraphRecords(entry);
+        const chunks = buildSemanticChunks(entry, paragraphs);
+        const facts = mergeModelFacts(sentenceFacts(entry, chunks), item, entry);
+        const factById = new Map(facts.map((fact) => [fact.factId, fact]));
+        chunks.forEach((chunk) => {
+            chunk.factIds = [...new Set(chunk.factIds)];
+            const chunkFacts = chunk.factIds.map((id) => factById.get(id)).filter(Boolean);
+            chunk.dependencyFactIds = [...new Set(chunkFacts.flatMap((fact) => fact.dependencyFactIds || []))];
+            chunk.entities = uniqueRules(chunkFacts.filter((fact) => ['characters','map','knowledge'].includes(fact.owner)).flatMap((fact) => fact.cues || []), 24);
+            chunk.situations = uniqueRules(chunkFacts.flatMap((fact) => fact.scope || []), 16);
+        });
+        const coverage = Object.fromEntries(paragraphs.map((paragraph) => [paragraph.id, chunks.filter((chunk) => chunk.paragraphIds.includes(paragraph.id)).map((chunk) => chunk.id)]));
+        // Keep an exact immutable copy for audit/export. Chunks may normalize
+        // paragraph separators for retrieval, but never replace source text.
+        const compiledText = String(entry.content || '');
         return {
             key: entry.key,
+            entryId: text(entry.id ?? entry.key),
             bookName: entry.bookName,
             label: entry.comment || entry.bookName,
             depth: Math.max(0, Math.min(100, Math.round(Number(entry.depth ?? 4) || 0))),
             role: Number(entry.role ?? 0) || 0,
+            sourceHash: hash(entry.content),
+            sourceEnabled: entry.enabled !== false,
+            originalChars: String(entry.content || '').length,
+            compiledChars: compiledText.length,
+            compiledText,
+            coverage,
+            chunks,
+            facts,
             ...groups,
             fragments: normalizeFragments(item, groups),
         };
@@ -253,7 +380,7 @@
         const listed = arrays.find(Array.isArray);
         if (listed) return listed;
         if (batch.length !== 1 || !result || typeof result !== 'object') return [];
-        const looksCompiled = (value) => value && typeof value === 'object' && ['core', 'fragments', 'triggers', 'when', 'rules', 'conditionalRules', 'rule', 'background'].some((key) => Object.prototype.hasOwnProperty.call(value, key));
+        const looksCompiled = (value) => value && typeof value === 'object' && ['facts', 'core', 'fragments', 'triggers', 'when', 'rules', 'conditionalRules', 'rule', 'background'].some((key) => Object.prototype.hasOwnProperty.call(value, key));
         if (looksCompiled(result.entry)) return [result.entry];
         if (looksCompiled(result)) return [result];
         const nested = Object.values(result).filter(looksCompiled);
@@ -309,8 +436,21 @@
     }
     async function ensureCompiled(config, entries, options = {}) {
         const cache = loadCache();
+        let availabilityChanged = false;
+        entries.forEach((entry) => {
+            const compiled = cache[entry.key]?.compiled;
+            const sourceEnabled = entry.enabled !== false;
+            if (compiled && compiled.sourceEnabled !== sourceEnabled) {
+                compiled.sourceEnabled = sourceEnabled;
+                availabilityChanged = true;
+            }
+        });
+        if (availabilityChanged) saveCache(cache);
         const missing = entries.filter((entry) => options.force === true || cache[entry.key]?.sourceHash !== hash(entry.content) || !cache[entry.key]?.compiled);
-        if (missing.length && options.localOnly === true) {
+        if (missing.length) {
+            // Build the lossless local representation first. Model classification
+            // is optional enrichment; it can never be the only copy of a source
+            // paragraph and therefore cannot truncate the middle of an entry.
             missing.forEach((entry) => {
                 cache[entry.key] = {
                     sourceHash: hash(entry.content), compiledAt: Date.now(),
@@ -320,33 +460,30 @@
             saveCache(cache);
         }
         if (missing.length && options.localOnly !== true) {
-            const totalBudget = 50000;
-            const perEntry = Math.max(500, Math.floor(totalBudget / Math.max(1, missing.length)));
-            const requestEntries = missing.map((entry) => {
-                const content = text(entry.content);
-                const excerpt = content.length <= perEntry
-                    ? content
-                    : `${content.slice(0, Math.floor(perEntry / 2))}\n…[本地省略，不增加 API 请求]…\n${content.slice(-Math.ceil(perEntry / 2))}`;
-                return { key: entry.key, book: entry.bookName, title: entry.comment, content: excerpt, originalChars: content.length };
-            });
+            const requestEntries = missing.map((entry) => ({
+                key: entry.key, book: entry.bookName, title: entry.comment,
+                content: text(entry.content), originalChars: text(entry.content).length,
+            }));
+            const requestChars = JSON.stringify(requestEntries).length;
             lastStatus = { state: 'compiling', message: `正在一次性拆解 ${missing.length} 条世界书（API 上限 1 次）`, at: Date.now() };
             let items = [];
             try {
+                if (requestChars > 8000) throw Object.assign(new Error('世界书超过单次安全分类预算；已保留完整本地编译，不发送截断版本'), { localLossless: true });
                 const result = await WSM.Api.complete(
-                    '你是通用世界书语义拆解器。世界书可能是人物、背景故事、地点、组织、制度、规则、历史或秘密。一次响应完成全部条目，不得改变事实、规则强度、例外、身份和权力边界。每条拆成两层：core只放无论当前话题为何、只要可能影响角色回复就不能缺失的0–3条核心锚点；普通人物、地点或历史细节不得因为重要就常驻。其余内容拆成fragments，每片必须是独立完整事实或规则，并附2–8个可被本轮人物名、地点、组织、事件、主题或情境命中的cues。人物被提及才检索其人物片段，进入地点才检索地点片段，谈到皇权/选秀才检索相应制度片段；禁止把所有细节塞进core。规则条目必须覆盖原文独立约束维度，不能只摘录开头、标题、口号、半句或换行残句。每原条目core最多3、fragments最多9，总计最多12。只输出严格JSON：{"entries":[{"key":"原key","core":["可为空的少量常驻锚点"],"fragments":[{"type":"rule|character|background|location|history|fact|exception|other","cues":["检索词或情境"],"text":"命中时发送的完整片段"}]}]}。禁止续写、增加设定、Markdown或后续调用。',
+                    '你是世界书事实分类器。输入保留完整原文；不得改写、删减、续写或增加设定。为每条原文识别可独立引用的事实，返回稳定分类字段：owner只能是worldRules、map、characters、knowledge、resourceConstraints、tasks、events、worldbook之一；delivery只能是resident、conditional、lookup、local；硬规则必须把statement、scope、conditions、exceptions作为不可分割单元。秘密必须给knowledgeBoundary。只输出严格JSON：{"entries":[{"key":"原key","facts":[{"statement":"原文事实","owner":"worldbook","consumers":[],"delivery":"lookup","scope":[],"conditions":[],"exceptions":[],"precedence":50,"cues":[]}]}]}。本结果只补充本地无损编译的分类，不替代原文、段落覆盖或分块。',
                     { task: 'WORLDBOOK_COMPILE_ONCE', entries: requestEntries },
                     { maxTokens: Math.min(6000, 1000 + missing.length * 500), singleAttempt: true },
                 );
                 items = compiledResultItems(result, requestEntries);
             } catch (error) {
-                console.warn('[WorldStateMachine] 世界书唯一一次拆解请求失败，使用本地无损降级，不重试', error);
-                lastStatus = { state: 'error', message: `唯一一次 API 请求失败，已本地降级：${text(error?.message || error)}`, at: Date.now() };
+                if (!error?.localLossless) console.warn('[WorldStateMachine] 世界书唯一一次分类请求失败，使用本地无损编译，不重试', error);
+                lastStatus = { state: error?.localLossless ? 'ready' : 'error', message: text(error?.message || error), at: Date.now() };
             }
             missing.forEach((entry) => {
                 const matched = items.find((item) => text(item?.key) === entry.key);
                 cache[entry.key] = {
                     sourceHash: hash(entry.content), compiledAt: Date.now(),
-                    compiled: normalizeCompiled(matched || sourceFallbackRule(entry), entry),
+                    compiled: normalizeCompiled(matched || cache[entry.key]?.compiled || sourceFallbackRule(entry), entry),
                 };
             });
             saveCache(cache);
@@ -379,12 +516,20 @@
         const compiled = value?.compiled || value;
         if (!compiled || typeof compiled !== 'object') return null;
         const groups = compactRuleGroups(compiled);
-        if (![...groups.core, ...groups.triggers, ...groups.rules, ...groups.background].length) return null;
+        if (![...groups.core, ...groups.triggers, ...groups.rules, ...groups.background].length && !compiled.facts?.length && !compiled.chunks?.length) return null;
         return {
             key: text(compiled.key),
+            entryId: text(compiled.entryId),
             bookName: text(compiled.bookName),
             label: text(compiled.label),
             depth: Math.max(0, Math.min(100, Math.round(Number(compiled.depth ?? 4) || 0))),
+            sourceHash: text(compiled.sourceHash),
+            sourceEnabled: compiled.sourceEnabled !== false,
+            originalChars: Number(compiled.originalChars || 0),
+            compiledChars: Number(compiled.compiledChars || 0),
+            coverage: clone(compiled.coverage || {}),
+            chunks: clone(compiled.chunks || []),
+            facts: clone(compiled.facts || []),
             ...groups,
             fragments: (Array.isArray(compiled.fragments) ? compiled.fragments : []).map((fragment) => ({ type: text(fragment?.type || 'other'), cues: fragmentCues(fragment), text: fragmentText(fragment) })).filter((fragment) => fragment.text).slice(0, 9),
             compiledAt: Number(value?.compiledAt || 0),
@@ -395,7 +540,9 @@
         const cache = loadCache();
         const cachedEntries = config.entryKeys.map((key) => reportEntry(cache[key])).filter(Boolean);
         const turnEntries = (prepared?.compiled || []).map(reportEntry).filter(Boolean);
-        const entries = turnEntries.length ? turnEntries : cachedEntries;
+        // This report is also the UI/audit catalog. Keep every cached source
+        // projection visible even when only a smaller subset routed this turn.
+        const entries = cachedEntries.length ? cachedEntries : turnEntries;
         const routedText = text(prepared?.routed || extra.routedText);
         return {
             enabled: config.enabled,
@@ -404,6 +551,7 @@
             entries,
             routedText,
             routedByDepth: clone(prepared?.routedByDepth || extra.routedByDepth || {}),
+            routedFacts: clone(prepared?.routedFacts || extra.routedFacts || []),
             routedChars: routedText.length,
             turnAt: Number(prepared?.at || extra.turnAt || 0),
             status: clone(lastStatus),
@@ -446,7 +594,43 @@
         }
         return terms;
     }
+    function selectStructuredFacts(config, compiled, currentContext) {
+        const contextText = text(JSON.stringify(currentContext)).toLowerCase();
+        const contextTerms = relevanceTerms(contextText);
+        const catalog = WSM.Facts.merge(compiled.flatMap((item) => item?.compiled?.facts || []));
+        const ranked = catalog.map((fact, index) => {
+            let score = fact.delivery === 'resident' ? 1000 : 0;
+            [...(fact.cues || []), ...(fact.scope || [])].forEach((cue) => { if (cue && contextText.includes(String(cue).toLowerCase())) score += 20; });
+            relevanceTerms(fact.statement).forEach((term) => { if (contextTerms.has(term) && !/^(人物|角色|当前|必须|不得|可以|一个|这个|进行|情况)$/.test(term)) score += 1; });
+            if (fact.owner === 'worldRules' && score > 0) score += 8;
+            return { fact, score, index };
+        }).filter((item) => item.fact.delivery === 'resident' || item.score >= 4)
+            .sort((a, b) => b.score - a.score || b.fact.precedence - a.fact.precedence || a.index - b.index);
+        const selected = [];
+        let used = 0;
+        ranked.forEach(({ fact }) => {
+            const rendered = WSM.Facts.render(fact);
+            const protectedRule = fact.owner === 'worldRules' || fact.type === 'rule';
+            if (!protectedRule && used + rendered.length > Math.max(config.budget, 500)) return;
+            selected.push(fact);
+            used += rendered.length + 1;
+        });
+        return WSM.Facts.expandDependencies(selected, catalog);
+    }
+    function routedFromFacts(facts = []) {
+        const byDepth = {};
+        facts.forEach((fact) => {
+            const depth = Math.max(0, Math.min(100, Math.round(Number(fact.depth ?? 4) || 0)));
+            const rendered = WSM.Facts.render(fact);
+            if (!rendered) return;
+            (byDepth[depth] ||= []).push(rendered);
+        });
+        const normalized = Object.fromEntries(Object.entries(byDepth).map(([depth, lines]) => [depth, [...new Set(lines)].join('\n')]));
+        return { text: Object.values(normalized).join('\n'), byDepth: normalized };
+    }
     function localRoute(config, compiled, currentContext) {
+        const facts = selectStructuredFacts(config, compiled, currentContext);
+        if (facts.length) return { ...routedFromFacts(facts), facts };
         const contextText = text(JSON.stringify(currentContext)).toLowerCase();
         const contextTerms = relevanceTerms(contextText);
         const groups = new Map();
@@ -473,7 +657,7 @@
             const value = uniqueRules(items, items.length).join('\n').slice(0, perDepthBudget);
             if (value) routedByDepth[depth] = value;
         });
-        return { text: Object.values(routedByDepth).join('\n').slice(0, config.budget), byDepth: routedByDepth };
+        return { text: Object.values(routedByDepth).join('\n').slice(0, config.budget), byDepth: routedByDepth, facts: [] };
     }
     function localCandidateEntries(entries, currentContext, limit = 200) {
         if (entries.length <= limit) return entries;
@@ -521,28 +705,34 @@
         const key = hash(JSON.stringify({ entries: entries.map((entry) => [entry.key, hash(entry.content), entry.depth]), currentContext, budget: config.budget }));
         const routeKey = text(options.routeKey);
         if (!options.force && activeTurn && ((routeKey && activeTurn.routeKey === routeKey) || activeTurn.key === key)) return activeTurn;
-        // Thousands of selected entries must not freeze the UI while building
-        // local fallback caches. Cheap keyword/constant preselection keeps the
-        // detailed routing set bounded; initialization still receives an
-        // evenly sampled snapshot of the complete original source.
+        // Build immutable facts and static catalogs for every selected entry.
+        // Only the per-turn relevance pass is bounded; the base map, rules and
+        // paragraph coverage never inherit that routing bound.
+        const allCompiled = await ensureCompiled(config, entries, options);
         const routedEntries = options.localOnly === true ? localCandidateEntries(entries, currentContext) : entries;
-        const compiled = await ensureCompiled(config, routedEntries, options);
+        const routedKeys = new Set(routedEntries.map((entry) => entry.key));
+        const compiled = options.localOnly === true ? allCompiled.filter((item) => routedKeys.has(item?.compiled?.key)) : allCompiled;
         let routed;
         let routedByDepth;
+        let routedFacts = [];
         try {
             const result = options.localOnly === true
                 ? localRoute(config, compiled, currentContext)
                 : await route(config, compiled, currentContext);
-            routed = result.text;
-            routedByDepth = result.byDepth;
+            routedFacts = result.facts?.length ? result.facts : selectStructuredFacts(config, compiled, currentContext);
+            const structured = routedFacts.length ? routedFromFacts(routedFacts) : result;
+            routed = structured.text;
+            routedByDepth = structured.byDepth;
         }
         catch (error) {
-            routed = fallbackText(compiled, config.budget);
+            routedFacts = selectStructuredFacts(config, compiled, currentContext);
+            const structured = routedFromFacts(routedFacts);
+            routed = structured.text || fallbackText(compiled, config.budget);
             if (!routed) throw error;
-            routedByDepth = Object.fromEntries([...new Set(compiled.map((item) => Number(item?.compiled?.depth ?? 4)))].map((depth) => [depth, fallbackText(compiled.filter((item) => Number(item?.compiled?.depth ?? 4) === depth), config.budget)]).filter(([, value]) => value));
+            routedByDepth = Object.keys(structured.byDepth).length ? structured.byDepth : Object.fromEntries([...new Set(compiled.map((item) => Number(item?.compiled?.depth ?? 4)))].map((depth) => [depth, fallbackText(compiled.filter((item) => Number(item?.compiled?.depth ?? 4) === depth), config.budget)]).filter(([, value]) => value));
             console.warn('[WorldStateMachine] 世界书逐轮路由失败，使用已拆解核心规则', error);
         }
-        activeTurn = { key, routeKey, entryKeys: entries.map((entry) => entry.key), routed, routedByDepth, compiled, at: Date.now() };
+        activeTurn = { key, routeKey, entryKeys: entries.map((entry) => entry.key), routed, routedByDepth, routedFacts, compiled, at: Date.now() };
         return activeTurn;
     }
     function expandedOriginals(entries) {
@@ -632,16 +822,21 @@
         const failedSelectedBooks = [...new Set(config.entryKeys.map(bookNameFromEntryKey).filter((name) => failedBooks.has(name)))];
         if (failedSelectedBooks.length) return { enabled: true, blocked: true, error: `无法读取已启用世界书：${failedSelectedBooks.join('、')}` };
         if (!entries.length) return { enabled: true, routed: '', selected: 0, report: buildReport(null, { originalEntriesRemoved: 0 }) };
-        const selected = new Set(entries.map((entry) => entry.key));
-        source.worldbooks = (source.worldbooks || []).map((book) => ({ ...book, entries: (book.entries || []).filter((entry) => !selected.has(entry.key)) })).filter((book) => book.entries.length);
         try {
             const prepared = await prepare(config, entries, contextFromMessages(source.chat, config.contextMessages), {
                 localOnly: options.localOnly === true,
                 routeKey: routeKeyFromMessages(source.chat),
             });
-            source.compiledWorldbookRules = { text: prepared.routed, byDepth: prepared.routedByDepth, selectedEntryKeys: prepared.entryKeys, originalEntriesRemoved: entries.length };
+            source.compiledWorldbookRules = {
+                text: prepared.routed,
+                byDepth: prepared.routedByDepth,
+                facts: clone(prepared.routedFacts || []),
+                selectedEntryKeys: prepared.entryKeys,
+                originalEntriesPreserved: entries.length,
+                originalEntriesRemoved: 0,
+            };
             lastStatus = { state: 'ready', message: `已为 Planner 路由 ${prepared.routed.length} 字世界书规则`, at: Date.now() };
-            return { enabled: true, routed: prepared.routed, selected: entries.length, report: buildReport(prepared, { originalEntriesRemoved: entries.length }) };
+            return { enabled: true, routed: prepared.routed, selected: entries.length, report: buildReport(prepared, { originalEntriesPreserved: entries.length, originalEntriesRemoved: 0 }) };
         } catch (error) {
             lastStatus = { state: 'error', message: text(error?.message || error), at: Date.now() };
             return { enabled: true, blocked: true, error: lastStatus.message };
@@ -649,14 +844,18 @@
     }
     async function processChat(chat) {
         const config = normalizeConfig();
+        // v0.13 delivers worldbook projections through the same final assembler
+        // as state modules. Clear legacy standalone prompts to guarantee that
+        // preview and the actual request are byte-for-byte equivalent.
+        await setWorldbookPrompts({});
         if (!config.enabled || !config.entryKeys.length) {
-            await setWorldbookPrompts({});
             return { enabled: false };
         }
         // Only currently enabled ST entries participate in this turn. Disabled
         // entries may still be selected and precompiled from the settings UI,
         // but must not be routed or treated as missing active material.
         const allAvailable = await WSM.Context.listWorldbookEntries({ includeDisabled: true });
+        syncEntryAvailability(allAvailable);
         const activeBookNames = new Set([
             ...(await WSM.Context.listEnabledWorldNames?.() || []),
             ...allAvailable.map((entry) => entry.bookName),
@@ -664,7 +863,6 @@
         const found = new Set(allAvailable.map((entry) => entry.key));
         const missing = config.entryKeys.filter((key) => activeBookNames.has(bookNameFromEntryKey(key)) && !found.has(key));
         if (missing.length) {
-            await setWorldbookPrompts({});
             const error = `无法读取 ${missing.length} 条当前世界书中的已勾选条目；为避免原文泄漏，已阻止正文请求`;
             lastStatus = { state: 'blocked', message: error, at: Date.now() };
             return { enabled: true, blocked: true, error };
@@ -672,7 +870,6 @@
         const selected = new Set(config.entryKeys);
         const entries = allAvailable.filter((entry) => entry.enabled && selected.has(entry.key));
         if (!entries.length) {
-            await setWorldbookPrompts({});
             return { enabled: true, removed: 0, injected: false };
         }
         const removed = redactOriginals(chat, entries);
@@ -680,24 +877,25 @@
         // selected originals still have to be redacted, but adding routed rules
         // beside the override would duplicate content the user already edited.
         if (text(WSM.Storage?.load?.()?.runtime?.finalInjectionOverride)) {
-            await setWorldbookPrompts({});
             lastDelivery = { at: Date.now(), injected: false, manualOverride: true, removedOriginalOccurrences: removed, chars: 0 };
             return { enabled: true, removed, injected: false, manualOverride: true };
         }
         try {
             const prepared = await prepare(config, entries, contextFromMessages(chat, config.contextMessages), { localOnly: true, routeKey: routeKeyFromMessages(chat) });
-            const injected = await setWorldbookPrompts(prepared.routedByDepth) || injectText(chat, prepared.routed);
-            lastStatus = { state: 'ready', message: `已剔除 ${removed} 处原文，注入 ${prepared.routed.length} 字`, at: Date.now() };
-            lastDelivery = { at: Date.now(), injected, fallback: false, removedOriginalOccurrences: removed, chars: prepared.routed.length };
+            const injected = !!(prepared.routedFacts?.length || prepared.routed);
+            lastStatus = { state: 'ready', message: `原文完整保留；运行时抑制 ${removed} 处原生重复，由统一注入器投影 ${prepared.routedFacts?.length || 0} 条事实`, at: Date.now() };
+            lastDelivery = { at: Date.now(), injected, integrated: true, fallback: false, removedOriginalOccurrences: removed, chars: prepared.routed.length, factIds: (prepared.routedFacts || []).map((fact) => fact.factId) };
             return { enabled: true, removed, injected, length: prepared.routed.length };
         } catch (error) {
             const cached = entries.map((entry) => loadCache()[entry.key]).filter(Boolean);
-            const fallback = fallbackText(cached, config.budget);
-            const fallbackByDepth = Object.fromEntries([...new Set(cached.map((item) => Number(item?.compiled?.depth ?? 4)))].map((depth) => [depth, fallbackText(cached.filter((item) => Number(item?.compiled?.depth ?? 4) === depth), config.budget)]).filter(([, value]) => value));
-            const injected = await setWorldbookPrompts(fallbackByDepth) || injectText(chat, fallback);
+            const fallbackFacts = selectStructuredFacts(config, cached, contextFromMessages(chat, config.contextMessages));
+            const fallbackResult = routedFromFacts(fallbackFacts);
+            const fallback = fallbackResult.text || fallbackText(cached, config.budget);
+            if (fallbackFacts.length) activeTurn = { key: routeKeyFromMessages(chat), routeKey: routeKeyFromMessages(chat), entryKeys: entries.map((entry) => entry.key), routed: fallback, routedByDepth: fallbackResult.byDepth, routedFacts: fallbackFacts, compiled: cached, at: Date.now() };
+            const injected = !!fallback;
             const message = text(error?.message || error);
             lastStatus = { state: !fallback ? 'blocked' : 'error', message, at: Date.now() };
-            lastDelivery = { at: Date.now(), injected, fallback: !!fallback, removedOriginalOccurrences: removed, chars: fallback.length, error: message };
+            lastDelivery = { at: Date.now(), injected, integrated: true, fallback: !!fallback, removedOriginalOccurrences: removed, chars: fallback.length, factIds: fallbackFacts.map((fact) => fact.factId), error: message };
             return { enabled: true, removed, injected, fallback: !!fallback, blocked: !fallback, error: message };
         }
     }
@@ -739,6 +937,129 @@
         lastStatus = { state: 'edited', message: '拆解规则已人工修改，将在下一轮重新路由注入', at: Date.now() };
         return reportEntry(cache[entryKey]);
     }
+    function cachedCompiledEntries() {
+        const config = normalizeConfig();
+        const selected = new Set(config.entryKeys);
+        return Object.entries(loadCache()).filter(([key]) => selected.has(key)).map(([, value]) => value?.compiled).filter(Boolean);
+    }
+    function syncEntryAvailability(entries = []) {
+        const cache = loadCache();
+        let changed = false;
+        entries.forEach((entry) => {
+            const compiled = cache[entry.key]?.compiled;
+            if (!compiled) return;
+            const sourceEnabled = entry.enabled !== false;
+            if (compiled.sourceEnabled === sourceEnabled) return;
+            compiled.sourceEnabled = sourceEnabled;
+            changed = true;
+        });
+        if (changed) saveCache(cache);
+    }
+    const LOCATION_SUFFIX = '(?:共和国|自治州|帝国|王国|省|州|郡|市|城|区|县|镇|村|街道|大街|路|宫殿|宫|殿|府|宅|庄园|院|楼|塔|馆|店|室|房|厅|园|岛|港|机场|车站|公司|学校|学院|医院|酒店|餐厅|办公室)';
+    function locationNames(value) {
+        const found = new Set();
+        text(value).split(/[，。；：\n]|(?:位于|坐落于|隶属于|属于|通往|相邻于|进入|抵达|前往)/).forEach((part) => {
+            const matches = part.match(new RegExp(`[A-Za-z0-9\\u3400-\\u9fff·]{1,20}${LOCATION_SUFFIX}`, 'g')) || [];
+            matches.forEach((name) => {
+                const cleaned = text(name).replace(/^(?:这里|那里|该地|此地|其中|地图|地点|地理|区域|城市)/, '');
+                if (cleaned.length >= 2 && cleaned.length <= 28) found.add(cleaned);
+            });
+        });
+        return [...found];
+    }
+    function locationType(name) {
+        const value = text(name);
+        if (/(?:帝国|王国|共和国)$/.test(value)) return 'country';
+        if (/(?:省|州|郡)$/.test(value)) return 'region';
+        if (/(?:市|城|县|镇|村)$/.test(value)) return 'city';
+        if (/(?:区|街道|大街|路)$/.test(value)) return 'district';
+        if (/(?:室|房|厅|办公室)$/.test(value)) return 'room';
+        if (/(?:宫殿|宫|殿|府|宅|庄园|院|楼|塔|馆|店|公司|学校|学院|医院|酒店|餐厅|机场|车站)$/.test(value)) return 'building';
+        if (/(?:园|岛|港)$/.test(value)) return 'landmark';
+        return 'other';
+    }
+    function getStaticCatalog() {
+        const compiledEntries = cachedCompiledEntries().filter((entry) => entry.sourceEnabled !== false);
+        const facts = WSM.Facts.merge(compiledEntries.flatMap((entry) => entry.facts || []));
+        const locationRecords = new Map();
+        const parentNames = new Map();
+        const routeRecords = [];
+        const addLocation = (name, entry, fact) => {
+            const locationName = text(name);
+            if (!locationName) return;
+            const key = locationName.toLocaleLowerCase();
+            const previous = locationRecords.get(key) || { name: locationName, entryKeys: new Set(), sourceRefs: new Set(), statements: new Set() };
+            previous.entryKeys.add(entry.key);
+            (fact?.sourceRefs || []).forEach((ref) => previous.sourceRefs.add(ref));
+            if (fact?.statement) previous.statements.add(fact.statement);
+            locationRecords.set(key, previous);
+        };
+        compiledEntries.forEach((entry) => {
+            const locationFacts = (entry.facts || []).filter((fact) => fact.owner === 'map');
+            if (!locationFacts.length) return;
+            const headingNames = locationNames(entry.label);
+            locationFacts.forEach((fact) => {
+                const names = locationNames(fact.statement);
+                [...headingNames, ...names].forEach((name) => addLocation(name, entry, fact));
+                const edge = fact.statement.match(/([^，。；\n]{1,28}?)(?:位于|坐落于|隶属于|属于)([^，。；\n]{1,28})/);
+                if (edge) {
+                    const children = locationNames(edge[1]);
+                    const parents = locationNames(edge[2]);
+                    if (children[0] && parents[0]) parentNames.set(children[0].toLocaleLowerCase(), parents[0].toLocaleLowerCase());
+                }
+                const route = fact.statement.match(/(?:从)?([^，。；\n]{1,28}?)(?:通往|连接|相邻于|与)([^，。；\n]{1,28}?)(?:相邻|之间|[。；]|$)/)
+                    || fact.statement.match(/从([^，。；\n]{1,28})到([^，。；\n]{1,28})/);
+                if (route) {
+                    const from = locationNames(route[1])[0];
+                    const to = locationNames(route[2])[0];
+                    if (from && to && from !== to) {
+                        addLocation(from, entry, fact);
+                        addLocation(to, entry, fact);
+                        routeRecords.push({ from: from.toLocaleLowerCase(), to: to.toLocaleLowerCase(), statement: fact.statement, sourceRefs: fact.sourceRefs || [] });
+                    }
+                }
+            });
+        });
+        const idByName = new Map([...locationRecords].map(([key, record]) => [key, `location_wb_${hash(`${[...record.entryKeys].sort().join('|')}|${key}`)}`]));
+        const locations = [...locationRecords.entries()].map(([key, record]) => {
+            const sourceRefs = [...record.sourceRefs];
+            return {
+                id: idByName.get(key), name: record.name, aliases: [],
+                parentId: idByName.get(parentNames.get(key)) || '', type: locationType(record.name),
+                description: [...record.statements].join('；'), routeRefs: [],
+                accessRuleRefs: facts.filter((fact) => fact.owner === 'worldRules' && fact.sourceRefs.some((ref) => sourceRefs.includes(ref))).map((fact) => fact.factId),
+                characterRefs: [], organizationRefs: [],
+                secretRefs: facts.filter((fact) => fact.owner === 'knowledge' && fact.sourceRefs.some((ref) => sourceRefs.includes(ref))).map((fact) => fact.factId),
+                taskRefs: [], sourceRefs,
+            };
+        });
+        const routeMap = new Map();
+        routeRecords.forEach((record) => {
+            const from = idByName.get(record.from);
+            const to = idByName.get(record.to);
+            if (!from || !to) return;
+            const pair = [from, to].sort().join('|');
+            const previous = routeMap.get(pair) || { id: `route_wb_${hash(pair)}`, from, to, descriptions: new Set(), sourceRefs: new Set() };
+            previous.descriptions.add(record.statement);
+            record.sourceRefs.forEach((ref) => previous.sourceRefs.add(ref));
+            routeMap.set(pair, previous);
+        });
+        const routes = [...routeMap.values()].map((route) => ({
+            id: route.id, from: route.from, to: route.to,
+            description: [...route.descriptions].join('；'), status: 'open', travelMinutes: 0, distance: '',
+            accessRuleRefs: facts.filter((fact) => fact.owner === 'worldRules' && fact.sourceRefs.some((ref) => route.sourceRefs.has(ref))).map((fact) => fact.factId),
+            sourceRefs: [...route.sourceRefs],
+        }));
+        return {
+            facts,
+            locations,
+            routes,
+            characters: facts.filter((fact) => fact.owner === 'characters'),
+            secrets: facts.filter((fact) => fact.owner === 'knowledge'),
+            worldRules: facts.filter((fact) => fact.owner === 'worldRules'),
+        };
+    }
+    function getActiveFacts() { return clone(activeTurn?.routedFacts || []); }
     WSM.WorldbookCompiler = {
         normalizeConfig,
         processSource,
@@ -766,7 +1087,15 @@
             };
         },
         updateCompiledEntry,
-        clearCache() { saveCache({}); activeTurn = null; lastDelivery = null; lastStatus = { state: 'idle', message: '拆解缓存已清空', at: Date.now() }; },
-        _test: { hash, contextFromMessages, redactOriginals, injectText, fallbackText, splitCompileBatch, compiledResultItems, localRoute, sourceFallbackRule, sourceRuleGroups, routeKeyFromMessages, compactRuleGroups, filterNativeWorldbookEntries, nativeEntryKey },
+        getStaticCatalog,
+        getActiveFacts,
+        clearCache() {
+            try { localStorage.removeItem(CACHE_KEY); }
+            catch (error) { console.warn('[WorldStateMachine] 无法彻底删除世界书拆解缓存', error); }
+            activeTurn = null;
+            lastDelivery = null;
+            lastStatus = { state: 'idle', message: '拆解缓存已清空', at: Date.now() };
+        },
+        _test: { hash, contextFromMessages, redactOriginals, injectText, fallbackText, splitCompileBatch, compiledResultItems, localRoute, sourceFallbackRule, sourceRuleGroups, routeKeyFromMessages, compactRuleGroups, filterNativeWorldbookEntries, nativeEntryKey, paragraphRecords, buildSemanticChunks, sentenceFacts, selectStructuredFacts, routedFromFacts },
     };
 })();

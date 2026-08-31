@@ -5,6 +5,25 @@
     const list = (value) => Array.isArray(value) ? value.filter(Boolean) : [];
     const join = (value) => list(value).join('、');
     const disclosureLabel = (value) => ({ confidential: '保密', restricted: '受限', public: '公开' }[value] || text(value));
+    const truthLabels = Object.freeze({
+        confirmed: '',
+        derived: '【确定推导】',
+        system_generated: '【系统生成，保持连续】',
+        suspected: '【疑似，不得写成事实】',
+        assumed: '【运行暂定，不得形成重大后果】',
+        unknown: '【未知，禁止补造】',
+        not_established: '【尚未建立，不得自行升级】',
+        not_applicable: '【不适用】',
+        failed: '【读取失败，先补查】',
+    });
+    function truthLine(value, owner = {}) {
+        const content = text(value);
+        if (!content) return '';
+        const status = text(owner?.truthStatus).toLowerCase() || 'unknown';
+        const prefix = truthLabels[status] ?? truthLabels.unknown;
+        const basis = join(owner?.basis);
+        return `${prefix}${content}${basis && status !== 'confirmed' ? `｜依据：${basis}` : ''}`;
+    }
     function activeMemory(values, warmRelevant = () => false) {
         return list(values).filter((item) => {
             const activity = text(item?.activity).toUpperCase();
@@ -52,14 +71,117 @@
         if (['char','character','<char>'].includes(key)) return text(state?.identities?.char) || fallback || text(id);
         return fallback || text(id);
     }
+    function mergedMapState(state) {
+        const map = state.map || {};
+        const catalog = WSM.WorldbookCompiler?.getStaticCatalog?.() || {};
+        const base = [...list(map.baseLocations), ...list(catalog.locations)];
+        const dynamic = list(map.locations);
+        const byId = new Map();
+        const bySemantic = new Map();
+        const aliases = new Map();
+        const resolveId = (id) => aliases.get(text(id)) || text(id);
+        const addLocation = (item, overlay = false) => {
+            const itemId = text(item?.id);
+            const parentId = resolveId(item?.parentId);
+            const semantic = `${parentId}|${text(item?.name).toLocaleLowerCase()}`;
+            const matched = (itemId && byId.has(itemId) ? itemId : '') || bySemantic.get(semantic);
+            const key = matched || itemId || semantic;
+            if (!key || key === '|') return;
+            const previous = byId.get(key) || {};
+            const canonicalId = text(previous.id) || itemId || key;
+            const merged = { ...previous, ...item, id: canonicalId, parentId, aliases: [...new Set([...list(previous.aliases), ...list(item?.aliases), ...(itemId && itemId !== canonicalId ? [itemId] : [])])] };
+            byId.set(key, merged);
+            if (itemId) aliases.set(itemId, canonicalId);
+            aliases.set(canonicalId, canonicalId);
+            bySemantic.set(semantic, key);
+            if (overlay) merged.overlay = true;
+        };
+        base.forEach((item) => addLocation(item, false));
+        dynamic.forEach((item) => addLocation(item, true));
+        const locations = [...byId.values()].map((item) => ({ ...item, parentId: resolveId(item.parentId) }));
+        const routes = [...list(catalog.routes), ...list(map.routes), ...list(map.routeOverlays)].reduce((values, route) => {
+            const normalized = { ...route, from: resolveId(route?.from), to: resolveId(route?.to) };
+            const key = text(route?.id) || `${normalized.from}>${normalized.to}`;
+            if (key) values.set(key, { ...(values.get(key) || {}), ...normalized });
+            return values;
+        }, new Map());
+        return { ...map, currentLocationId: resolveId(map.currentLocationId), locations, routes: [...routes.values()] };
+    }
+    function mapSlice(state, plan = {}) {
+        const map = mergedMapState(state);
+        const locations = list(map.locations);
+        const byId = new Map(locations.map((item) => [text(item.id), item]));
+        const currentId = text(map.currentLocationId);
+        const current = byId.get(currentId);
+        const userText = text(WSM.Context?.latestUserMessage?.()?.content);
+        const taskTargets = list(state.tasks).filter((item) => ['active','blocked','pending'].includes(item?.status)).flatMap((item) => list(item.locationRefs));
+        const namedTarget = locations.find((item) => item.name && userText.includes(item.name));
+        const targetId = text(taskTargets[0] || namedTarget?.id || plan?.targetLocationId);
+        const movementActive = list(state.npcActivities).some((item) => text(item.movement));
+        const triggered = !!(targetId || movementActive || plan?.mapRequired === true || ['entry','timeTransition'].includes(plan?.advanceDecision?.mode)
+            || /(前往|去往|进入|离开|路线|怎么走|在哪里|地点|移动|赶往|抵达)/.test(userText));
+        if (!triggered || !current) return '';
+        const adjacency = new Map();
+        list(map.routes).forEach((route) => {
+            if (!route?.from || !route?.to) return;
+            (adjacency.get(route.from) || adjacency.set(route.from, []).get(route.from)).push({ id: route.to, route });
+            (adjacency.get(route.to) || adjacency.set(route.to, []).get(route.to)).push({ id: route.from, route });
+        });
+        const previous = new Map([[currentId, null]]);
+        const queue = [currentId];
+        while (queue.length && targetId && !previous.has(targetId)) {
+            const from = queue.shift();
+            (adjacency.get(from) || []).forEach(({ id, route }) => {
+                if (previous.has(id)) return;
+                previous.set(id, { from, route });
+                queue.push(id);
+            });
+        }
+        const path = [];
+        if (targetId && previous.has(targetId)) {
+            for (let cursor = targetId; cursor; cursor = previous.get(cursor)?.from || '') path.unshift(cursor);
+        } else path.push(currentId, ...(targetId && targetId !== currentId ? [targetId] : []));
+        const pathRoutes = path.slice(1).map((id) => previous.get(id)?.route).filter(Boolean);
+        const target = byId.get(targetId);
+        const accessRuleRefs = [...new Set([...path.flatMap((id) => list(byId.get(id)?.accessRuleRefs)), ...pathRoutes.flatMap((route) => list(route.accessRuleRefs))])];
+        const totalMinutes = pathRoutes.reduce((sum, route) => sum + Math.max(0, Number(route.travelMinutes || 0)), 0);
+        return [
+            `当前位置：${current.name || current.id}`,
+            target ? `目标：${target.name || target.id}${target.knownToPlayer === false ? '（玩家角色尚未知，不得直接说出）' : ''}` : '',
+            path.length > 1 ? `最小路径：${path.map((id) => byId.get(id)?.name || id).join(' → ')}` : '',
+            totalMinutes ? `预计耗时：约${totalMinutes}分钟` : '',
+            pathRoutes.length ? `路线状态：${pathRoutes.some((route) => route.status === 'blocked') ? '存在封锁' : pathRoutes.some((route) => route.status === 'unknown') ? '部分未知' : '开放'}` : '',
+            [...new Set(path.map((id) => text(byId.get(id)?.temporaryDanger)).filter(Boolean))].length ? `当前危险：${[...new Set(path.map((id) => text(byId.get(id)?.temporaryDanger)).filter(Boolean))].join('；')}` : '',
+            accessRuleRefs.length ? `适用规则引用：${accessRuleRefs.join('、')}（规则正文由硬规则库补入）` : '',
+        ].filter(Boolean).join('\n');
+    }
+
+    function referencedFactIds(state) {
+        const refs = new Set();
+        const add = (values) => list(values).forEach((value) => refs.add(text(value)));
+        list(state.tasks).filter((item) => !['done','failed'].includes(item?.status)).forEach((item) => {
+            ['ruleRefs','knowledgeRefs','resourceConstraintRefs','dependencyFactIds'].forEach((field) => add(item?.[field]));
+        });
+        list(state.characters).filter((item) => item?.present || item?.location === state.world?.location?.current).forEach((item) => {
+            add(item?.authorityRefs); add(item?.knowledgeRefs); add(item?.dependencyFactIds);
+        });
+        const map = mergedMapState(state);
+        const relevantLocationIds = new Set([map.currentLocationId, ...list(state.tasks).flatMap((item) => list(item?.locationRefs))].map(text).filter(Boolean));
+        list(map.locations).filter((item) => relevantLocationIds.has(text(item?.id))).forEach((item) => {
+            add(item?.accessRuleRefs); add(item?.secretRefs); add(item?.dependencyFactIds);
+        });
+        ['worldRules','factAnchors','resourceConstraints','characters','npcActivities','relationships','knowledge','tasks','events','triggers','threads','processes','causalEffects'].forEach((module) => {
+            list(state?.[module]).forEach((item) => add(item?.dependencyFactIds));
+        });
+        refs.delete('');
+        return refs;
+    }
 
     function fallbackBlocks(state, plan = {}) {
         const world = state.world || {};
-        const map = state.map || {};
-        const mapLocations = new Map(list(map.locations).map((item) => [item.id, item]));
-        const currentMapLocation = mapLocations.get(map.currentLocationId);
-        const relevantRoutes = list(map.routes).filter((route) => route.from === map.currentLocationId || route.to === map.currentLocationId);
         const relevantNpcIds = new Set([
+            ...(state.identities?.user ? ['user'] : []),
+            ...(state.identities?.char ? ['char'] : []),
             ...list(state.characters).filter((item) => item.present || item.location === world.location?.current).map((item) => item.id),
             ...list(state.causalEffects).filter((item) => item.status === 'active').flatMap((item) => list(item.affectedIds)),
         ]);
@@ -70,6 +192,14 @@
             groups[item.characterId] = groups[item.characterId].slice(-3);
             return groups;
         }, {})).flat();
+        const activeConstraints = activeMemory(state.resourceConstraints, (item) => item.status === 'active').filter((item) => !['expired','satisfied'].includes(item.status));
+        const requiredFactIds = referencedFactIds(state);
+        const activeKnowledge = list(state.knowledge).filter((item) => requiredFactIds.has(text(item?.factId || item?.id)) || activeMemory([item], (value) => value.priority === 'L3' && touchesRelevant([...list(value.knownBy), ...list(value.believedBy), ...list(value.suspectedBy), ...list(value.misunderstoodBy), ...list(value.relatedRefs)])).length);
+        const coverageLabels = { factAnchors: '事实', resourceConstraints: '约束', characters: '人物', relationships: '关系', knowledge: '知识/秘密', tasks: '任务', locations: '地点' };
+        const coverageLine = Object.entries(state.moduleCoverage || {}).filter(([module]) => coverageLabels[module]).map(([module, value]) => {
+            const status = ({ has_records: '有记录', coverage_only: '已检查但尚未建立', checked_empty: '已校准无持久记录', unknown_empty: '空但未验证', failed: '读取失败', not_checked: '尚未检查' })[value?.status] || value?.status;
+            return `${coverageLabels[module]}=${status}`;
+        }).join('；');
         const snapshotFacts = [world.time?.display, world.season, world.location?.current, world.location?.environment, world.location?.weather, ...list(world.currentConditions)].map(canonicalLine).filter(Boolean);
         const uniqueEventContent = (item) => [item.summary, item.outcome].filter(Boolean).filter((value) => {
             const canonical = canonicalLine(value);
@@ -77,47 +207,62 @@
         });
         return {
             world: [
-                world.time?.display ? `时间：${world.time.display}` : '',
-                world.season ? `季节：${world.season}` : '',
-                world.location?.current ? `地点：${world.location.current}` : '',
-                world.location?.environment ? `环境：${world.location.environment}` : '',
-                world.location?.weather ? `天气：${world.location.weather}` : '',
-                ...list(world.currentConditions).map((value) => `当前客观状态：${value}`),
+                '真实性约束：confirmed可作事实；derived保留依据；system_generated仅限低风险连续状态；suspected只能表现为迹象；assumed不得形成重大后果；unknown/not_established禁止补造；failed先补查。',
+                coverageLine ? `模块读取覆盖：${coverageLine}。空但未验证/读取失败都不能当作“原文确实没有”，应先定点回查。` : '',
+                world.time?.display ? truthLine(`时间：${world.time.display}`, world.time) : '',
+                world.season ? truthLine(`季节：${world.season}`, world.seasonMeta) : '',
+                world.location?.current ? truthLine(`地点：${world.location.current}`, world.location.currentMeta) : '',
+                world.location?.environment ? truthLine(`环境：${world.location.environment}`, world.location.environmentMeta) : '',
+                world.location?.weather ? truthLine(`天气：${world.location.weather}`, world.location.weatherMeta) : '',
+                ...list(world.currentConditions).map((value) => {
+                    const detail = list(world.currentConditionDetails).find((item) => text(item?.value) === text(value));
+                    return truthLine(`当前客观状态：${value}`, detail || { truthStatus: 'unknown', basis: ['该状态没有绑定来源'] });
+                }),
             ].filter(Boolean).join('\n'),
-            factAnchors: activeMemory(state.factAnchors).map((item) => `事实锚点：${item.fact}${item.scope ? `｜范围：${item.scope}` : ''}`).join('\n'),
-            resourceConstraints: activeMemory(state.resourceConstraints, (item) => item.status === 'active').filter((item) => !['expired','satisfied'].includes(item.status)).map((item) => [
+            factAnchors: activeMemory(state.factAnchors).map((item) => truthLine(`事实锚点：${item.fact}${item.scope ? `｜范围：${item.scope}` : ''}`, item)).join('\n'),
+            worldRules: list(state.worldRules).filter((item) => requiredFactIds.has(text(item?.factId || item?.id)) || item.delivery === 'resident' || (text(item.activity).toUpperCase() !== 'COLD' && WSM.Facts?.requiredByContext?.(item, `${text(WSM.Context?.latestUserMessage?.()?.content)}\n${text(plan?.advanceDecision?.direction)}`))).sort((a, b) => Number(b.precedence || 0) - Number(a.precedence || 0)).map((item) => truthLine(WSM.Facts?.render?.(item, state) || item.statement, item)).join('\n'),
+            resourceConstraints: activeConstraints.map((item) => truthLine([
                 item.subjectId ? `${entityName(state, item.subjectId, item.subjectId)}：` : '',
                 item.condition,
                 item.amount ? `数量/额度：${item.amount}` : '',
                 item.scope ? `范围：${item.scope}` : '',
                 item.consequence ? `不满足时：${item.consequence}` : '',
-            ].filter(Boolean).join('｜')).join('\n'),
+            ].filter(Boolean).join('｜'), item)).join('\n'),
             ambient: list(plan.ambientResponses).map((item) => {
-                if (typeof item === 'string') return `环境反馈：${item}`;
+                if (typeof item === 'string') return `【系统生成/即时反应】环境反馈：${item}`;
                 const actor = text(item?.actor) || '环境中的人';
                 const response = text(item?.response);
-                return response ? `${actor}：${response}` : '';
+                return response ? `【系统生成/即时反应】${actor}：${response}` : '';
             }).filter(Boolean).join('\n'),
-            map: [
-                currentMapLocation ? `当前位置：${currentMapLocation.name}${currentMapLocation.area ? `（${currentMapLocation.area}）` : ''}` : '',
-                ...relevantRoutes.map((route) => {
-                    const from = mapLocations.get(route.from)?.name || route.from;
-                    const to = mapLocations.get(route.to)?.name || route.to;
-                    const status = route.status === 'blocked' ? '受阻' : route.status === 'unknown' ? '状况未知' : '可通行';
-                    return `${from} → ${to}：${status}${route.description ? `；${route.description}` : ''}`;
-                }),
-            ].filter(Boolean).join('\n'),
-            characters: activeMemory(state.characters, (item) => item.present || relevantNpcIds.has(item.id)).map((item) => [
+            map: mapSlice(state, plan),
+            characters: activeMemory(state.characters, (item) => item.present || relevantNpcIds.has(item.id)).map((item) => truthLine([
                 `${entityName(state, item.id, item.name)}｜${item.maintenanceLevel === 'active' ? '活跃NPC' : '核心人物'}`,
-                item.identity ? `身份：${item.identity}` : '',
+                item.identity ? truthLine(`身份：${item.identity}`, item.identityMeta || item) : '',
+                list(item.affiliationRefs).length ? `所属引用：${join(item.affiliationRefs)}` : '',
+                list(item.authorityRefs).length ? `权限规则引用：${join(item.authorityRefs)}` : '',
+                list(item.motives).length ? `稳定动机：${join(item.motives)}` : '',
+                list(item.currentGoals).length ? `当前目标：${join(item.currentGoals)}` : '',
+                item.routine ? `日常安排：${item.routine}` : '',
+                item.availability ? `当前可用性：${item.availability}` : '',
                 item.present ? `位置：${item.location || world.location?.current || '当前场景'}（在场）` : `位置：${item.location || '未知地点'}`,
                 item.situation ? `重要处境：${item.situation}` : '',
-                join(list(item.persistentConditions).map((condition) => typeof condition === 'string' ? condition : [condition.name, condition.effect, condition.recovery].filter(Boolean).join('｜'))) ? `持续状态：${join(list(item.persistentConditions).map((condition) => typeof condition === 'string' ? condition : [condition.name, condition.effect, condition.recovery].filter(Boolean).join('｜')))}` : '',
-                join(list(item.importantItems).map((owned) => typeof owned === 'string' ? owned : [owned.name, owned.status, owned.significance].filter(Boolean).join('｜'))) ? `重要物品：${join(list(item.importantItems).map((owned) => typeof owned === 'string' ? owned : [owned.name, owned.status, owned.significance].filter(Boolean).join('｜')))}` : '',
-            ].filter(Boolean).join('；')).join('\n'),
-            npcActivities: recentNpcActivities.map((item) => `${entityName(state, item.characterId)}：${item.movement ? `${item.movement}｜` : ''}${item.location ? `${item.location}｜` : ''}${item.action}${item.currentRole ? `｜当前作用：${item.currentRole}` : ''}`).join('\n'),
-            relationships: activeMemory(state.relationships, (item) => relevantNpcIds.has(item.from) || relevantNpcIds.has(item.to)).map((item) => `${entityName(state, item.from) || '?'}→${entityName(state, item.to) || '?'}：${item.status || item.type || '未描述'}`).join('\n'),
-            knowledge: activeMemory(state.knowledge, (item) => item.priority === 'L3' && touchesRelevant([...list(item.knownBy), ...list(item.believedBy), ...list(item.suspectedBy), ...list(item.misunderstoodBy), ...list(item.relatedRefs)])).map((item) => [
+                list(item.persistentConditions).length ? `持续状态：${join(list(item.persistentConditions).map((condition) => typeof condition === 'string' ? condition : truthLine([condition.name, condition.effect, condition.recovery].filter(Boolean).join('｜'), condition)))}` : '',
+                list(item.importantItems).length ? `重要物品：${join(list(item.importantItems).map((owned) => typeof owned === 'string' ? owned : truthLine([owned.name, owned.status, owned.significance].filter(Boolean).join('｜'), owned)))}` : '',
+            ].filter(Boolean).join('；'), item)).join('\n'),
+            npcActivities: recentNpcActivities.map((item) => truthLine(`${entityName(state, item.characterId)}：${item.movement ? `${item.movement}｜` : ''}${item.location ? `${item.location}｜` : ''}${item.action}${item.currentRole ? `｜当前作用：${item.currentRole}` : ''}`, item)).join('\n'),
+            relationships: activeMemory(state.relationships, (item) => relevantNpcIds.has(item.from) || relevantNpcIds.has(item.to)).map((item) => truthLine([
+                `${entityName(state, item.from) || '?'}↔${entityName(state, item.to) || '?'}：${item.status || item.type || '未描述'}`,
+                list(item.bondTypes).length ? `并存关系：${join(item.bondTypes)}` : '',
+                item.coreContradiction ? `核心矛盾：${item.coreContradiction}` : '',
+                list(item.attachments).length ? `无法割舍：${join(item.attachments)}` : '',
+                list(item.grievances).length ? `未解决伤害：${join(item.grievances)}` : '',
+                list(item.boundaries).length ? `当前边界：${join(item.boundaries)}` : '',
+                list(item.reconciliationConditions).length ? `和解条件：${join(item.reconciliationConditions)}` : '',
+                item.perspectives && Object.keys(item.perspectives).length ? `双方视角：${Object.entries(item.perspectives).map(([id, value]) => `${entityName(state, id, id)}=${typeof value === 'string' ? value : [value?.attitude, value?.intent].filter(Boolean).join('；')}`).join('｜')}` : '',
+                item.expressionPatterns && Object.values(item.expressionPatterns).some(Boolean) ? `场景表现：${Object.entries(item.expressionPatterns).filter(([, value]) => value).map(([scene, value]) => `${scene}=${value}`).join('｜')}` : '',
+                list(item.bondTypes).length > 1 ? '多轴关系同时真实；保护、亲密、坦白、合作、争吵或真相揭露均不自动消除旧怨、爱意或完成和解。' : '',
+            ].filter(Boolean).join('\n'), item)).join('\n\n'),
+            knowledge: activeKnowledge.map((item) => truthLine([
                 replaceIdentityTokens(item.information, state),
                 item.priority ? `重要性：${item.priority}` : '',
                 item.disclosure ? `公开状态：${disclosureLabel(item.disclosure)}` : '',
@@ -127,21 +272,28 @@
                 join(list(item.suspectedBy).map((id) => entityName(state, id))) ? `怀疑：${join(list(item.suspectedBy).map((id) => entityName(state, id)))}` : '',
                 join(list(item.misunderstoodBy).map((id) => entityName(state, id))) ? `误解：${join(list(item.misunderstoodBy).map((id) => entityName(state, id)))}` : '',
                 join(list(item.unknownTo).map((id) => entityName(state, id))) ? `未知：${join(list(item.unknownTo).map((id) => entityName(state, id)))}` : '',
-            ].filter(Boolean).join('｜')).join('\n'),
-            tasks: activeMemory(state.tasks, (item) => item.status === 'active' && item.userVisible !== false).filter((item) => !['done','failed'].includes(item.status)).map((item) => `${item.title}：${item.progress || item.status || '待处理'}${item.deadline ? `；截止${item.deadline}` : ''}`).join('\n'),
-            events: activeMemory(state.events, (item) => item.status === 'ongoing' && (!item.location || item.location === world.location?.current)).filter((item) => uniqueEventContent(item).length).map((item) => `${item.title}｜${item.status === 'occurred' ? '已发生' : '正在发生'}：${join(uniqueEventContent(item))}`).join('\n'),
-            triggers: activeMemory(state.triggers, (item) => item.status === 'eligible').filter((item) => !['triggered','expired'].includes(item.status)).map((item) => `${item.title}：条件${join(item.conditions) || '未设定'}；当前${item.status || 'armed'}`).join('\n'),
-            threads: activeMemory(state.threads, (item) => item.priority === 'L3' && touchesRelevant(item.participantIds)).filter((item) => item.status !== 'resolved').map((item) => `${item.title}：${item.nextNaturalStep || item.status || '延续中'}`).join('\n'),
-            progression: state.progression?.activity !== 'COLD' ? [
+            ].filter(Boolean).join('｜'), item)).join('\n'),
+            tasks: activeMemory(state.tasks, (item) => item.status === 'active' && item.userVisible !== false).filter((item) => !['done','failed'].includes(item.status)).map((item) => truthLine([
+                `${item.title}：${item.progress || item.status || '待处理'}${item.deadline ? `；截止${item.deadline}` : ''}`,
+                list(item.dependencies).length ? `依赖：${join(item.dependencies)}` : '',
+                list(item.completionConditions).length ? `完成条件（必须逐条核验）：${join(item.completionConditions)}` : '',
+                list(item.completedConditions).length ? `已核验完成条件：${join(item.completedConditions)}` : '',
+                [...list(item.locationRefs), ...list(item.characterRefs), ...list(item.ruleRefs), ...list(item.knowledgeRefs), ...list(item.resourceConstraintRefs)].length ? `依赖引用：${join([...list(item.locationRefs), ...list(item.characterRefs), ...list(item.ruleRefs), ...list(item.knowledgeRefs), ...list(item.resourceConstraintRefs)])}` : '',
+            ].filter(Boolean).join('｜'), item)).join('\n'),
+            events: activeMemory(state.events, (item) => item.status === 'ongoing' && (!item.location || item.location === world.location?.current)).filter((item) => uniqueEventContent(item).length).map((item) => truthLine(`${item.title}｜${item.status === 'occurred' ? '已发生' : '正在发生'}：${join(uniqueEventContent(item))}`, item)).join('\n'),
+            triggers: activeMemory(state.triggers, (item) => item.status === 'eligible').filter((item) => !['triggered','expired'].includes(item.status)).map((item) => truthLine(`${item.title}：条件${join(item.conditions) || '未设定'}；当前${item.status || 'armed'}`, item)).join('\n'),
+            threads: activeMemory(state.threads, (item) => item.priority === 'L3' && touchesRelevant(item.participantIds)).filter((item) => item.status !== 'resolved').map((item) => truthLine(`${item.title}：${item.nextNaturalStep || item.status || '延续中'}`, item)).join('\n'),
+            progression: state.progression?.activity !== 'COLD' ? truthLine([
                 state.progression?.direction ? `当前方向：${state.progression.direction}` : '',
                 state.progression?.currentMovement ? `当前变化：${state.progression.currentMovement}` : '',
                 join(state.progression?.nextRequiredChanges) ? `下一阶段仍需：${join(state.progression.nextRequiredChanges)}` : '',
                 state.progression?.blockedByDecision ? `必须停在用户决策点：${state.progression.blockedByDecision}` : '',
-            ].filter(Boolean).join('\n') : '',
-            processes: activeMemory(state.processes, (item) => item.priority === 'L3').filter((item) => item.status !== 'resolved').map((item) => `${item.title}：${item.currentDirection || item.status || '自然延续'}${Number(item.progress?.max) > 0 ? `；进度${Number(item.progress?.current || 0)}/${Number(item.progress.max)}` : ''}`).join('\n'),
-            causalEffects: activeMemory(state.causalEffects, (item) => item.status === 'active' && touchesRelevant(item.affectedIds)).filter((item) => item.status === 'active').map((item) => [item.cause || item.causeRef, ...list(item.steps), item.result].filter(Boolean).join(' → ')).join('\n'),
+            ].filter(Boolean).join('\n'), state.progression) : '',
+            processes: activeMemory(state.processes, (item) => item.priority === 'L3').filter((item) => item.status !== 'resolved').map((item) => truthLine(`${item.title}：${item.currentDirection || item.status || '自然延续'}${Number(item.progress?.max) > 0 ? `；进度${Number(item.progress?.current || 0)}/${Number(item.progress.max)}` : ''}`, item)).join('\n'),
+            causalEffects: activeMemory(state.causalEffects, (item) => item.status === 'active' && touchesRelevant(item.affectedIds)).filter((item) => item.status === 'active').map((item) => truthLine([item.cause || item.causeRef, ...list(item.steps), item.result].filter(Boolean).join(' → '), item)).join('\n'),
             pacing: pacingBlock(),
             planner: [
+                plan.historyRecall ? `本轮定点历史召回（仅用于核对当前行动，不代表重读全部历史）：\n${text(plan.historyRecall)}` : '',
                 plan.advanceDecision?.direction ? `本轮方向：${plan.advanceDecision.direction}` : '',
                 plan.advanceDecision?.mode ? `推进方式：${plan.advanceDecision.mode}；强度：${plan.advanceDecision.intensity || 'none'}` : '',
                 ...list(plan.eligibleDevelopments).map((value) => `可以：${value}`),
@@ -154,7 +306,13 @@
 
     function normalizePlannerBlocks(value, state) {
         if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-        return Object.fromEntries(Object.entries(value).map(([key, content]) => [key, replaceIdentityTokens(content, state)]));
+        return Object.fromEntries(Object.entries(value).map(([key, content]) => {
+            const normalized = replaceIdentityTokens(content, state);
+            const marked = key === 'ambient'
+                ? normalized.split(/\n+/).map((line) => line.trim()).filter(Boolean).map((line) => line.startsWith('【') ? line : `【系统生成/即时反应】${line}`).join('\n')
+                : normalized;
+            return [key, marked];
+        }));
     }
 
     function canonicalLine(value) {
@@ -197,46 +355,78 @@
         const entries = candidates.map((item) => ({
             header: `[${item.label}]\n`,
             payload: `${item.content}${item.instruction ? `\n使用规则：${item.instruction}` : ''}`,
+            protected: item.protected === true,
+            priority: Number(item.priority ?? 50),
         }));
-        const sectionCount = entries.length + (diceBlock ? 1 : 0);
-        const separatorChars = Math.max(0, sectionCount - 1) * 2;
-        const headerChars = entries.reduce((sum, item) => sum + item.header.length, 0);
-        const minimumPayloads = entries.map((item) => Math.min(item.payload.length, 24));
-        const minimumRequired = (diceBlock ? diceBlock.length : 0)
-            + separatorChars
-            + headerChars
-            + minimumPayloads.reduce((sum, length) => sum + length, 0);
-        // A configured budget smaller than the structural minimum cannot both be
-        // a hard cap and preserve every checked module. Preserve the modules and
-        // exceed that pathological cap only by the minimum amount required.
-        const maxChars = Math.max(500, Number(configuredMax || 3500), minimumRequired);
+        const maxChars = Math.max(500, Number(configuredMax || 3500));
         const fullSections = [diceBlock, ...entries.map((item) => item.header + item.payload)].filter(Boolean);
         const fullBody = fullSections.join('\n\n');
         if (fullBody.length <= maxChars) return fullBody;
-
-        const allocations = minimumPayloads.slice();
-        let remaining = maxChars
-            - (diceBlock ? diceBlock.length : 0)
-            - separatorChars
-            - headerChars
-            - allocations.reduce((sum, length) => sum + length, 0);
-        let pending = entries.map((item, index) => ({ index, need: item.payload.length - allocations[index] })).filter((item) => item.need > 0);
-        while (remaining > 0 && pending.length) {
-            const share = Math.max(1, Math.floor(remaining / pending.length));
-            pending.forEach((item) => {
-                if (remaining <= 0) return;
-                const addition = Math.min(item.need, share, remaining);
-                allocations[item.index] += addition;
-                item.need -= addition;
-                remaining -= addition;
-            });
-            pending = pending.filter((item) => item.need > 0);
-        }
+        const protectedEntries = entries.filter((item) => item.protected);
+        const protectedBody = [diceBlock, ...protectedEntries.map((item) => item.header + item.payload)].filter(Boolean).join('\n\n');
+        // Hard rules (including scope, conditions and exceptions) and secret
+        // knowledge boundaries are indivisible. If they alone exceed the user
+        // budget, correctness wins over a misleading truncation.
+        if (protectedBody.length >= maxChars) return protectedBody;
+        let remaining = maxChars - protectedBody.length - (protectedBody ? 2 : 0);
+        const allocations = new Map();
+        entries.filter((item) => !item.protected).slice().sort((a, b) => b.priority - a.priority).forEach((item) => {
+            if (remaining <= item.header.length + 24) return;
+            const fullLength = item.header.length + item.payload.length + 2;
+            const allocation = Math.min(item.payload.length, Math.max(24, remaining - item.header.length - 2));
+            allocations.set(item, allocation);
+            remaining -= Math.min(fullLength, item.header.length + allocation + 2);
+        });
         return [
             diceBlock,
-            ...entries.map((item, index) => item.header + shorten(item.payload, allocations[index])),
+            ...entries.map((item) => {
+                if (item.protected) return item.header + item.payload;
+                const allocation = allocations.get(item);
+                return allocation ? item.header + shorten(item.payload, allocation) : '';
+            }),
         ].filter(Boolean).join('\n\n');
     }
+    function activeFactGroups(state, modules) {
+        const moduleConfig = (id) => Object.assign({}, WSM.Defaults.INJECTION_MODULES[id] || {}, modules[id] || {});
+        const enabledStateFactIds = new Set();
+        Object.keys(WSM.Defaults.INJECTION_MODULES).forEach((module) => {
+            if (moduleConfig(module).enabled === false) return;
+            list(state?.[module]).forEach((item) => { if (item?.factId) enabledStateFactIds.add(text(item.factId)); });
+        });
+        const catalog = WSM.Facts?.merge?.(WSM.WorldbookCompiler?.getStaticCatalog?.()?.facts || []) || [];
+        const required = referencedFactIds(state);
+        const explicitFacts = catalog.filter((fact) => required.has(text(fact?.factId)));
+        const seeds = WSM.Facts?.merge?.([...(WSM.WorldbookCompiler?.getActiveFacts?.() || []), ...explicitFacts]) || [];
+        const activeFacts = WSM.Facts?.expandDependencies?.(seeds, catalog) || seeds;
+        const includedFactIds = new Set(enabledStateFactIds);
+        const groups = new Map();
+        activeFacts.forEach((factValue) => {
+            const fact = WSM.Facts.normalize(factValue);
+            if (!fact.statement || includedFactIds.has(fact.factId) || fact.delivery === 'local') return;
+            let owner = fact.owner;
+            const ownerAvailable = WSM.Defaults.INJECTION_MODULES[owner] && moduleConfig(owner).enabled !== false;
+            if (!ownerAvailable) owner = 'worldbook';
+            const depth = owner === 'worldbook'
+                ? fact.depth
+                : Math.max(0, Math.min(4, Math.round(Number(moduleConfig(owner).depth ?? fact.depth ?? 2))));
+            const key = `${owner}|${depth}`;
+            if (!groups.has(key)) groups.set(key, { owner, depth, facts: [] });
+            groups.get(key).facts.push(fact);
+            includedFactIds.add(fact.factId);
+        });
+        return [...groups.values()].map((group) => ({
+            ...group,
+            content: group.facts.map((fact) => WSM.Facts.render(fact, state)).filter(Boolean).join('\n'),
+            protected: group.facts.some((fact) => fact.owner === 'worldRules' || fact.owner === 'knowledge' || fact.type === 'rule'),
+            factIds: group.facts.map((fact) => fact.factId),
+        }));
+    }
+    const moduleBudgetPriority = Object.freeze({
+        worldRules: 100, world: 95, resourceConstraints: 95, factAnchors: 90, knowledge: 90,
+        characters: 85, relationships: 85, map: 80, tasks: 78, events: 72, causalEffects: 70,
+        npcActivities: 68, triggers: 62, threads: 60, processes: 58, progression: 55,
+        pacing: 45, planner: 35, ambient: 20, worldbook: 10,
+    });
 
     function compose(state, plan = {}, plannerBlocks = {}) {
         const override = finalOverride(state);
@@ -245,22 +435,27 @@
         const modules = settings.injectionModules || WSM.Defaults.INJECTION_MODULES;
         const generated = fallbackBlocks(state, plan);
         const supplied = normalizePlannerBlocks(plannerBlocks, state);
+        const factGroups = activeFactGroups(state, modules);
         const diceBlock = settings.diceEnabled ? WSM.Dice?.injectionBlock?.(plan.diceRound) : '';
         const authorityBlock = '[外置状态权威]\n本 WORLD_STATE 标签是本轮唯一状态来源。只输出叙事正文及用户明确要求的附加格式；不得另行输出 <INDRS>、<abstract>、<note> 或 GM_STATE，不得在正文后自行提交第二套状态。';
         const fixedBlock = [diceBlock, authorityBlock].filter(Boolean).join('\n\n');
         const candidates = [];
         const seenFacts = [];
         Object.entries(WSM.Defaults.INJECTION_MODULES).forEach(([id, defaultModule]) => {
-            if (id === 'map') return; // Spatial index is sent only through an explicit player interaction.
             const config = Object.assign({}, defaultModule, modules[id] || {});
             if (config.enabled === false) return;
-            const source = ['ambient','planner'].includes(id) ? (supplied[id] || generated[id]) : generated[id];
+            const projectedFacts = factGroups.filter((group) => group.owner === id).map((group) => group.content).filter(Boolean).join('\n');
+            const source = [(['ambient','planner'].includes(id) ? (supplied[id] || generated[id]) : generated[id]), projectedFacts].filter(Boolean).join('\n');
             const content = dedupeContent(removeRatingNumbers(replaceIdentityTokens(source, state)), seenFacts);
             if (!content) return;
             const fixedInstruction = text(config.instruction);
             const editablePrompt = text(settings.modulePrompts?.[id]);
             const instruction = [fixedInstruction, editablePrompt && editablePrompt !== fixedInstruction ? `模块提示词：${editablePrompt}` : ''].filter(Boolean).join('\n');
-            candidates.push({ label: config.label, content, instruction });
+            candidates.push({ label: config.label, content, instruction, protected: ['worldRules','knowledge'].includes(id) || factGroups.some((group) => group.owner === id && group.protected), priority: moduleBudgetPriority[id] || 50 });
+        });
+        factGroups.filter((group) => group.owner === 'worldbook').forEach((group) => {
+            const content = dedupeContent(group.content, seenFacts);
+            if (content) candidates.push({ label: '世界书剩余背景', content, instruction: '只补充尚未由其他主归属模块表达的背景与语义连接；原文仍是唯一来源。', protected: group.protected, priority: moduleBudgetPriority.worldbook });
         });
         // Allocate the budget across every enabled non-empty module. This keeps
         // later modules from disappearing merely because they are ordered last.
@@ -276,13 +471,14 @@
         const modules = settings.injectionModules || WSM.Defaults.INJECTION_MODULES;
         const generated = fallbackBlocks(state, plan);
         const supplied = normalizePlannerBlocks(plannerBlocks, state);
+        const factGroups = activeFactGroups(state, modules);
         const groups = new Map();
         const seenFacts = [];
         Object.entries(WSM.Defaults.INJECTION_MODULES).forEach(([id, defaultModule]) => {
-            if (id === 'map') return; // Never leak the background map into ordinary narration.
             const config = Object.assign({}, defaultModule, modules[id] || {});
             if (config.enabled === false) return;
-            const source = ['ambient','planner'].includes(id) ? (supplied[id] || generated[id]) : generated[id];
+            const projectedFacts = factGroups.filter((group) => group.owner === id).map((group) => group.content).filter(Boolean).join('\n');
+            const source = [(['ambient','planner'].includes(id) ? (supplied[id] || generated[id]) : generated[id]), projectedFacts].filter(Boolean).join('\n');
             const content = dedupeContent(removeRatingNumbers(replaceIdentityTokens(source, state)), seenFacts);
             if (!content) return;
             const fixedInstruction = text(config.instruction);
@@ -290,7 +486,13 @@
             const instruction = [fixedInstruction, editablePrompt && editablePrompt !== fixedInstruction ? `模块提示词：${editablePrompt}` : ''].filter(Boolean).join('\n');
             const depth = Math.max(0, Math.min(4, Math.round(Number(config.depth ?? defaultModule.depth ?? 2))));
             if (!groups.has(depth)) groups.set(depth, []);
-            groups.get(depth).push({ id, label: config.label, content, instruction });
+            groups.get(depth).push({ id, label: config.label, content, instruction, protected: ['worldRules','knowledge'].includes(id) || factGroups.some((group) => group.owner === id && group.protected), priority: moduleBudgetPriority[id] || 50 });
+        });
+        factGroups.filter((group) => group.owner === 'worldbook').forEach((group) => {
+            const content = dedupeContent(group.content, seenFacts);
+            if (!content) return;
+            if (!groups.has(group.depth)) groups.set(group.depth, []);
+            groups.get(group.depth).push({ id: 'worldbook', label: '世界书剩余背景', content, instruction: '只补充尚未由其他主归属模块表达的背景与语义连接；原文仍是唯一来源。', protected: group.protected, priority: moduleBudgetPriority.worldbook });
         });
         const diceBlock = settings.diceEnabled ? WSM.Dice?.injectionBlock?.(plan.diceRound) : '';
         const authorityBlock = '[外置状态权威]\n以下按重要性分层注入的 WORLD_STATE 共同构成本轮唯一状态来源。只输出叙事正文及用户明确要求的附加格式；不得另行输出 <INDRS>、<abstract>、<note> 或 GM_STATE。';
@@ -308,18 +510,11 @@
         return prompts;
     }
 
-    function preview(state, plan = {}, plannerBlocks = {}, worldbookByDepth = {}) {
+    function preview(state, plan = {}, plannerBlocks = {}) {
         const override = finalOverride(state);
         if (override) return override;
         const statePrompts = composeByDepth(state, plan, plannerBlocks);
-        const depths = [...new Set([...Object.keys(statePrompts), ...Object.keys(worldbookByDepth || {})].map(Number).filter(Number.isFinite))].sort((a, b) => a - b);
-        return depths.flatMap((depth) => {
-            const values = [];
-            if (text(statePrompts[depth])) values.push(text(statePrompts[depth]));
-            const worldbook = text(worldbookByDepth?.[depth]);
-            if (worldbook) values.push(`<WORLDBOOK_RULES depth="${depth}">\n${worldbook}\n</WORLDBOOK_RULES>`);
-            return values;
-        }).join('\n\n');
+        return Object.keys(statePrompts).map(Number).filter(Number.isFinite).sort((a, b) => a - b).map((depth) => text(statePrompts[depth])).filter(Boolean).join('\n\n');
     }
 
     WSM.Injection = { compose, composeByDepth, preview, normalizeFinalOverride, fallbackBlocks, pacingBlock };

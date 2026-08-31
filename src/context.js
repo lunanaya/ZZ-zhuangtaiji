@@ -47,26 +47,50 @@
             char: text(character?.name || ctx?.name2 || ctx?.characterName || window.name2 || recentCharacterName),
         };
     }
-    function normalizeMessage(message, index) {
+    function normalizeMessage(message, index, options = {}) {
+        const hidden = message?.is_system === true;
         return {
             id: text(message?.extra?.gen_id ?? message?.send_date ?? index),
-            role: message?.is_system ? 'system' : (message?.is_user ? 'user' : 'assistant'),
+            // A hidden SillyTavern floor is still authored by the user or the
+            // assistant.  Preserve that authorship during an explicit archive
+            // calibration; normal prompt-facing reads continue to exclude it.
+            role: hidden && options.preserveHiddenAuthor === true
+                ? (message?.is_user ? 'user' : 'assistant')
+                : (hidden ? 'system' : (message?.is_user ? 'user' : 'assistant')),
             name: text(message?.name),
             content: text(message?.mes ?? message?.content),
+            index,
+            hidden,
+            timestamp: text(message?.send_date ?? message?.extra?.gen_id ?? ''),
         };
     }
-    function chat(ctx = context()) {
+    function chat(ctx = context(), options = {}) {
         // SillyTavern uses is_system=true for messages hidden from the prompt.
-        // Hidden floors are the user's archive/compaction layer and must not be
-        // re-expanded during a normal or manual read. Their retained summaries
-        // in visible chat remain the active source of truth.
-        return Array.isArray(ctx?.chat) ? ctx.chat.filter((message) => message?.is_system !== true).map(normalizeMessage).filter((item) => item.content) : [];
+        // They remain excluded from ordinary reads.  Only the explicit complete
+        // calibration path asks for includeHidden so archived evidence can be
+        // indexed once without being re-sent on every turn.
+        const values = Array.isArray(ctx?.chat) ? ctx.chat : [];
+        return values
+            .filter((message) => options.includeHidden === true || message?.is_system !== true)
+            .map((message, index) => normalizeMessage(message, index, { preserveHiddenAuthor: options.includeHidden === true }))
+            .filter((item) => item.content);
     }
     function latestUserMessage(ctx = context()) {
         return [...chat(ctx)].reverse().find((item) => item.role === 'user') || null;
     }
     function latestAssistantMessage(ctx = context()) {
         return [...chat(ctx)].reverse().find((item) => item.role === 'assistant') || null;
+    }
+    function messagesByIds(ids, ctx = context(), options = {}) {
+        const wanted = new Set((Array.isArray(ids) ? ids : []).map((id) => text(id)).filter(Boolean));
+        if (!wanted.size || !Array.isArray(ctx?.chat)) return [];
+        const found = [];
+        ctx.chat.forEach((message, index) => {
+            if (message?.is_system === true && options.includeHidden !== true) return;
+            const normalized = normalizeMessage(message, index, { preserveHiddenAuthor: options.includeHidden === true });
+            if (wanted.has(normalized.id) && normalized.content) found.push(normalized);
+        });
+        return found;
     }
     function nameCandidates(value) {
         if (Array.isArray(value)) return value.flatMap(nameCandidates);
@@ -237,7 +261,8 @@
     async function buildSource(options = {}) {
         const ctx = context();
         const settings = WSM.Settings.get();
-        const allChat = chat(ctx);
+        const visibleChat = chat(ctx);
+        const allChat = options.includeHidden === true ? chat(ctx, { includeHidden: true }) : visibleChat;
         const configuredCount = Number(settings.recentMessages);
         const recentCount = Number.isFinite(configuredCount) ? Math.max(0, Math.min(200, Math.round(configuredCount))) : 12;
         const readAllVisible = options.fullChat === true || recentCount === 0;
@@ -247,12 +272,17 @@
         const worldbookResult = await worldbooks(ctx);
         let configuredBooks = null;
         if (settings.worldbookCompiler?.enabled === true) {
-            const availableNames = worldbookResult.books.map((book) => book.name);
+            // Compilation membership is independent from the native entry's
+            // enabled flag. Use the all-entry catalog to preserve a disabled
+            // entry's precompile checkbox, while `worldbookResult` below still
+            // contains only enabled originals for runtime source/routing.
+            const compilerEntries = await listWorldbookEntries({ includeDisabled: true }, ctx);
+            const availableNames = unique(compilerEntries.map((entry) => entry.bookName));
             const knownNames = new Set((settings.worldbookCompiler?.knownBookNames || []).map(text).filter(Boolean));
             const selectedNames = new Set((settings.worldbookCompiler?.selectedBookNames || []).map(text).filter((name) => availableNames.includes(name)));
             availableNames.forEach((name) => { if (!knownNames.has(name)) selectedNames.add(name); });
             configuredBooks = selectedNames;
-            const availableEntryKeys = new Set(worldbookResult.books.filter((book) => selectedNames.has(book.name)).flatMap((book) => book.entries.map((entry) => entry.key)));
+            const availableEntryKeys = new Set(compilerEntries.filter((entry) => selectedNames.has(entry.bookName)).map((entry) => entry.key));
             // Book selection only controls which books appear in the entry
             // picker. Never turn it into an implicit "select every entry".
             const entryKeys = (settings.worldbookCompiler?.entryKeys || []).map(String).filter((key) => availableEntryKeys.has(key));
@@ -261,7 +291,7 @@
                 selectedBookNames: [...selectedNames],
                 knownBookNames: availableNames,
                 entryKeys,
-                knownEntryKeys: worldbookResult.books.flatMap((book) => book.entries.map((entry) => entry.key)),
+                knownEntryKeys: compilerEntries.map((entry) => entry.key),
             };
             if (JSON.stringify(nextCompiler) !== JSON.stringify(settings.worldbookCompiler)) WSM.Settings.update({ worldbookCompiler: nextCompiler });
         }
@@ -290,6 +320,8 @@
                 includedMessages: selectedChat.length,
                 truncated: selectedChat.length < allChat.length,
                 hiddenMessages,
+                visibleMessages: visibleChat.length,
+                hiddenIncluded: options.includeHidden === true ? selectedChat.filter((message) => message.hidden).length : 0,
             },
             currentUserAction: [...selectedChat].reverse().find((item) => item.role === 'user') || null,
             latestAssistantText: [...selectedChat].reverse().find((item) => item.role === 'assistant') || null,
@@ -325,5 +357,5 @@
         for (let i = 0; i < raw.length; i += 1) hash = Math.imul(hash ^ raw.charCodeAt(i), 16777619);
         return (hash >>> 0).toString(16);
     }
-    WSM.Context = { context, chat, latestUserMessage, latestAssistantMessage, identityNames, buildSource, sourceFingerprint, readWorldbook, listWorldbookEntries, listEnabledWorldNames, worldbookEntryKey, _test: { normalizeEntries, normalizeMessage } };
+    WSM.Context = { context, chat, messagesByIds, latestUserMessage, latestAssistantMessage, identityNames, buildSource, sourceFingerprint, readWorldbook, listWorldbookEntries, listEnabledWorldNames, worldbookEntryKey, _test: { normalizeEntries, normalizeMessage } };
 })();

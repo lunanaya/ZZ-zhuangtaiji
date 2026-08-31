@@ -56,6 +56,10 @@
 .wsm-map-panel>header small,.wsm-map-panel>header b { display:block; }
 .wsm-map-panel>header small { color:var(--wsm-dim); font-size:11px; }
 .wsm-map-switcher { display:flex; gap:6px; overflow-x:auto; padding:8px 10px; border-bottom:1px solid #929ec444; background:#fff2e1; }
+.wsm-map-view-tools { display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:8px 10px; border-bottom:1px solid #929ec444; background:#fffaf3; }
+#wsm-root .wsm-map-view-tools button { min-height:34px; }
+#wsm-root .wsm-map-view-tools button.active { border-color:var(--wsm-icon-active); background:#eed1b1; color:var(--wsm-icon-active); }
+#wsm-root .wsm-map-view-tools input { flex:1 1 240px; min-height:34px; }
 #wsm-root .wsm-map-switcher button { flex:0 0 auto; padding:5px 10px; font-size:12px; }
 #wsm-root .wsm-map-switcher button.active { border-color:var(--wsm-icon-active); background:#eed1b1; color:var(--wsm-icon-active); }
 .wsm-map-breadcrumbs { display:flex; align-items:center; gap:4px; min-height:28px; overflow-x:auto; padding:5px 10px; color:var(--wsm-dim); background:#fff8ef; }
@@ -99,6 +103,7 @@
 .wsm-expand .wsm-icon { width:16px; height:16px; }
 .wsm-game-card[open] .wsm-expand { transform:rotate(180deg); }
 .wsm-card-body { padding:6px 11px 9px; }
+.wsm-rule-card { margin:7px 0; padding:11px 13px; border:1px solid #929ec477; border-left:3px solid var(--wsm-icon-active); border-radius:9px; color:var(--wsm-text); background:#fff8ef; box-shadow:0 3px 9px #929ec417; font-size:15px; font-weight:600; line-height:1.65; white-space:pre-wrap; }
 .wsm-readable-row { display:grid; grid-template-columns:115px 1fr; gap:10px; align-items:start; padding:5px 0; border-bottom:1px dashed #929ec444; }
 .wsm-readable-row:last-child { border-bottom:0; }
 .wsm-readable-row>span { color:var(--wsm-dim); font-size:13px; }
@@ -359,7 +364,7 @@
 #wsm-root .wsm-header span,#wsm-root .wsm-world-facts>b,#wsm-root .wsm-world-facts>span,#wsm-root .wsm-map-routes h4,#wsm-root .wsm-map-route,#wsm-root .wsm-card-badge,#wsm-root .wsm-chips>span,#wsm-root .wsm-activity-trail time,#wsm-root .wsm-module-prompt,#wsm-root .wsm-core-prompt,#wsm-root .wsm-module-prompt textarea,#wsm-root .wsm-dialog textarea { font-size:calc(12px * var(--wsm-font-scale)); }
 #wsm-root .wsm-readable-row>span,#wsm-root .wsm-activity-trail b,#wsm-root .wsm-dialog>label,#wsm-root .wsm-settings-section>label,#wsm-root .wsm-settings-help,#wsm-root #wsm-custom-api-fields>label,#wsm-root .wsm-grid label { font-size:calc(13px * var(--wsm-font-scale)); }
 #wsm-root .wsm-world-fields b,#wsm-root .wsm-injection-preview pre { font-size:calc(14px * var(--wsm-font-scale)); font-family:var(--wsm-font-family)!important; }
-#wsm-root .wsm-game-card>summary b,#wsm-root #wsm-editor { font-size:calc(15px * var(--wsm-font-scale)); font-family:var(--wsm-font-family)!important; }
+#wsm-root .wsm-game-card>summary b,#wsm-root .wsm-rule-card,#wsm-root #wsm-editor { font-size:calc(15px * var(--wsm-font-scale)); font-family:var(--wsm-font-family)!important; }
 
 /* Do not depend on SillyTavern/theme checkbox skins. Some themes make the
    native checked state invisible even though the value changes correctly. */

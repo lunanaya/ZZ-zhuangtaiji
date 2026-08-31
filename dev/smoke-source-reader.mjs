@@ -17,7 +17,8 @@ const compactedArchiveContext = { chat: [
     { is_user: false, is_system: true, name: '角色', mes: '已被用户隐藏的旧回复', extra: { token_count: 100 } },
     { is_user: true, is_system: false, name: '用户', mes: '当前可见总结与正文', extra: {} },
 ] };
-assert.equal(WorldStateMachine.Context.chat(compactedArchiveContext).length, 1, '手动读取也不得重新展开用户已经压缩并隐藏的旧正文');
+assert.equal(WorldStateMachine.Context.chat(compactedArchiveContext).length, 1, '普通读取不得重新展开用户已经压缩并隐藏的旧正文');
+assert.equal(WorldStateMachine.Context.chat(compactedArchiveContext, { includeHidden: true }).length, 3, '用户主动完整校准必须纳入隐藏归档楼层');
 
 const calls = [];
 WorldStateMachine.Api = {

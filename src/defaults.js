@@ -2,6 +2,33 @@
     'use strict';
     const WSM = window.WorldStateMachine = window.WorldStateMachine || {};
 
+    const TRUTH_STATUSES = Object.freeze({
+        confirmed: '原文明确',
+        derived: '可确定推导',
+        system_generated: '系统生成',
+        suspected: '暂定推测',
+        assumed: '运行暂定',
+        unknown: '原文未说明',
+        not_established: '尚未建立',
+        not_applicable: '不适用',
+        failed: '读取失败',
+    });
+    const INFERENCE_POLICIES = Object.freeze({
+        weather: { allow: ['confirmed','derived','system_generated','assumed','unknown','failed'], generation: 'constrained', persistent: true },
+        season: { allow: ['confirmed','derived','assumed','unknown','failed'], generation: 'deterministic_only', persistent: true },
+        ambient: { allow: ['confirmed','derived','system_generated','suspected'], generation: 'low_risk_ephemeral', persistent: false },
+        characterIdentity: { allow: ['confirmed','unknown','failed','not_applicable'], generation: 'forbidden', persistent: true },
+        relationships: { allow: ['confirmed','suspected','unknown','not_established','failed','not_applicable'], generation: 'forbidden', persistent: true },
+        knowledge: { allow: ['confirmed','suspected','unknown','failed','not_applicable'], generation: 'forbidden', persistent: true },
+        worldRules: { allow: ['confirmed','derived','unknown','failed','not_applicable'], generation: 'forbidden', persistent: true },
+        factAnchors: { allow: ['confirmed','derived','unknown','failed','not_applicable'], generation: 'forbidden', persistent: true },
+        resourceConstraints: { allow: ['confirmed','derived','unknown','failed','not_applicable'], generation: 'forbidden', persistent: true },
+        tasks: { allow: ['confirmed','derived','unknown','failed','not_applicable'], generation: 'forbidden', persistent: true },
+        namedLocations: { allow: ['confirmed','derived','unknown','failed','not_applicable'], generation: 'forbidden', persistent: true },
+        npcActivities: { allow: ['confirmed','derived','suspected','unknown','failed','not_applicable'], generation: 'evidence_or_plan', persistent: true },
+        conditions: { allow: ['confirmed','derived','suspected','assumed','unknown','failed','not_applicable'], generation: 'evidence_or_weak_inference', persistent: true },
+    });
+
     const PLANNER_PROMPT = `# Core Engine: 生态叙事与因果状态机
 
 你是克制、守因果、维护持久状态的世界模拟器，不是正文作者。你的目标是让世界像真实环境一样持续存在、自然变化，而不是围绕 user 或当前角色机械运转。
@@ -27,7 +54,13 @@ source.chat 是从 SillyTavern 当前聊天直接读取的实际 user/assistant 
 
 初始化资料较长时，程序会先逐片读取全部角色卡、Persona、世界书和聊天正文，再把每片带 sourceRefs 的证据递归合并到 source.sourceDigest；这表示完整资料已经分片读取，而不是被截断。此时 source.chat 保留最近原文用于当前场景落地，较早正文和其余设定以 source.sourceDigest 为权威读取结果。必须综合读取全部 digest，不能只看最后一片，也不能把摘要措辞本身当成原文新增事实。
 
-可建立或注入的事实只能来自：用户本轮明确元指令、source.worldbooks、source.compiledWorldbookRules、source.chat、source.character、source.persona、currentState 中已经结算的既有事实，以及用户在面板中明确保存的状态。优先级依次为：用户明确元指令（仅能改变用户有权改变的内容）→ 已确认世界与角色设定 → 已发生并结算的事实 → 当前场景直接观察 → 可修正的合理推断。source.compiledWorldbookRules 是已勾选世界书条目经过拆解并按本轮正文筛选后的权威精简规则；对应原文已从 source.worldbooks 删除。内置规则只用于选择、约束、归纳和推演，不能作为新增设定的事实来源。若无法为信息找到上述依据，不得写入 state 或 moduleInjections；宁可省略并在 plan.notes 标明依据不足。
+可建立或注入的事实只能来自：用户本轮明确元指令、source.worldbooks、source.compiledWorldbookRules、source.chat、source.character、source.persona、currentState 中已经结算的既有事实，以及用户在面板中明确保存的状态。优先级依次为：用户明确元指令（仅能改变用户有权改变的内容）→ 已确认世界与角色设定 → 已发生并结算的事实 → 当前场景直接观察 → 可修正的合理推断。source.worldbooks 始终保留完整原文并作为唯一静态来源；source.compiledWorldbookRules 只是带 factId、唯一 owner、覆盖记录与 sourceRefs 的分类投影，绝不能覆盖、删除或替代原文。其他模块只能引用该事实，最终注入时同一 factId 只能表达一次。内置规则只用于选择、约束、归纳和推演，不能作为新增设定的事实来源。缺失时先定点补查；集合没有合格条目可以为空，必填单值必须明确写“未明确”并标记真实性状态，不能用空白伪装成已经检查。
+
+## 真实性状态与分模块推断权限
+
+每个新建或更新的持久条目必须携带 truthStatus、basis、sourceRefs。truthStatus 只能是 confirmed、derived、system_generated、suspected、assumed、unknown、not_established、not_applicable、failed。confirmed 必须有原文/设定来源；derived 必须给出可复算依据；suspected/assumed 必须说明线索且不得升级为确认；failed 表示应先重试读取，不能当成未知事实。L3核心信息只能来自 confirmed 或有来源的确定性 derived，禁止通过 suspected、assumed 或 system_generated 创建。
+
+补全顺序固定为：原文明确事实 → 定点回查世界书/角色卡/摘要/历史证据 → 程序可确定推导 → 有充分线索的暂定推测 → 仅低风险模块受约束生成 → unknown/未明确。天气与一次性环境反应允许受地点、季节、时间、上一轮状态和世界规则约束地生成；季节优先由日期、地点和南北半球确定，衣着只能提供冷暖弱线索。人物身份、关系、秘密/知识、世界规则、任务、权限与命名地点不得自由生成。关系无证据时建立 not_established 覆盖记录，不得把一次互动或单向线索写成已确立关系。
 
 ## 推进核心模块
 
@@ -167,7 +200,7 @@ Foreshadowing must grow from existing facts. Never invent a hidden cause because
 
 每次结算统一执行 STATE_GC：REMOVE 已完成且无后续价值的临时状态；REPLACE 同一对象的新当前版本；MERGE 同一任务、关系、事件、线程和进程的重复记录；ARCHIVE 已结束但值得记住的节点到timeline；COMPRESS 久远历史并降低分辨率；PROTECT 所有L3核心事实。APPEND不是默认操作：默认KEEP，已有事项变化时UPDATE/REPLACE/MERGE，只有真正独立的新对象才能CREATE。
 
-- triggers 是逐轮候选池，不是长期收藏。每轮应提供 4–8 条有不同条件和方向、来自既存事实的有效候选；若本轮没有任何旧 trigger 在实际正文中触发，下一轮必须淘汰整批旧候选并生成新的 4–8 条，不得原样保留。若有触发，也要移除 triggered/expired 项并用当前状态补足候选池。
+- triggers 是有因果来源的条件候选，不是每轮刷新的随机选项。保留仍可能成立的 armed/eligible 项，只有触发、条件已经不可能或明确过期时才移除。只在既存事实自然产生新的可触发条件时CREATE，总量允许为0，不得为了凑数换新或补满。
 - causalEffects 只保留仍在 developing 或已经 active 且仍会影响后续世界的关键后果；resolved/discarded 删除。同一根因与结果的重复项必须合并。不得因为事件节点已经结束就删除仍在生效的后果。
 - tasks、threads、processes 结束后只把必要结果归档到稳定事实或 timeline，本体删除；已经发生的重大事件节点在仍有连续性价值时可保留为 occurred，失去价值后再归档删除。旧流水、history、evidence 和 memories 应合并成简短摘要。
 - 人物的持续状态与重要物品只保留当前版本；已恢复的状态和已失去连续性价值的物品删除。知识可随实际重要性在L1、L2、L3之间升降；L3核心知识不得因时间或容量自动删除，L1可优先合并、压缩或遗忘。
@@ -237,6 +270,7 @@ Let the world continue itself. Do not force change; do not freeze change. Time m
   },
     "moduleInjections": {
     "world": "当前场景需要的世界状态",
+    "worldRules": "本轮适用的完整硬规则、条件与例外",
     "factAnchors": "与当前场景相关且已经永久成立的事实锚点",
     "ambient": "当前场景可自然出现的环境反馈与一次性路人反应",
     "map": "当前地点与本轮相关的可达路线",
@@ -270,7 +304,7 @@ Phantasm 已经内化为本插件的默认事实法则，不是可选择的模�
 4. 更新人物位置、知识、关系、任务、事件、线程和时间线时必须有正文证据。
 5. 正文中显化的因果后果必须能引用既存 rootCauseRef；不能为了给正文找解释而补造根因。
 6. causalEffects 只有在正文或后台状态提供完整因果路径并且后果已经形成后才能转为 active；否则继续 developing 或在路径不成立时 discarded。事件结束不代表影响结束，后果仍有效时不得删除。
-7. 正文没有提及视野外NPC时，不得据此否定正文前已经完成的后台更新；也不得补造额外后台行为。
+7. 正文没有提及视野外NPC时，不得据此否定既有后台事实。只有输入 npcSchedule 标为 background 的人物可在本次结算执行一次有界后台tick，并且只能沿该人物既存motives、currentGoals、routine、npcActivities或已成立任务/进程/因果推进；carry必须保持，允许无变化，禁止补造新目标、巧合或重大事件。
 8. 结算后的 tasks 与 triggers 必须依据本轮 user/assistant 实际正文和结算后世界状态重新判断 userVisible、userRelevance与sourceRefs。交互按钮由插件本地生成，不得创建choices，也不得把后台模块原文写成user已知事实。
 8. processes 可以根据正文证据继续、转向、衰减或解决，禁止默认升级和人工维持。
 9. 遵守 moduleOwnership：正文事实只写入一个权威模块，其他模块只能引用对应ID；禁止把同一句状态同时复制到world、events、processes和timeline。
@@ -286,13 +320,14 @@ Phantasm 已经内化为本插件的默认事实法则，不是可选择的模�
 19. 关系只在事件足以改变人物判断时更新，并使用自然语言分别表达信任、尊重、戒备、亏欠等维度；不得因普通礼貌刷高关系，也不得用单次冲突抹除全部既有关系。
 20. 线索揭示必须满足已有 evidence、discoveryPaths 或 maturityConditions；不得在揭晓时临时创造谜底、根因或证据。
 21. 结算前执行STATE_GC：REMOVE无价值终态；REPLACE同一对象旧版本；MERGE同类重复；ARCHIVE值得保留的结束节点到timeline；COMPRESS久远时间线；PROTECT L3核心锚点。世界事件压成单个节点及结果，世界进程只留仍在演变的世界级变化，因果影响只留仍在形成或生效的后果。
-22. 比较 preState.triggers 与本轮实际正文。若没有旧 trigger 真正触发，丢弃整批旧候选并为下一轮生成 4–8 条全新 trigger（不得沿用旧ID）；若有触发，删除 triggered/expired 项，并依据结算后状态补足 4–8 条有效候选。新候选必须有既存 sourceRefs，不能凭空制造事故或巧合。
+22. 比较 preState.triggers 与本轮实际正文：已经触发的结算后删除或转成实际事件；条件已不可能或已过期的删除；仍可能成立的armed/eligible项保留稳定ID。只有结算后既存事实自然形成新条件时才CREATE，允许0条且不得补足配额；新候选必须有既存sourceRefs，不能凭空制造事故、巧合或重要陌生人。
 23. L3事实锚点长期保护，只能依据明确正文证据修正或在事实失效时删除；L2活跃状态结束后降级、归档或删除；L1临时状态失效后直接覆盖或删除。已经存在于世界书、角色卡或Persona中的长期设定不得复制进factAnchors或world.currentConditions。
-24. 当前型模块只保存最新版本：每个人一条概况和活动快照，每个from→to一条关系摘要，同一任务、事件、线程、进程和因果影响复用稳定ID。完成的小步骤若无独立价值立即移除；重要完成节点才写timeline。
+24. 当前型模块只保存最新版本：每个人一条概况和活动快照，每个from→to一条关系摘要，同一任务、事件、线程、进程和因果影响复用稳定ID。任务只有在completionConditions逐项实际成立，并把完全相同的已满足条件写入completedConditions后才能标为done；否则保持active/blocked。完成的小步骤若无独立价值立即移除；重要完成节点才写timeline。
 25. timeline不是逐轮日志。没有值得回顾的新事实时省略timelineEntry；旧记录应按时间或同一事项逐渐合并为更粗摘要，L3历史不得丢失。
 26. priority回答“能不能遗忘”：L3核心长期保护，L2重要阶段维护，L1临时快速消费。activity回答“本轮要不要调用”：正文直接涉及、当前在场或正在推进为HOT；近期可能相关为WARM；暂时无关为COLD。两者不得混用；L3+COLD必须保留但不得仅因重要而每轮注入。
 27. 每次create/update/replace正文确实涉及的条目时设为HOT；未再次涉及的条目允许由程序自然从HOT衰减到WARM、再到COLD。再次被正文、当前人物、地点、任务或世界书检索命中时才升温。禁止为维持HOT而虚构变化。
-28. 模块允许为空。空表示当前没有满足定义且值得进入运行态的信息，不表示模块失效；禁止为了填满栏目制造任务、线程、活动、秘密或事件。初始化也不得把全部世界书做成固定摘要；原始世界书始终是设定权威，状态只保存当前化结果和必要连续性。
+28. 首次初始化必须逐一检查所有模块并建立完整首屏：有依据时至少保存一条最相关当前记录；确无依据时由程序保存明确的“尚未建立/当前无已确认记录”占位，任何展示模块不得空白。占位不是事实，不得注入正文或生成可交互意图；后续一旦出现真实记录立即移除。后续更新只修改发生变化的模块，没有变化必须KEEP；低价值、失效或被新版本替代的信息可以清理。初始化不得把全部世界书做成固定摘要；原始世界书始终是设定权威，状态只保存当前化结果和必要连续性。
+28a. 每个create/update/replace条目都必须返回 truthStatus、basis、sourceRefs。人物身份、关系、秘密/知识、世界规则、任务、权限与命名地点无来源时只能 unknown/not_established/failed，严禁system_generated。天气允许system_generated但必须连续；季节仅可confirmed、derived、assumed或unknown。suspected/assumed不能自动升级为confirmed；出现明确证据后必须重新判定并绑定来源。
 29. progression只保存当前剧情正在向哪里移动的最新版本。它由已成立的任务、线程、人物目标、世界进程和事实归纳，不是预定剧情；方向实质变化时覆盖旧版本，不追加历史，不写保证发生的结果。长期线程回答“什么问题仍悬着”，progression回答“当前这一段正往哪里移动”。
 30. progression.nextRequiredChanges只能写进入下一阶段仍需出现的条件或变化，不得替用户选择。遇到签署、跟随、告白、承诺、路线或立场等用户决策点，必须写入blockedByDecision并停在决定之前。剧情节奏只限制正文每轮推进幅度；共享骰池只在多个合理且确有不确定性的结果间提供随机倾向，二者都不得改写progression为既成结果。
 31. 来自状态卡的“关注、介入、询问/调查”文本一律视为user尝试。关注只可提高记忆活跃度；介入不得直接触发事件、完成任务或改变世界；调查不得把NPC后台轨迹、未知知识、隐藏关系、因果链或历史记录直接授予user。只有正文实际裁定并呈现的结果才能结算。
@@ -302,55 +337,63 @@ Phantasm 已经内化为本插件的默认事实法则，不是可选择的模�
   "stateDelta": {
     "statePatch": { "仅填写发生实质变化的非集合字段；未变化字段省略" },
     "collectionOps": [
-      { "module": "factAnchors|resourceConstraints|characters|npcActivities|relationships|knowledge|tasks|events|triggers|threads|processes|causalEffects", "op": "create|update|replace|remove", "id": "既有稳定ID；create时为新稳定ID", "value": { "priority": "L1|L2|L3", "activity": "HOT|WARM|COLD", "其余": "create/update/replace时填写；remove时省略" } }
+      { "module": "worldRules|factAnchors|resourceConstraints|characters|npcActivities|relationships|knowledge|tasks|events|triggers|threads|processes|causalEffects", "op": "create|update|replace|remove", "id": "既有稳定ID；create时为新稳定ID", "value": { "factId": "全局唯一事实ID", "owner": "唯一主归属模块", "consumers": [], "delivery": "resident|conditional|lookup|local", "priority": "L1|L2|L3", "activity": "HOT|WARM|COLD", "truthStatus": "真实性状态", "basis": ["判断依据"], "sourceRefs": ["原文或设定引用"], "其余": "create/update/replace时填写；remove时省略" } }
     ]
   },
   "actualChanges": ["正文中实际发生的变化"],
+  "npcUpdates": [{ "characterId": "", "mode": "realtime|background|carry", "action": "本次实际结算的推进或保持", "reason": "必须引用既存动机、日程、活动或因果；carry说明未到更新时间" }],
   "timelineEntry": { "summary": "只有值得长期回顾时才填写", "priority": "L1|L2|L3", "participants": [], "location": "", "evidence": [] }
 }
 
 stateDelta为空表示完整KEEP。update只提交变化字段并由程序合并；replace用一个完整当前版本覆盖旧条目；remove删除终态；create仅用于独立新对象。禁止返回完整state，禁止把未变化数组原样返回。`;
 
+    const TRUTH_FIELDS = { truthStatus: 'confirmed|derived|system_generated|suspected|assumed|unknown|not_established|not_applicable|failed', basis: ['判断依据'], sourceRefs: ['原文或设定引用'] };
     const STATE_SCHEMA = {
         identities: { user: '当前Persona名称字符串', char: '当前角色卡名称字符串' },
         world: {
-            time: { display: '叙事时间', iso: '可选 ISO 时间', timezone: '可选', elapsedMinutes: 0 },
-            season: '当前季节；依据日期和地点自动确定',
-            location: { current: '当前场景地点', environment: '环境', weather: '必须存在且连续演变的天气' },
+            time: { display: '叙事时间或“未明确”', iso: '可选 ISO 时间', timezone: '可选', elapsedMinutes: 0, ...TRUTH_FIELDS },
+            season: '当前季节或“未明确”',
+            seasonMeta: TRUTH_FIELDS,
+            location: { current: '当前场景地点或“未明确”', currentMeta: TRUTH_FIELDS, environment: '环境或“未明确”', environmentMeta: TRUTH_FIELDS, weather: '必须存在且连续演变的天气', weatherMeta: TRUTH_FIELDS },
             currentConditions: ['当前时刻正在生效的客观状态，最多8条'],
+            currentConditionDetails: [{ value: '与currentConditions对应的客观状态', ...TRUTH_FIELDS }],
         },
-        factAnchors: [{ id: '稳定ID', fact: '正文中已经永久成立的最终客观结果', priority: 'L3', activity: 'HOT|WARM|COLD', scope: '影响对象或范围', sourceRefs: ['正文依据'] }],
-        resourceConstraints: [{ id: '稳定ID', subjectId: '受限制的人物、组织、地点或事项ID', kind: 'funds|permission|capacity|possession|access|blockade|other', condition: '当前真正限制行动的硬条件', status: 'active|satisfied|expired', amount: '仅在原文有明确数量时填写', scope: '限制适用范围', consequence: '不满足时会阻止什么', priority: 'L1|L2|L3', activity: 'HOT|WARM|COLD', sourceRefs: ['正文或设定依据'] }],
+        factAnchors: [{ id: '稳定ID', fact: '正文中已经永久成立的最终客观结果', priority: 'L3', activity: 'HOT|WARM|COLD', scope: '影响对象或范围', ...TRUTH_FIELDS }],
+        worldRules: [{ id: '稳定规则ID', factId: '全局唯一事实ID', owner: 'worldRules', consumers: [], delivery: 'resident|conditional|lookup|local', statement: '完整规则正文', scope: [], conditions: [], exceptions: [], precedence: 50, dependencyFactIds: [], priority: 'L2|L3', activity: 'HOT|WARM|COLD', ...TRUTH_FIELDS }],
+        resourceConstraints: [{ id: '稳定ID', subjectId: '受限制的人物、组织、地点或事项ID', kind: 'funds|permission|capacity|possession|access|blockade|other', condition: '当前真正限制行动的硬条件', status: 'active|satisfied|expired', amount: '仅在原文有明确数量时填写', scope: '限制适用范围', consequence: '不满足时会阻止什么', priority: 'L1|L2|L3', activity: 'HOT|WARM|COLD', ...TRUTH_FIELDS }],
         map: {
             rootLabel: '大地图顶部显示名称',
             currentLocationId: '当前位置对应的稳定地点ID',
-            locations: [{ id: '稳定地点ID', name: '地点名', type: 'world|region|country|city|district|landmark|residence|workplace|building|room|other', parentId: '直接上级地点ID，顶层为空', x: 50, y: 50, area: '兼容旧数据的所属区域显示名', description: '只描述空间本身与稳定用途', status: 'known|visited|unavailable', priority: 'L1|L2|L3', activity: 'HOT|WARM|COLD', origin: '一句人物+行为/原因，或世界设定', updatedRevision: 0, sourceRefs: ['设定或正文依据'] }],
-            routes: [{ from: '起点ID', to: '终点ID', description: '移动方式或路线说明', status: 'open|blocked|unknown', travelMinutes: 0, distance: '可选距离说明' }],
+            baseLocations: [{ id: '世界书静态地点ID', name: '地点名', aliases: [], type: 'world|region|country|city|district|landmark|residence|workplace|building|room|other', parentId: '直接上级地点ID，顶层为空', description: '稳定空间说明', routeRefs: [], accessRuleRefs: [], characterRefs: [], organizationRefs: [], secretRefs: [], taskRefs: [], sourceRefs: [] }],
+            locations: [{ id: '动态地点覆盖ID', name: '地点名', type: 'world|region|country|city|district|landmark|residence|workplace|building|room|other', parentId: '直接上级地点ID，顶层为空', x: 50, y: 50, area: '兼容旧数据的所属区域显示名', description: '只描述空间本身与稳定用途', status: 'known|visited|unavailable', knownToPlayer: true, openState: 'open|blocked|unknown', temporaryDanger: '', currentCharacterIds: [], priority: 'L1|L2|L3', activity: 'HOT|WARM|COLD', origin: '一句人物+行为/原因，或世界设定', updatedRevision: 0, ...TRUTH_FIELDS }],
+            routes: [{ id: '稳定路线ID', from: '起点ID', to: '终点ID', description: '移动方式或路线说明', status: 'open|blocked|unknown', travelMinutes: 0, distance: '可选距离说明', accessRuleRefs: [], sourceRefs: [] }],
         },
-        characters: [{ id: '稳定ID', name: '姓名', priority: 'L2|L3', activity: 'HOT|WARM|COLD', maintenanceLevel: 'core|active', identity: '身份或稳定角色', location: '大致当前位置', present: false, situation: '当前重要处境或作用', persistentConditions: [{ name: '伤病或持续状态', effect: '对行动的影响', recovery: '治疗、恢复条件或预计进程' }], importantItems: [{ name: '重要物品', status: '持有、转交、遗失或损毁状态', significance: '为何不能忘记' }], notes: '必要的连续性摘要' }],
-        npcActivities: [{ id: '稳定ID', characterId: 'NPC稳定ID', priority: 'L1', activity: 'HOT|WARM|COLD', location: '活动发生地或途中位置', movement: '从哪里到哪里、正按什么既有安排移动', action: '实际正在进行或基于既有安排持续的活动', currentRole: '对当前世界或剧情的作用' }],
-        relationships: [{ id: '稳定ID', from: '主体ID', to: '对象ID', priority: 'L1|L2|L3', activity: 'HOT|WARM|COLD', type: '关系类型', status: '简单的当前关系描述', evidence: [] }],
-        knowledge: [{ id: '稳定ID', information: '信息、秘密、线索或主张', priority: 'L1|L2|L3', activity: 'HOT|WARM|COLD', disclosure: 'confidential|restricted|public', knownBy: [], believedBy: [], suspectedBy: [], misunderstoodBy: [], unknownTo: [], source: '明确来源与传播渠道', certainty: 'canon|claim|confirmed|believed|suspected|misunderstood|rumor', reliability: '可靠性', relatedRefs: [], evidence: [], discoveryPaths: [], maturityConditions: [] }],
-        tasks: [{ id: '稳定ID', title: '任务', priority: 'L1|L2|L3', activity: 'HOT|WARM|COLD', status: 'pending|active|blocked|done|failed', ownerIds: [], dependencies: [], deadline: '', progress: '', consequences: [], userVisible: true, userRelevance: '为什么用户现在能处理或关心', sourceRefs: [] }],
-        events: [{ id: '稳定ID', title: '重要事件节点', priority: 'L1|L2|L3', activity: 'HOT|WARM|COLD', status: 'ongoing|occurred', summary: '这个节点发生了什么', outcome: '已经确认的直接结果', location: '', participantIds: [], relatedProcessIds: [], sourceRefs: [] }],
-        triggers: [{ id: '稳定ID', title: '可触发事件', priority: 'L1', activity: 'HOT|WARM|COLD', conditions: [], status: 'armed|eligible|triggered|expired', effectsIfTriggered: [], blockedReasons: [], userVisible: true, userRelevance: '为什么用户能感知该可能性', sourceRefs: [] }],
-        threads: [{ id: '稳定ID', title: '长期线程', priority: 'L2|L3', activity: 'HOT|WARM|COLD', status: 'open|paused|resolved', stakes: '', participantIds: [], nextNaturalStep: '', history: [] }],
-        progression: { priority: 'L2', activity: 'HOT|WARM|COLD', direction: '当前这一段剧情正在向哪里发展', currentMovement: '已经成立的推进阶段或变化趋势', nextRequiredChanges: ['进入下一阶段仍需出现的关键变化或条件，不是预定结果'], basedOnRefs: ['task/thread/character/process/event/fact等既存依据ID'], blockedByDecision: '若下一步必须由用户决定，记录决策点并停止推进', updatedRevision: 0 },
-        processes: [{ id: '稳定ID', title: '仍在演变的世界级变化', priority: 'L2|L3', activity: 'HOT|WARM|COLD', kind: 'organizational|political|military|economic|social|environmental|other', status: 'active|decaying|paused|resolved|transformed', drivers: [], decayConditions: [], resolutionConditions: [], progress: { current: 0, max: 0, lastChangeReason: '' }, currentDirection: '' }],
-        causalEffects: [{ id: '稳定ID', causeRef: '既存事件或事实ID', priority: 'L1|L2|L3', activity: 'HOT|WARM|COLD', cause: '已经发生的起因', steps: ['起因形成后果的必要路径'], result: '仍会影响后续世界的具体后果', affectedIds: [], status: 'developing|active|resolved|discarded', reachCondition: '尚未形成时仍缺的条件', decayConditions: [], evidenceRefs: [] }],
-        timeline: [{ id: '稳定ID', summary: '已发生事实或压缩历史摘要', priority: 'L1|L2|L3', activity: 'HOT|WARM|COLD', granularity: 'turn|day|phase|core', participants: [], location: '', evidence: [] }],
+        characters: [{ id: '稳定ID', name: '姓名', priority: 'L2|L3', activity: 'HOT|WARM|COLD', maintenanceLevel: 'core|active', identity: '身份或稳定角色；无依据时必须为未明确', aliases: [], affiliationRefs: [], authorityRefs: [], knowledgeRefs: [], motives: [], currentGoals: [], routine: '', availability: '', location: '大致当前位置', present: false, situation: '当前重要处境或作用', persistentConditions: [{ name: '伤病或持续状态', effect: '对行动的影响', recovery: '治疗、恢复条件或预计进程', ...TRUTH_FIELDS }], importantItems: [{ name: '重要物品', status: '持有、转交、遗失或损毁状态', significance: '为何不能忘记', ...TRUTH_FIELDS }], notes: '必要的连续性摘要', ...TRUTH_FIELDS }],
+        npcActivities: [{ id: '稳定ID', characterId: 'NPC稳定ID', priority: 'L1', activity: 'HOT|WARM|COLD', location: '活动发生地或途中位置', movement: '从哪里到哪里、正按什么既有安排移动', action: '实际正在进行或基于既有安排持续的活动', currentRole: '对当前世界或剧情的作用', ...TRUTH_FIELDS }],
+        relationships: [{ id: '稳定ID', from: '主体ID', to: '对象ID', participants: [], priority: 'L1|L2|L3', activity: 'HOT|WARM|COLD', type: '关系类型或“未明确”', bondTypes: [], dynamicPattern: '', mutuality: 'mutual|asymmetric|unknown', status: '当前关系描述或“尚未读取到已确立的关系”', formalStatus: 'unknown|established|former', romanceStage: 'unknown|possible_ambiguity|unresolved_attachment|established', conflictStage: 'unknown|suspected|established|archrivalry', coreContradiction: '', attachments: [], grievances: [], boundaries: [], reconciliationConditions: [], perspectives: {}, expressionPatterns: { public: '', private: '', danger: '', politicalConflict: '', vulnerability: '' }, coverageOnly: false, evidence: [], ...TRUTH_FIELDS }],
+        knowledge: [{ id: '稳定ID', information: '信息、秘密、线索或主张', priority: 'L1|L2|L3', activity: 'HOT|WARM|COLD', disclosure: 'confidential|restricted|public', knownBy: [], believedBy: [], suspectedBy: [], misunderstoodBy: [], unknownTo: [], source: '明确来源与传播渠道', certainty: 'canon|claim|confirmed|believed|suspected|misunderstood|rumor', reliability: '可靠性', relatedRefs: [], evidence: [], discoveryPaths: [], maturityConditions: [], ...TRUTH_FIELDS }],
+        tasks: [{ id: '稳定ID', title: '任务', priority: 'L1|L2|L3', activity: 'HOT|WARM|COLD', status: 'pending|active|blocked|done|failed', ownerIds: [], dependencies: [], locationRefs: [], characterRefs: [], ruleRefs: [], knowledgeRefs: [], resourceConstraintRefs: [], deadline: '', progress: '', completionConditions: [], completedConditions: ['已有证据证实、且文本与completionConditions对应的条件'], consequences: [], userVisible: true, userRelevance: '为什么用户现在能处理或关心', ...TRUTH_FIELDS }],
+        events: [{ id: '稳定ID', title: '重要事件节点', priority: 'L1|L2|L3', activity: 'HOT|WARM|COLD', status: 'ongoing|occurred', summary: '这个节点发生了什么', outcome: '已经确认的直接结果', location: '', participantIds: [], relatedProcessIds: [], ...TRUTH_FIELDS }],
+        triggers: [{ id: '稳定ID', title: '可触发事件', priority: 'L1', activity: 'HOT|WARM|COLD', conditions: [], status: 'armed|eligible|triggered|expired', effectsIfTriggered: [], blockedReasons: [], userVisible: true, userRelevance: '为什么用户能感知该可能性', ...TRUTH_FIELDS }],
+        threads: [{ id: '稳定ID', title: '长期线程', priority: 'L2|L3', activity: 'HOT|WARM|COLD', status: 'open|paused|resolved', stakes: '', participantIds: [], nextNaturalStep: '', history: [], ...TRUTH_FIELDS }],
+        progression: { priority: 'L2', activity: 'HOT|WARM|COLD', direction: '当前这一段剧情正在向哪里发展', currentMovement: '已经成立的推进阶段或变化趋势', nextRequiredChanges: ['进入下一阶段仍需出现的关键变化或条件，不是预定结果'], basedOnRefs: ['task/thread/character/process/event/fact等既存依据ID'], blockedByDecision: '若下一步必须由用户决定，记录决策点并停止推进', updatedRevision: 0, ...TRUTH_FIELDS },
+        processes: [{ id: '稳定ID', title: '仍在演变的世界级变化', priority: 'L2|L3', activity: 'HOT|WARM|COLD', kind: 'organizational|political|military|economic|social|environmental|other', status: 'active|decaying|paused|resolved|transformed', drivers: [], decayConditions: [], resolutionConditions: [], progress: { current: 0, max: 0, lastChangeReason: '' }, currentDirection: '', ...TRUTH_FIELDS }],
+        causalEffects: [{ id: '稳定ID', causeRef: '既存事件或事实ID', priority: 'L1|L2|L3', activity: 'HOT|WARM|COLD', cause: '已经发生的起因', steps: ['起因形成后果的必要路径'], result: '仍会影响后续世界的具体后果', affectedIds: [], status: 'developing|active|resolved|discarded', reachCondition: '尚未形成时仍缺的条件', decayConditions: [], evidenceRefs: [], ...TRUTH_FIELDS }],
+        timeline: [{ id: '稳定ID', factId: '本条时间线事实ID', owner: 'timeline', summary: '已发生事实或压缩历史摘要', priority: 'L1|L2|L3', activity: 'HOT|WARM|COLD', granularity: 'turn|day|phase|core', participants: [], location: '', relatedFactIds: [], evidence: [], ...TRUTH_FIELDS }],
+        moduleCoverage: { moduleName: { status: 'has_records|coverage_only|checked_empty|unknown_empty|failed|not_checked', basis: '为何是此覆盖状态', checkedRevision: 0 } },
     };
 
     const INJECTION_MODULES = {
         world: { label: '世界状态', category: 'world', depth: 1, enabled: true, instruction: '只作为“此刻世界是什么样”的客观快照；不记录事件过程，也不推演未来。' },
+        worldRules: { label: '硬规则 / 世界秩序', category: 'world', depth: 0, enabled: true, instruction: '规则正文、适用范围、条件和例外是不可分割单元；按优先级裁定冲突，禁止只发送半条规则。' },
         factAnchors: { label: '事实锚点', category: 'world', depth: 2, enabled: true, instruction: '只在与当前场景相关时使用正文已经永久确立的最终结果；COLD锚点不常驻注入。' },
         resourceConstraints: { label: '资源 / 约束', category: 'world', depth: 1, enabled: true, instruction: '行动前必须检查当前有效的资金、权限、人手、持有物、封锁及其他硬条件；不得凭空补足资源。' },
         ambient: { label: '环境与路人反应', category: 'world', depth: 0, enabled: true, instruction: '只允许由当前正文触发、符合场所与感知条件的轻量反应；临时路人不得升级为持久NPC或强制事件。' },
-        map: { label: '场景地图', category: 'world', depth: 2, enabled: false, instruction: '地图是默认不注入正文的空间索引；只有用户点击地点交互时才发送最小行动意图，且不得瞬移或泄露未知地点。' },
+        map: { label: '场景地图', category: 'world', depth: 2, enabled: true, instruction: '只在移动、问路、地点权限、任务目标或人物目的地相关时注入最小地图切片；完整地图留在本地，禁止瞬移或泄露玩家未知地点。' },
         characters: { label: '人物概况', category: 'people', depth: 1, enabled: true, instruction: '只使用人物身份、当前落点、重要处境、持续状态与重要物品；具体移动和活动过程看NPC活动轨迹。' },
         npcActivities: { label: 'NPC活动轨迹', category: 'people', depth: 4, enabled: true, instruction: '只作为NPC具体行动与移动过程的连续性；当前落点以人物概况为准，不要复述成流水账。' },
         relationships: { label: '人物关系', category: 'people', depth: 2, enabled: true, instruction: '只描述角色怎么看待对方；具体知道哪些事实由知识与秘密约束。禁止关系评分或自动升级。' },
-        knowledge: { label: '知识与秘密', category: 'people', depth: 2, enabled: false, instruction: '只约束角色实际知道、相信、怀疑或误解的事实；怎么看待对方归人物关系。重要等级与公开状态彼此独立。' },
+        knowledge: { label: '知识与秘密', category: 'people', depth: 2, enabled: true, instruction: '秘密被召回时必须同时发送内容与完整知识边界；只约束角色实际知道、相信、怀疑或误解的事实，不得泄露给未知者。' },
         tasks: { label: '当前任务', category: 'affairs', depth: 3, enabled: true, instruction: '只体现已经成立且用户角色现在可以主动推进的事务；必须等待条件的内容归可触发事件。' },
         events: { label: '世界事件', category: 'world', depth: 3, enabled: true, instruction: '只体现与本轮相关的重要事件节点：发生了什么，而不是长期进程发展到了哪一步。' },
         triggers: { label: '可触发事件', category: 'affairs', depth: 4, enabled: true, instruction: '只体现尚未发生、必须先满足具体条件的一次节点；长期未决问题归线程。' },
@@ -364,15 +407,16 @@ stateDelta为空表示完整KEEP。update只提交变化字段并由程序合并
 
     const MODULE_OWNERSHIP = {
         world: '只记录“此刻世界是什么样”：当前时间、季节、地点、天气、环境，以及3至8条当前正在生效的客观状态。不保存人物背景、历史经过、未来安排、完整世界规则或永久事实库。季节按日期与地点维护；天气必须存在并服从地点、季节、时间、上一轮天气及现实气象规律，只能连续渐变。剧情氛围只能在多个合理天气分支中轻度偏置，不能成为异常天气的原因。',
+        worldRules: '保存世界底层规则、权力与身份秩序、法律礼法、地点权限、行为限制、物品使用限制、完整条件和例外及冲突优先级。每条规则拥有稳定factId和唯一owner=worldRules；其他模块只写ruleRefs/authorityRefs/accessRuleRefs。规则、条件和例外不可拆分，来源不足时不得补造。',
         factAnchors: '只记录正文运行过程中已经确立、长期有效且遗忘会造成逻辑错误的客观最终结果。默认priority=L3；当前无关时activity=COLD且不注入。只保存结果，不保存过程；世界书原有设定、人物身份、关系状态、知识归属、历史经过、未来安排以及能被其他模块明确表达的内容不得重复进入。事实被推翻、转交、失效或由更准确版本取代时更新或删除。',
         resourceConstraints: '只记录当前真正会阻止、限制或消耗行动的硬条件，例如可用资金、进入权限、组织可调用人手、关键物品持有状态、地点封锁。它不是数值面板，也不复制人物重要物品或世界状态；只写会改变行动可行性的当前版本。条件满足、资源消耗、权限撤销、物品转交或封锁解除后立即UPDATE或REMOVE，不保留流水。',
         ambient: '不持久化实体，只为当前轮提供场所自然反馈和一次性旁观者反应。必须由实际正文中的可感知行为触发，不得创建长期NPC、关系、事件或线程。',
-        map: '作为空间索引，只保存地点本身、直接上级、同级相对坐标、玩家认知、生命周期、最短溯源、当前位置和路线。严格按世界→城市→区域→建筑→内部空间分层；同名同父级同实体必须合并。description禁止保存事件经过或剧情意义。L3核心地点长期保留，L2活跃地点可降级，L1临时地点长期不用后隐藏或删除。地图默认不注入正文。',
-        characters: '只保存人物的当前概况：维护等级、身份、当前大致落点、在场状态、重要处境、持续状态和重要物品。当前落点是概况，具体去了哪里、做了什么和移动过程归npcActivities。核心人物完整维护必要连续性；活跃NPC只保留身份、落点与当前作用；背景NPC不建档。不得复制关系、知识、活动过程或事件全文。',
+        map: '分为世界书静态基础地图和剧情动态覆盖。基础层永久保存全部地点、别名、父子层级、稳定空间说明、基础路线、进入规则引用及世界书来源，不受状态模块小容量上限影响；动态层只保存当前位置、到访/认知、临时开放或封锁、危险、在场人物和路线临时变化。普通正文只按移动、问路、任务、目的地、必经路线和权限召回最小切片。',
+        characters: '静态身份来源于世界书人物档案，运行态只保存人物当前概况及对静态事实的引用：身份、组织/权限引用、独立动机、当前目标、日常安排、可用性、当前落点、在场状态、重要处境、持续状态和重要物品。具体活动过程归npcActivities。核心人物完整维护必要连续性；活跃NPC保留能支持自主行动的最小生活结构；背景NPC不建档。不得复制关系、知识、世界规则或事件全文。',
         npcActivities: '每个核心人物或活跃NPC只保存一条当前活动/移动快照：人物、活动地点、从哪里到哪里或按什么既有安排移动、实际在做什么、当前作用。具体过程归本模块，最终大致落点回写characters；不是任务或预定剧情，不保存历史流水，背景NPC不进入。',
-        relationships: '只回答“角色把另一个人当成什么人、怎么看对方”，用自然语言保存已成立关系及依据。from→to与反向认知独立，只由实际互动改变，禁止评分。角色知道哪些事实归knowledge，不得把秘密内容复制进关系描述。',
+        relationships: '保存双重关系结构、双方视角、核心矛盾、依恋与旧怨、阶段边界、场景表现和明确和解条件。爱与恨等多个关系轴可以同时成立；保护、亲密、坦白、合作、争吵或真相揭露都不得自动完成和解或抹除另一轴。关系阶段只能由实际事件改变，禁止评分。具体知道哪些事实归knowledge。',
         knowledge: '只回答“角色到底知道哪些事实”。保存实际获得的信息、明确来源及各角色确认/相信/怀疑/误解/未知状态；L1/L2/L3重要性与保密/受限/公开传播状态独立。怎么看待另一个人归relationships，不得用知识条目替代关系状态。',
-        tasks: '只保存已经成立、用户角色现在可以主动推进的事务、负责人、进展、依赖和截止时间。现在就能采取有效行动=task；必须等待外部条件才进入=trigger。交互按钮由本地界面生成，不保存choices；若完全无法行动且只能等待触发条件，应移出任务。',
+        tasks: '只保存已经成立、用户角色现在可以主动推进的事务、负责人、进展、依赖、截止时间、完成条件，以及地点/人物/规则/知识/资源引用。完成前必须逐条检查completionConditions，并只把已有证据证实的原条件逐字加入completedConditions；两者未完全覆盖不得done。现在就能采取有效行动=task；必须等待外部条件才进入=trigger。不得复制地点、规则或秘密正文。',
         events: '记录“世界里正在发生或已经发生了什么重要事情”。事件是节点，每项只保存节点内容、地点、参与者和直接结果，可以与user无关并由NPC、组织、社会或环境产生。不得把多轮发展写成流水，不得复述world快照；形成长期演变时引用process，留下持续后果时引用causalEffect。',
         triggers: '只保存尚未发生、必须先满足具体条件才会进入的一次互动节点及其条件、阻碍和可能结果。等条件出现=trigger；条件满足后可转为event或生成task。持续很多轮的未解决问题归thread，不得把线程压成一个永远不触发的候选。',
         threads: '只保存围绕用户角色经历、目标或未解决问题展开、可持续多轮且不一定立刻发生具体节点的剧情线。一次具体条件节点归trigger；用户现在能推进的具体事务归task；即使用户不参与也会演变的世界级变化归process。',
@@ -386,17 +430,18 @@ stateDelta为空表示完整KEEP。update只提交变化字段并由程序合并
 
     const MODULE_PROMPTS = {
         world: '维护“此刻世界是什么样”的纯客观快照，固定字段为当前时间、当前季节、当前地点、天气、环境、当前客观状态。currentConditions只留3至8条当前直接生效的结果，不写人物背景、历史经过、未来安排、完整世界规则或永久事实库。季节根据日期和地点确定，通常只在跨季或明显气候区变化时更新。天气必须填写并延续上一轮：优先服从地点、季节、时间与现实气象规律，只允许晴→多云→阴→小雨→大雨、雨停→多云等连续变化；存在多个合理方向时剧情氛围可轻度偏置，但不得为配合情绪突然制造不合理极端天气。',
+        worldRules: '维护硬规则库。每条规则必须有factId、statement、scope、conditions、exceptions、precedence、delivery与sourceRefs；owner固定为worldRules。皇权、法律、阶级、身份秩序、魔法/物理底层规则、礼法、地点权限、物品使用限制和行为前置条件归这里。条件和例外与正文不可分割，冲突时按precedence裁定；不得把当前“有没有资源”混入规则，也不得把规则全文复制进人物、地图或任务。',
         factAnchors: '维护正文已经永久确立的最终客观结果，默认L3。只保存遗忘后会造成逻辑错误且不能由世界书、人物、关系、知识、任务、事件或时间线明确替代的事实；不保存形成过程和未来安排。同一事实只保留一个当前版本，COLD时不常驻注入，失效或被新事实取代后更新或删除。',
         resourceConstraints: '维护当前会实际限制行动的少量硬条件。只记录资金是否足够、身份/门禁/法律权限、组织可调用能力、关键物品是否持有、地点是否封锁等会改变可行性的事实；没有明确依据不得猜测数量。行动裁定前逐条检查，不得凭空生成钱、人手、交通、门卡、许可或物品。条件改变时覆盖当前版本，满足或失效后删除；不做完整资产清单，不记录普通日用品，不与characters.importantItems重复。',
         ambient: '先读取 source.chat 的实际酒馆正文，再判断公共或半公共场景中是否存在合乎距离、视线、音量和场所规范的轻量环境反应。允许无反应；临时乘客、店员或路人不得写入持久人物状态，也不得夸张升级。',
-        map: '维护空间索引而非地点记忆库。严格用parentId组织世界→城市→区域→建筑→内部空间；同名+同父级+同实体只能有一个稳定节点，更新时MERGE而非APPEND。每个地点只保留稳定空间说明，并有一句origin说明首次为何进入系统（世界书地点写“世界设定”，正文地点写最短“人物+行为/原因”）；不得把谈判、冲突、交割、主要场景等历史或剧情意义写入description。内部按L3核心、L2活跃、L1临时维护：一次性餐厅、咖啡馆、酒店房间等长期未使用后降级并淘汰，核心城市、长期住所和组织总部保留。地图默认不注入正文，用户交互只能发送行动意图；移动受层级路径、距离、时间、交通、权限与路线阻断限制，禁止瞬移或泄露未知地点。',
-        characters: '维护“他是谁、在哪里、当前重要处境、有什么持续影响、有哪些不能忘的重要物品”。人物可在background→active→core之间按持续作用升级，也可在长期无出场且无未决事项时降级；background不建立长期记录。persistentConditions必须写明行动影响与恢复逻辑，并随时间、治疗和行动自然减轻、恢复、恶化或移除；importantItems只收录与人物绑定且影响连续性的物品，并在遗失、转交、损毁或失去价值后更新或删除。两类都只保留当前版本。不要记录短暂情绪、姿势、衣物、饮食和普通日用品。',
+        map: '基础地图来自全部世界书编译结果并永久保留，不受32地点等运行态容量限制；动态覆盖只维护当前位置、玩家是否知道/到访、临时开放或封锁、危险、在场人物和路线变化。严格用parentId组织世界→城市→区域→建筑→内部空间；同名+同父级+同实体只能有一个稳定节点。普通正文不发送完整地图，只在前往、进入、离开、问路、任务目标、人物目的地、时间跳跃或地点权限相关时注入当前位置→目标→必经路线的最小切片，并通过accessRuleRefs拉取硬规则。禁止瞬移或泄露未知地点/秘密。',
+        characters: '维护“他是谁、受哪些身份/权限规则约束、为什么行动、当前想完成什么、平时有什么安排、现在在哪里、当前重要处境、持续影响和重要物品”。核心人物和活跃NPC必须有足以支持自主生活的motives/currentGoals/routine/availability或引用；只有目标完成、失效或现实条件改变时才更新目标。人物可按持续作用升级或降级，背景NPC不建档。persistentConditions写行动影响与恢复逻辑；importantItems只留影响连续性的物品。不要记录短暂情绪、姿势、衣物、饮食和普通日用品。',
         npcActivities: '维护NPC离开玩家视野后实际发生或基于既有安排正在进行的具体活动与移动：去了哪里、做了什么、正从哪里前往哪里。每人只保留一条当前过程快照，最终落点同步到人物概况；carry模式不新增。这不是预定剧情或任务，背景NPC不持久化。',
-        relationships: '只维护角色怎么看待另一个人：身份关系、熟悉程度、亲疏、信任、冲突或利益联系及形成依据。双方认知独立，不自动对称或升级，禁止评分。具体知道哪些事实必须放入knowledge。',
-        knowledge: '只维护角色知道什么：每条信息必须有明确来源，并按角色分别记录确认、相信、怀疑、误解或未知。L1普通、L2重要、L3核心决定保留优先级，与保密/受限/公开传播状态独立；L3不得自动删除。角色如何看待另一个人必须放入relationships。',
-        tasks: '维护已经成立且用户角色现在能主动推进的事务。现在能采取有效行动才是task；若必须等待尚未满足的外部条件，应转为trigger或由thread保留长期问题。不要生成choices，界面会把卡片转换为不预判结果的玩家意图。',
+        relationships: '维护多轴关系，不把Love/Hate当作零和分数。复杂关系应保存bondTypes、dynamicPattern、双方perspectives、coreContradiction、attachments、grievances、boundaries、reconciliationConditions和不同场景expressionPatterns。爱不能自动消除伤害，恨不能证明不爱；保护、亲密、坦白、合作、争吵和真相揭露均不自动改变正式关系或完成和解。只由足以改变人物判断的实际事件更新阶段，禁止每轮强推关系和任何评分。',
+        knowledge: '世界书秘密正文是静态来源，运行态只维护谁确认、相信、怀疑、误解或仍不知道，以及传播渠道。秘密召回时必须把内容、知情边界、发现路径与成熟条件作为完整知识包发送；不得只发秘密正文。L1普通、L2重要、L3核心只决定保留优先级，与保密/受限/公开状态独立，L3不得自动删除。角色如何看待另一个人归relationships。',
+        tasks: '维护已经成立且用户角色现在能主动推进的事务；现在能采取有效行动才是task。保存目标、进展、依赖、阻塞、截止时间、completionConditions、completedConditions和地点/人物/规则/知识/资源引用；完成前逐条核验，只有completedConditions逐字覆盖全部completionConditions才可done。需要规则、地点或秘密时只引用ID，由最终注入器补依赖，不复制正文。必须等待外部条件时转为trigger或由thread保留长期问题。不要生成choices。',
         events: '维护重要事件节点：正在发生或已经发生了什么、地点、参与者和已确认的直接结果。事件可以与当前玩家角色无关，由NPC、组织、社会或环境自然产生。每项是节点而非多轮流水；长期演变归process，持续后果归causalEffects，不要重复世界快照或把尚未发生的事写进来。',
-        triggers: '维护4至8条尚未发生、必须先满足具体条件的一次互动节点。等待条件=trigger；满足后转成event或可主动推进的task。持续存在的问题归thread。记录sourceRefs、条件、阻碍和可能结果，候选不跨轮囤积，隐藏信息不得泄露，条件未满足不得提前触发。',
+        triggers: '维护尚未发生、必须先满足具体条件的一次互动节点。等待条件=trigger；满足后转成event或可主动推进的task。持续存在的问题归thread。记录sourceRefs、条件、阻碍和可能结果；仍可能成立时跨轮保留稳定ID，触发、明确过期或条件不可能时才移除。没有真实候选时保留系统生成的不可交互“当前无可触发事件”占位，不为凑数制造剧情；隐藏信息不得泄露，条件未满足不得提前触发。',
         threads: '维护围绕用户角色经历、目标或未解决问题展开的跨多轮剧情线、重要性、相关人物和自然下一步。一次条件节点归trigger，现在能做的具体事务归task；世界不依赖用户也会演变的变化归process。不要强迫每轮推进。',
         progression: '维护当前剧情方向的唯一最新版本。根据已经成立的tasks、threads、人物目标、processes、events与客观事实，概括当前段落正向哪里移动、已经进入什么阶段，以及下一阶段仍需哪些关键变化。只写自然延伸出的方向和必要条件，不预写具体结果，不制造事件，不替用户行动；遇到用户决策点写blockedByDecision并停止。方向无实质变化时KEEP，变化时覆盖旧版本，不保存流水。',
         processes: '维护即使用户角色不参与也会继续演变的世界级变化，如家族斗争、战争局势、公司权力更替、政策变化、舆论发酵或大型环境变化。围绕用户故事展开的未决问题归threads，具体节点归events。记录驱动、方向和停滞/衰减/结束条件。',
@@ -408,20 +453,27 @@ stateDelta为空表示完整KEEP。update只提交变化字段并由程序合并
 
     function createState() {
         return {
-            schemaVersion: 20,
+            schemaVersion: 22,
             initialized: false,
             revision: 0,
             updatedAt: Date.now(),
             identities: { user: '', char: '' },
             world: {
-                time: { display: '', iso: '', timezone: '', elapsedMinutes: 0 },
+                time: { display: '', iso: '', timezone: '', elapsedMinutes: 0, truthStatus: 'unknown', basis: [], sourceRefs: [] },
                 season: '',
-                location: { current: '', environment: '', weather: '' },
+                seasonMeta: { truthStatus: 'unknown', basis: [], sourceRefs: [] },
+                location: {
+                    current: '', currentMeta: { truthStatus: 'unknown', basis: [], sourceRefs: [] },
+                    environment: '', environmentMeta: { truthStatus: 'unknown', basis: [], sourceRefs: [] },
+                    weather: '', weatherMeta: { truthStatus: 'unknown', basis: [], sourceRefs: [] },
+                },
                 currentConditions: [],
+                currentConditionDetails: [],
             },
             factAnchors: [],
+            worldRules: [],
             resourceConstraints: [],
-            map: { rootLabel: '大地图', currentLocationId: '', locations: [], routes: [] },
+            map: { rootLabel: '大地图', currentLocationId: '', baseLocations: [], locations: [], routes: [], routeOverlays: [] },
             characters: [],
             npcActivities: [],
             relationships: [],
@@ -430,15 +482,16 @@ stateDelta为空表示完整KEEP。update只提交变化字段并由程序合并
             events: [],
             triggers: [],
             threads: [],
-            progression: { priority: 'L2', activity: 'WARM', direction: '', currentMovement: '', nextRequiredChanges: [], basedOnRefs: [], blockedByDecision: '', updatedRevision: 0 },
+            progression: { priority: 'L2', activity: 'WARM', direction: '', currentMovement: '', nextRequiredChanges: [], basedOnRefs: [], blockedByDecision: '', updatedRevision: 0, truthStatus: 'not_applicable', basis: [], sourceRefs: [] },
             processes: [],
             causalEffects: [],
             timeline: [],
             planner: { lastRunAt: 0, turnKey: '', plan: null, moduleInjections: {}, injection: '', error: '' },
             runtime: { lastSettledMessageId: '', lastUserMessageId: '', sourceFingerprint: '', sourceSummary: null, npcLastUpdatedElapsedMinutes: {}, needsWorldRefresh: false },
+            moduleCoverage: {},
             lockedPaths: [],
         };
     }
 
-    WSM.Defaults = { PLANNER_PROMPT, RECONCILER_PROMPT, STATE_SCHEMA, INJECTION_MODULES, MODULE_OWNERSHIP, MODULE_PROMPTS, createState };
+    WSM.Defaults = { PLANNER_PROMPT, RECONCILER_PROMPT, STATE_SCHEMA, TRUTH_STATUSES, INFERENCE_POLICIES, INJECTION_MODULES, MODULE_OWNERSHIP, MODULE_PROMPTS, createState };
 })();

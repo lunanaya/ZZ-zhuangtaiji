@@ -102,8 +102,8 @@
             const boundary = fact.knowledgeBoundary;
             const resolve = (id) => {
                 const key = text(id).toLowerCase();
-                if (['user','<user>'].includes(key)) return text(state?.identities?.user) || id;
-                if (['char','character','<char>'].includes(key)) return text(state?.identities?.char) || id;
+                if (['user','<user>'].includes(key)) return text(WSM.Context?.identityNames?.()?.user || state?.identities?.user) || '<USER>';
+                if (['char','character','<char>'].includes(key)) return '相关人物';
                 return id;
             };
             return [

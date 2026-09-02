@@ -955,7 +955,7 @@
         });
         if (changed) saveCache(cache);
     }
-    const LOCATION_SUFFIX = '(?:共和国|自治州|帝国|王国|省|州|郡|市|城|区|县|镇|村|街道|大街|路|宫殿|宫|殿|府|宅|庄园|院|楼|塔|馆|店|室|房|厅|园|岛|港|机场|车站|公司|学校|学院|医院|酒店|餐厅|办公室)';
+    const LOCATION_SUFFIX = '(?:共和国|自治州|帝国|王国|国|省|州|郡|市|城|区|县|镇|村|街道|大街|路|宫殿|宫|殿|府|宅|庄园|院|楼|塔|馆|店|室|房|厅|园|岛|港|机场|车站|公司|学校|学院|医院|酒店|餐厅|办公室)';
     function locationNames(value) {
         const found = new Set();
         text(value).split(/[，。；：\n]|(?:位于|坐落于|隶属于|属于|通往|相邻于|进入|抵达|前往)/).forEach((part) => {
@@ -969,7 +969,7 @@
     }
     function locationType(name) {
         const value = text(name);
-        if (/(?:帝国|王国|共和国)$/.test(value)) return 'country';
+        if (/(?:帝国|王国|共和国|国)$/.test(value)) return 'country';
         if (/(?:省|州|郡)$/.test(value)) return 'region';
         if (/(?:市|城|县|镇|村)$/.test(value)) return 'city';
         if (/(?:区|街道|大街|路)$/.test(value)) return 'district';

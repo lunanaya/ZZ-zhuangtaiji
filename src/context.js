@@ -38,13 +38,15 @@
         return text(ctx?.persona || ctx?.userPersona || ctx?.persona_description || ctx?.user_description || ctx?.power_user?.persona_description || window.power_user?.persona_description);
     }
     function identityNames(ctx = context()) {
-        const messages = Array.isArray(ctx?.chat) ? ctx.chat : [];
-        const recentUserName = [...messages].reverse().find((item) => item?.is_user && item?.is_system !== true)?.name;
-        const recentCharacterName = [...messages].reverse().find((item) => !item?.is_user && !item?.is_system)?.name;
-        const character = compactCharacter(currentCharacter(ctx));
         return {
-            user: text(ctx?.name1 || ctx?.userName || ctx?.playerName || window.name1 || recentUserName),
-            char: text(character?.name || ctx?.name2 || ctx?.characterName || window.name2 || recentCharacterName),
+            // SillyTavern's name1 is the active user/persona name. Resolve it
+            // every time instead of freezing a name into the archive so a
+            // persona rename is reflected before both reading and injection.
+            user: text(ctx?.name1 || window.name1) || '<USER>',
+            // A character-card title can be a version, pairing, collection or
+            // filename rather than a person's name. Named people are extracted
+            // from card/chat content instead of this metadata field.
+            char: '',
         };
     }
     function normalizeMessage(message, index, options = {}) {

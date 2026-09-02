@@ -7,19 +7,20 @@
     function cancellationError() { return Object.assign(new Error('用户已终止读取'), { name: 'AbortError' }); }
     function throwIfCancelled(signal) { if (signal?.aborted) throw cancellationError(); }
     const CACHE_KEY = 'wsm_source_reader_digest_cache_v1';
-    const CHUNK_PROMPT = `你是资料分片读取器，不是故事续写者。逐项读取 sourceChunk 中的原始资料，提取可供世界状态初始化使用的证据。不得增加原文不存在的设定，不得把角色主张或猜测升级为客观事实。保留姓名、身份、时间顺序、地点、关系、知识边界、任务、伤势、物品、规则、例外和当前场景；还要分别提取当前真正限制行动的资金/权限/人手/关键物品/封锁resourceConstraints、NPC后台实际活动npcActivities、等待条件的可触发事件triggers、围绕用户的长期未决线threads、世界自行演变的processes以及已发生的重要timeline。地点只作为空间实体，尽量给出稳定id、parentId、空间用途description和一句首次建立原因origin；不得把完整事件或剧情意义写入地点。每条结论附带 truthStatus、basis、sourceRefs：原文/设定明确为confirmed；可复算推导为derived；有线索但未确认只能suspected；读不到为failed。人物身份、关系、秘密/知识、规则、任务、权限和命名地点不得system_generated；无证据时写入uncertainties，不得硬补。只输出严格 JSON：{"digest":{"sourceRefs":[],"canon":[],"chronology":[],"timeline":[],"resourceConstraints":[],"characters":[],"npcActivities":[],"relationships":[],"knowledge":[],"locations":[],"tasks":[],"events":[],"triggers":[],"threads":[],"processes":[],"causal":[],"currentScene":[],"uncertainties":[]}}。内容应紧凑但不能因为资料较早就忽略。`;
+    const CHUNK_PROMPT = `你是资料分片读取器，不是故事续写者。逐项读取 sourceChunk 中的原始资料，提取可供世界状态初始化使用的证据。不得增加原文不存在的设定，不得把角色主张或猜测升级为客观事实。保留姓名、身份、时间顺序、地点、关系、知识边界、任务、伤势、物品、规则、例外和当前场景；还要分别提取当前真正限制行动的资金/权限/人手/关键物品/封锁resourceConstraints、NPC后台实际活动npcActivities、等待条件的可触发事件triggers、围绕用户的长期未决线threads、世界自行演变的processes以及已发生的重要timeline。地点只作为空间实体，按国家→城市→城市地标/城区→建筑→室内空间给出稳定id和parentId，国家是第一层；资料没有明确中间层时可跳过但不得补造。description只写空间用途，origin只写一句首次建立原因，不得把完整事件或剧情意义写入地点。每条结论附带 truthStatus、basis、sourceRefs：原文/设定明确为confirmed；可复算推导为derived；有线索但未确认只能suspected；读不到为failed。人物身份、关系、秘密/知识、规则、任务、权限和命名地点不得system_generated；无证据时写入uncertainties，不得硬补。只输出严格 JSON：{"digest":{"sourceRefs":[],"canon":[],"chronology":[],"timeline":[],"resourceConstraints":[],"characters":[],"npcActivities":[],"relationships":[],"knowledge":[],"locations":[],"tasks":[],"events":[],"triggers":[],"threads":[],"processes":[],"causal":[],"currentScene":[],"uncertainties":[]}}。内容应紧凑但不能因为资料较早就忽略。`;
     const MERGE_PROMPT = `你是资料证据合并器。合并 digestBatch 中已经逐片读取的证据，去重但不得丢失仍有效的事实、规则、例外、时间顺序、资源与硬约束、人物关系、知识边界、任务、NPC活动、触发事件、长期线程、世界进程、时间线和来源引用。可把同一事项的多条证据合写为一条并保留全部关键 sourceRefs；冲突内容并存并放入 uncertainties，不得自行裁决或续写。若提供 targetChars，应尽量把 JSON 控制在该字符数内。只输出严格 JSON：{"digest":{"sourceRefs":[],"canon":[],"chronology":[],"timeline":[],"resourceConstraints":[],"characters":[],"npcActivities":[],"relationships":[],"knowledge":[],"locations":[],"tasks":[],"events":[],"triggers":[],"threads":[],"processes":[],"causal":[],"currentScene":[],"uncertainties":[]}}。`;
+    const PHANTASM_COVERAGE_PROMPT = `\n\n[PHANTASM COVERAGE SCAN]\n必须检查worldRules、organizations、characters、npcActivities、relationships、knowledge、schedules、tasks、events、triggers、threads、processes、causalEffects、timeline全部模块。organizations保存有来源的组织职责、权限、资源与处境；schedules只保存明确承诺、约定、预约、命令或日期安排。characters每个核心/相关具名人物必须有结构化identity、location、situation；未知字段留空但人物不得消失。npcActivities的characterId必须引用已识别人物且只能是离屏活动，台词、代词、称谓、动作短语不能当姓名。relationships逐方向from→to，身份关系和当前认知分开。currentScene只保存地点、在场者、当前问题、已完成/待回应动作、阻碍、交互点与结束条件。每个模块必须给出moduleCoverage状态和moduleDecisions结论；读取失败写retrieval_failed，不得伪装成空。`;
     const CALIBRATION_REQUEST_MAX_CHARS = 60000;
     const CALIBRATION_ENVELOPE_RESERVE_CHARS = 4000;
     const CALIBRATION_OVERLAP_MESSAGES = 2;
-    const CALIBRATION_PROMPT_VERSION = 3;
+    const CALIBRATION_PROMPT_VERSION = 5;
     const CALIBRATION_PROMPT = `你是历史状态校准器，不是故事续写者，也不是剧情摘要器。sourceChunk 是完整资料校准中的一个有界分块；chat 记录按原始楼层顺序排列，邻块可能重叠。你只记录这一块造成的“状态变化”，不得概括剧情、复述普通对白、修辞、动作细节、短暂情绪、饮食、姿势、衣物或无长期影响的日常过程。
 
 必须识别：新建立、被覆盖、被纠正或失效的事实；时间与地点变化；人物当前状态和持续伤势；关系变化；谁知道/相信/怀疑/误解了什么；任务建立/推进/完成；重要物品与权限转移；不可逆事件；触发器、线程、世界进程和持续因果。世界书/角色卡/Persona属于参考资料，只建立规则、身份和知识边界，不冒充聊天中已经发生的变化。
 
 每条 change 必须包含稳定 factId、module、operation(upsert/remove)、entityId、value、sourceRefs；value 必须带 truthStatus、basis、sourceRefs。sourceRefs 必须引用实际 ref，例如 chat:801 或 worldbook:书名:条目；不得凭空补来源。confirmed必须有来源，derived必须有可复算依据，suspected/assumed不得升级为事实，failed表示读取失败。人物身份、关系、秘密/知识、世界规则、任务、权限和命名地点不得system_generated；L3不得使用suspected、assumed或system_generated。当前型资料只输出本块结束时的新版本。冲突不能自行圆回来，写入 conflicts。若块中出现已有小摘要，则逐项交叉检查：原文确认=confirmed，摘要独有但本块找不到原文=summary_only，原文有而摘要漏写=missing_from_summary，互相冲突=conflict。只在确有可比摘要时输出 summaryChecks。
 
-完整读取 sourceChunk 中全部记录。不要为每个正常楼层重复输出一条回执：程序会根据完整块和 changes 的 sourceRefs 在本地补齐逐楼层状态。只有确实无法读取的 chat 楼层才把 id 放入 readFailedMessageIds；全部读完时必须明确返回空数组。允许 changes 为空。complete:true 必须是 evidence 的最后一个字段，只有读完本块并闭合前面所有数组后才能写出；禁止提前写。只输出一个闭合严格 JSON 对象，禁止按楼层输出多个 JSON：{"evidence":{"chunkStatus":"changes或no_long_term_change","readFailedMessageIds":[],"changes":[{"factId":"","module":"world|factAnchors|resourceConstraints|characters|npcActivities|relationships|knowledge|locations|tasks|events|triggers|threads|progression|processes|causalEffects|timeline","operation":"upsert","entityId":"","value":{"truthStatus":"confirmed","basis":[],"sourceRefs":[]},"sourceRefs":[]}],"conflicts":[],"summaryChecks":[],"complete":true}}。`;
+完整读取 sourceChunk 中全部记录。不要为每个正常楼层重复输出一条回执：程序会根据完整块和 changes 的 sourceRefs 在本地补齐逐楼层状态。只有确实无法读取的 chat 楼层才把 id 放入 readFailedMessageIds；全部读完时必须明确返回空数组。允许 changes 为空。complete:true 必须是 evidence 的最后一个字段，只有读完本块并闭合前面所有数组后才能写出；禁止提前写。只输出一个闭合严格 JSON 对象，禁止按楼层输出多个 JSON：{"evidence":{"chunkStatus":"changes或no_long_term_change","readFailedMessageIds":[],"changes":[{"factId":"","module":"world|worldRules|factAnchors|resourceConstraints|organizations|characters|npcActivities|relationships|knowledge|schedules|locations|tasks|events|triggers|threads|progression|processes|causalEffects|timeline","operation":"upsert","entityId":"","value":{"truthStatus":"confirmed","basis":[],"sourceRefs":[]},"sourceRefs":[]}],"conflicts":[],"summaryChecks":[],"complete":true}}。`;
 
     function hash(value) {
         const input = String(value || '');
@@ -304,9 +305,9 @@
     }
 
     const CHANGE_EVIDENCE_KEYS = {
-        factAnchors: 'anchors', resourceConstraints: 'resourceConstraints', characters: 'characters', npcActivities: 'npcActivities',
+        worldRules: 'worldRules', factAnchors: 'anchors', resourceConstraints: 'resourceConstraints', organizations: 'organizations', characters: 'characters', npcActivities: 'npcActivities',
         relationships: 'relationships', knowledge: 'knowledge', locations: 'locations', tasks: 'tasks', events: 'events', triggers: 'triggers',
-        threads: 'threads', progression: 'progression', processes: 'processes', causalEffects: 'causal', timeline: 'timeline',
+        schedules: 'schedules', threads: 'threads', progression: 'progression', processes: 'processes', causalEffects: 'causal', timeline: 'timeline',
     };
     function evidenceFromChanges(changes) {
         const evidence = {};
@@ -391,7 +392,7 @@
                     options.onProgress?.({ stage: 'calibrate', current: completedChunks, chunkIndex: index + 1, total: chunks.length, kind: chunk.kind, cached: false, cacheHits, concurrency, uniqueMessageIds });
                     requestAttempts += 1;
                     try {
-                        const response = await WSM.Api.complete(CALIBRATION_PROMPT, {
+                        const response = await WSM.Api.complete(`${CALIBRATION_PROMPT}${PHANTASM_COVERAGE_PROMPT}`, {
                             task: 'HISTORY_CALIBRATION_CHUNK',
                             chunkIndex: index + 1,
                             chunkCount: chunks.length,
@@ -536,7 +537,7 @@
             }
             try {
                 requestAttempts += 1;
-                const result = await WSM.Api.complete(CHUNK_PROMPT, {
+                const result = await WSM.Api.complete(`${CHUNK_PROMPT}${PHANTASM_COVERAGE_PROMPT}`, {
                     task: 'SOURCE_READ_CHUNK', chunkIndex: index + 1, chunkCount: queue.length, sourceChunk: queue[index],
                 }, { maxTokens: 3000, signal: options.signal });
                 const digest = digestValue(result);
@@ -575,7 +576,7 @@
                     continue;
                 }
                 try {
-                    const result = await WSM.Api.complete(MERGE_PROMPT, {
+                    const result = await WSM.Api.complete(`${MERGE_PROMPT}${PHANTASM_COVERAGE_PROMPT}`, {
                         task: 'SOURCE_MERGE_DIGESTS', pass: mergePasses, batchIndex: index + 1, batchCount: batches.length, digestBatch: batches[index],
                         targetChars: reduceTarget,
                     }, { maxTokens: 3500, signal: options.signal });
@@ -602,7 +603,7 @@
                     current = [cached];
                     cacheHits += 1;
                 } else {
-                    const result = await WSM.Api.complete(MERGE_PROMPT, {
+                    const result = await WSM.Api.complete(`${MERGE_PROMPT}${PHANTASM_COVERAGE_PROMPT}`, {
                         task: 'SOURCE_FINAL_COMPACT', pass: mergePasses, targetChars: reduceTarget, digestBatch: current,
                     }, { maxTokens: 3000, signal: options.signal });
                     const digest = digestValue(result);

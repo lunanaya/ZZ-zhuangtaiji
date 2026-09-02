@@ -5,24 +5,15 @@
     const list = (value) => Array.isArray(value) ? value.filter(Boolean) : [];
     const join = (value) => list(value).join('、');
     const disclosureLabel = (value) => ({ confidential: '保密', restricted: '受限', public: '公开' }[value] || text(value));
-    const truthLabels = Object.freeze({
-        confirmed: '',
-        derived: '【确定推导】',
-        system_generated: '【系统生成，保持连续】',
-        suspected: '【疑似，不得写成事实】',
-        assumed: '【运行暂定，不得形成重大后果】',
-        unknown: '【未知，禁止补造】',
-        not_established: '【尚未建立，不得自行升级】',
-        not_applicable: '【不适用】',
-        failed: '【读取失败，先补查】',
-    });
     function truthLine(value, owner = {}) {
         const content = text(value);
         if (!content) return '';
-        const status = text(owner?.truthStatus).toLowerCase() || 'unknown';
-        const prefix = truthLabels[status] ?? truthLabels.unknown;
-        const basis = join(owner?.basis);
-        return `${prefix}${content}${basis && status !== 'confirmed' ? `｜依据：${basis}` : ''}`;
+        // Truth metadata is an internal audit mechanism. The prose model must
+        // receive only facts that passed that audit, never the audit labels,
+        // reasoning notes, or source identifiers themselves.
+        const status = text(owner?.truthStatus).toLowerCase();
+        if (['suspected','assumed','unknown','not_established','failed'].includes(status)) return '';
+        return content;
     }
     function activeMemory(values, warmRelevant = () => false) {
         return list(values).filter((item) => {
@@ -59,16 +50,17 @@
     }
     function replaceIdentityTokens(value, state) {
         let output = text(value);
-        const userName = text(state?.identities?.user);
-        const charName = text(state?.identities?.char);
+        const userName = text(WSM.Context?.identityNames?.()?.user || state?.identities?.user) || '<USER>';
         if (userName) output = output.replace(/<user>|\buser\b/gi, userName);
-        if (charName) output = output.replace(/<char>|\bchar\b/gi, charName);
+        output = output.replace(/<char>|\bchar\b/gi, '相关人物');
         return output;
     }
     function entityName(state, id, fallback = '') {
         const key = text(id).toLowerCase();
-        if (['user','<user>'].includes(key)) return text(state?.identities?.user) || fallback || text(id);
-        if (['char','character','<char>'].includes(key)) return text(state?.identities?.char) || fallback || text(id);
+        if (['user','<user>'].includes(key)) return text(WSM.Context?.identityNames?.()?.user || state?.identities?.user) || '<USER>';
+        if (['char','character','<char>'].includes(key)) return fallback || '相关人物';
+        const character = list(state?.characters).find((item) => text(item?.id).toLowerCase() === key);
+        if (character?.name) return text(character.name);
         return fallback || text(id);
     }
     function mergedMapState(state) {
@@ -170,7 +162,7 @@
         list(map.locations).filter((item) => relevantLocationIds.has(text(item?.id))).forEach((item) => {
             add(item?.accessRuleRefs); add(item?.secretRefs); add(item?.dependencyFactIds);
         });
-        ['worldRules','factAnchors','resourceConstraints','characters','npcActivities','relationships','knowledge','tasks','events','triggers','threads','processes','causalEffects'].forEach((module) => {
+        ['worldRules','factAnchors','resourceConstraints','organizations','characters','npcActivities','relationships','knowledge','schedules','tasks','events','triggers','threads','processes','causalEffects'].forEach((module) => {
             list(state?.[module]).forEach((item) => add(item?.dependencyFactIds));
         });
         refs.delete('');
@@ -194,12 +186,7 @@
         }, {})).flat();
         const activeConstraints = activeMemory(state.resourceConstraints, (item) => item.status === 'active').filter((item) => !['expired','satisfied'].includes(item.status));
         const requiredFactIds = referencedFactIds(state);
-        const activeKnowledge = list(state.knowledge).filter((item) => requiredFactIds.has(text(item?.factId || item?.id)) || activeMemory([item], (value) => value.priority === 'L3' && touchesRelevant([...list(value.knownBy), ...list(value.believedBy), ...list(value.suspectedBy), ...list(value.misunderstoodBy), ...list(value.relatedRefs)])).length);
-        const coverageLabels = { factAnchors: '事实', resourceConstraints: '约束', characters: '人物', relationships: '关系', knowledge: '知识/秘密', tasks: '任务', locations: '地点' };
-        const coverageLine = Object.entries(state.moduleCoverage || {}).filter(([module]) => coverageLabels[module]).map(([module, value]) => {
-            const status = ({ has_records: '有记录', coverage_only: '已检查但尚未建立', checked_empty: '已校准无持久记录', unknown_empty: '空但未验证', failed: '读取失败', not_checked: '尚未检查' })[value?.status] || value?.status;
-            return `${coverageLabels[module]}=${status}`;
-        }).join('；');
+        const activeKnowledge = list(state.knowledge).filter((item) => requiredFactIds.has(text(item?.factId || item?.id)) || activeMemory([item], (value) => value.priority === 'L3' && touchesRelevant([...list(value.holderIds), ...list(value.knownBy), ...list(value.believedBy), ...list(value.suspectedBy), ...list(value.misunderstoodBy), ...list(value.relatedRefs)])).length);
         const snapshotFacts = [world.time?.display, world.season, world.location?.current, world.location?.environment, world.location?.weather, ...list(world.currentConditions)].map(canonicalLine).filter(Boolean);
         const uniqueEventContent = (item) => [item.summary, item.outcome].filter(Boolean).filter((value) => {
             const canonical = canonicalLine(value);
@@ -207,8 +194,6 @@
         });
         return {
             world: [
-                '真实性约束：confirmed可作事实；derived保留依据；system_generated仅限低风险连续状态；suspected只能表现为迹象；assumed不得形成重大后果；unknown/not_established禁止补造；failed先补查。',
-                coverageLine ? `模块读取覆盖：${coverageLine}。空但未验证/读取失败都不能当作“原文确实没有”，应先定点回查。` : '',
                 world.time?.display ? truthLine(`时间：${world.time.display}`, world.time) : '',
                 world.season ? truthLine(`季节：${world.season}`, world.seasonMeta) : '',
                 world.location?.current ? truthLine(`地点：${world.location.current}`, world.location.currentMeta) : '',
@@ -222,12 +207,18 @@
             factAnchors: activeMemory(state.factAnchors).map((item) => truthLine(`事实锚点：${item.fact}${item.scope ? `｜范围：${item.scope}` : ''}`, item)).join('\n'),
             worldRules: list(state.worldRules).filter((item) => requiredFactIds.has(text(item?.factId || item?.id)) || item.delivery === 'resident' || (text(item.activity).toUpperCase() !== 'COLD' && WSM.Facts?.requiredByContext?.(item, `${text(WSM.Context?.latestUserMessage?.()?.content)}\n${text(plan?.advanceDecision?.direction)}`))).sort((a, b) => Number(b.precedence || 0) - Number(a.precedence || 0)).map((item) => truthLine(WSM.Facts?.render?.(item, state) || item.statement, item)).join('\n'),
             resourceConstraints: activeConstraints.map((item) => truthLine([
-                item.subjectId ? `${entityName(state, item.subjectId, item.subjectId)}：` : '',
-                item.condition,
+                `${item.subjectId ? `${entityName(state, item.subjectId, item.subjectId)}：` : ''}${item.condition}`,
                 item.amount ? `数量/额度：${item.amount}` : '',
                 item.scope ? `范围：${item.scope}` : '',
                 item.consequence ? `不满足时：${item.consequence}` : '',
             ].filter(Boolean).join('｜'), item)).join('\n'),
+            organizations: activeMemory(state.organizations, (item) => list(item.leaderIds).some((id) => relevantNpcIds.has(id))).map((item) => truthLine([
+                `${item.name}｜${item.kind || '组织'}`,
+                item.jurisdiction ? `管辖：${item.jurisdiction}` : '',
+                list(item.goals).length ? `当前目标：${join(item.goals)}` : '',
+                list(item.resources).length ? `可调用资源：${join(item.resources)}` : '',
+                item.situation ? `当前处境：${item.situation}` : '',
+            ].filter(Boolean).join('；'), item)).join('\n'),
             ambient: list(plan.ambientResponses).map((item) => {
                 if (typeof item === 'string') return `【系统生成/即时反应】环境反馈：${item}`;
                 const actor = text(item?.actor) || '环境中的人';
@@ -251,27 +242,31 @@
             ].filter(Boolean).join('；'), item)).join('\n'),
             npcActivities: recentNpcActivities.map((item) => truthLine(`${entityName(state, item.characterId)}：${item.movement ? `${item.movement}｜` : ''}${item.location ? `${item.location}｜` : ''}${item.action}${item.currentRole ? `｜当前作用：${item.currentRole}` : ''}`, item)).join('\n'),
             relationships: activeMemory(state.relationships, (item) => relevantNpcIds.has(item.from) || relevantNpcIds.has(item.to)).map((item) => truthLine([
-                `${entityName(state, item.from) || '?'}↔${entityName(state, item.to) || '?'}：${item.status || item.type || '未描述'}`,
-                list(item.bondTypes).length ? `并存关系：${join(item.bondTypes)}` : '',
-                item.coreContradiction ? `核心矛盾：${item.coreContradiction}` : '',
-                list(item.attachments).length ? `无法割舍：${join(item.attachments)}` : '',
-                list(item.grievances).length ? `未解决伤害：${join(item.grievances)}` : '',
+                `${entityName(state, item.from) || '?'} → ${entityName(state, item.to) || '?'}`,
+                item.identityRelation ? `身份关系：${item.identityRelation}` : '',
+                (item.currentPerception || item.status) ? `当前关系认知：${item.currentPerception || item.status}` : '',
+                item.formationBasis ? `形成依据：${item.formationBasis}` : '',
                 list(item.boundaries).length ? `当前边界：${join(item.boundaries)}` : '',
-                list(item.reconciliationConditions).length ? `和解条件：${join(item.reconciliationConditions)}` : '',
-                item.perspectives && Object.keys(item.perspectives).length ? `双方视角：${Object.entries(item.perspectives).map(([id, value]) => `${entityName(state, id, id)}=${typeof value === 'string' ? value : [value?.attitude, value?.intent].filter(Boolean).join('；')}`).join('｜')}` : '',
-                item.expressionPatterns && Object.values(item.expressionPatterns).some(Boolean) ? `场景表现：${Object.entries(item.expressionPatterns).filter(([, value]) => value).map(([scene, value]) => `${scene}=${value}`).join('｜')}` : '',
-                list(item.bondTypes).length > 1 ? '多轴关系同时真实；保护、亲密、坦白、合作、争吵或真相揭露均不自动消除旧怨、爱意或完成和解。' : '',
             ].filter(Boolean).join('\n'), item)).join('\n\n'),
             knowledge: activeKnowledge.map((item) => truthLine([
                 replaceIdentityTokens(item.information, state),
                 item.priority ? `重要性：${item.priority}` : '',
                 item.disclosure ? `公开状态：${disclosureLabel(item.disclosure)}` : '',
                 item.certainty ? `性质：${item.certainty}` : '',
+                join(list(item.holderIds).map((id) => entityName(state, id))) ? `持有人：${join(list(item.holderIds).map((id) => entityName(state, id)))}` : '',
+                item.cognitiveStatus ? `认知状态：${item.cognitiveStatus}` : '',
                 join(list(item.knownBy).map((id) => entityName(state, id))) ? `确认：${join(list(item.knownBy).map((id) => entityName(state, id)))}` : '',
                 join(list(item.believedBy).map((id) => entityName(state, id))) ? `相信：${join(list(item.believedBy).map((id) => entityName(state, id)))}` : '',
                 join(list(item.suspectedBy).map((id) => entityName(state, id))) ? `怀疑：${join(list(item.suspectedBy).map((id) => entityName(state, id)))}` : '',
                 join(list(item.misunderstoodBy).map((id) => entityName(state, id))) ? `误解：${join(list(item.misunderstoodBy).map((id) => entityName(state, id)))}` : '',
                 join(list(item.unknownTo).map((id) => entityName(state, id))) ? `未知：${join(list(item.unknownTo).map((id) => entityName(state, id)))}` : '',
+            ].filter(Boolean).join('｜'), item)).join('\n'),
+            schedules: activeMemory(state.schedules, (item) => list(item.participantIds).some((id) => relevantNpcIds.has(id))).filter((item) => ['agreed','scheduled','changed'].includes(item.status)).map((item) => truthLine([
+                item.title,
+                list(item.participantIds).length ? `参与者：${join(list(item.participantIds).map((id) => entityName(state, id)))}` : '',
+                item.expectedTime ? `预计时间：${item.expectedTime}` : '',
+                list(item.preconditions).length ? `前置条件：${join(item.preconditions)}` : '',
+                `状态：${item.status}`,
             ].filter(Boolean).join('｜'), item)).join('\n'),
             tasks: activeMemory(state.tasks, (item) => item.status === 'active' && item.userVisible !== false).filter((item) => !['done','failed'].includes(item.status)).map((item) => truthLine([
                 `${item.title}：${item.progress || item.status || '待处理'}${item.deadline ? `；截止${item.deadline}` : ''}`,
@@ -370,13 +365,30 @@
         if (protectedBody.length >= maxChars) return protectedBody;
         let remaining = maxChars - protectedBody.length - (protectedBody ? 2 : 0);
         const allocations = new Map();
-        entries.filter((item) => !item.protected).slice().sort((a, b) => b.priority - a.priority).forEach((item) => {
-            if (remaining <= item.header.length + 24) return;
-            const fullLength = item.header.length + item.payload.length + 2;
-            const allocation = Math.min(item.payload.length, Math.max(24, remaining - item.header.length - 2));
-            allocations.set(item, allocation);
-            remaining -= Math.min(fullLength, item.header.length + allocation + 2);
-        });
+        const regularEntries = entries.filter((item) => !item.protected);
+        const overhead = regularEntries.reduce((sum, item) => sum + item.header.length + 2, 0);
+        if (remaining > overhead) {
+            const payloadBudget = remaining - overhead;
+            // Give every enabled, non-empty module a fair first slice before
+            // distributing surplus by priority. Otherwise one long world or
+            // resource prompt can consume the whole depth budget and silently
+            // erase later modules such as character identities.
+            const fairShare = Math.max(24, Math.floor(payloadBudget / Math.max(1, regularEntries.length)));
+            let used = 0;
+            regularEntries.forEach((item) => {
+                const allocation = Math.min(item.payload.length, fairShare);
+                if (allocation > 0) allocations.set(item, allocation);
+                used += allocation;
+            });
+            let surplus = Math.max(0, payloadBudget - used);
+            regularEntries.slice().sort((a, b) => b.priority - a.priority).forEach((item) => {
+                if (surplus <= 0) return;
+                const current = allocations.get(item) || 0;
+                const extra = Math.min(item.payload.length - current, surplus);
+                if (extra > 0) allocations.set(item, current + extra);
+                surplus -= Math.max(0, extra);
+            });
+        }
         return [
             diceBlock,
             ...entries.map((item) => {
@@ -423,7 +435,7 @@
     }
     const moduleBudgetPriority = Object.freeze({
         worldRules: 100, world: 95, resourceConstraints: 95, factAnchors: 90, knowledge: 90,
-        characters: 85, relationships: 85, map: 80, tasks: 78, events: 72, causalEffects: 70,
+        organizations: 86, characters: 85, relationships: 85, schedules: 82, map: 80, tasks: 78, events: 72, causalEffects: 70,
         npcActivities: 68, triggers: 62, threads: 60, processes: 58, progression: 55,
         pacing: 45, planner: 35, ambient: 20, worldbook: 10,
     });
@@ -442,6 +454,7 @@
         const candidates = [];
         const seenFacts = [];
         Object.entries(WSM.Defaults.INJECTION_MODULES).forEach(([id, defaultModule]) => {
+            if (id === 'map') return; // The scene map is a local visualization and must never be sent to the narrative AI.
             const config = Object.assign({}, defaultModule, modules[id] || {});
             if (config.enabled === false) return;
             const projectedFacts = factGroups.filter((group) => group.owner === id).map((group) => group.content).filter(Boolean).join('\n');
@@ -475,6 +488,7 @@
         const groups = new Map();
         const seenFacts = [];
         Object.entries(WSM.Defaults.INJECTION_MODULES).forEach(([id, defaultModule]) => {
+            if (id === 'map') return; // Keep map topology, labels, and routes out of every injection depth.
             const config = Object.assign({}, defaultModule, modules[id] || {});
             if (config.enabled === false) return;
             const projectedFacts = factGroups.filter((group) => group.owner === id).map((group) => group.content).filter(Boolean).join('\n');
@@ -517,5 +531,5 @@
         return Object.keys(statePrompts).map(Number).filter(Number.isFinite).sort((a, b) => a - b).map((depth) => text(statePrompts[depth])).filter(Boolean).join('\n\n');
     }
 
-    WSM.Injection = { compose, composeByDepth, preview, normalizeFinalOverride, fallbackBlocks, pacingBlock };
+    WSM.Injection = { compose, composeByDepth, preview, normalizeFinalOverride, fallbackBlocks, pacingBlock, _test: { replaceIdentityTokens, entityName } };
 })();

@@ -53,8 +53,8 @@
         endpoint.search = '';
         return endpoint.href;
     }
-    const STATE_ROOT_KEYS = ['identities','world','map','characters','npcActivities','relationships','knowledge','tasks','events','triggers','threads','processes','causalEffects','timeline'];
-    const EVIDENCE_ROOT_KEYS = ['sourceRefs','canon','chronology','timeline','anchors','characters','npcActivities','relationships','knowledge','locations','tasks','events','triggers','threads','processes','causal','progression','currentScene','uncertainties','messageResults','changes','conflicts','summaryChecks'];
+    const STATE_ROOT_KEYS = ['identities','world','map','organizations','characters','npcActivities','relationships','knowledge','schedules','tasks','events','triggers','threads','processes','causalEffects','timeline','sceneState','reasoningAudit'];
+    const EVIDENCE_ROOT_KEYS = ['sourceRefs','canon','worldRules','chronology','timeline','anchors','resourceConstraints','organizations','characters','npcActivities','relationships','knowledge','schedules','locations','tasks','events','triggers','threads','processes','causal','progression','currentScene','uncertainties','messageResults','changes','conflicts','summaryChecks'];
     function objectKeyCount(value, keys) {
         if (!value || typeof value !== 'object' || Array.isArray(value)) return 0;
         return keys.reduce((count, key) => count + (Object.prototype.hasOwnProperty.call(value, key) ? 1 : 0), 0);
@@ -326,14 +326,15 @@
             value: { type: 'object', additionalProperties: true },
         };
     }
-    function tuneTavernGptRequest(context, messages) {
+    function tuneTavernGptRequest(context, messages, settings = {}) {
         const eventName = context?.eventTypes?.CHAT_COMPLETION_SETTINGS_READY;
         const eventSource = context?.eventSource;
         if (!eventName || typeof eventSource?.on !== 'function') return () => {};
         const marker = String(messages?.[1]?.content || '').slice(0, 200);
         const handler = (data) => {
             const ownsRequest = (Array.isArray(data?.messages) ? data.messages : []).some((message) => String(message?.content || '').includes(marker));
-            if (!marker || !ownsRequest || !isGptReasoningModel(data?.model)) return;
+            const gptModeAlias = settings.gptMode === true && /gpt/i.test(String(data?.model || settings.model || ''));
+            if (!marker || !ownsRequest || (!isGptReasoningModel(data?.model) && !gptModeAlias)) return;
             // Internal state updates need reliable JSON, not lengthy hidden reasoning.
             // Keeping reasoning low prevents GPT reasoning models from exhausting the
             // reverse proxy timeout before they begin emitting the state object.
@@ -371,7 +372,7 @@
         return Math.max(256, Math.min(16384, Number.isFinite(requested) ? Math.round(requested) : 5000));
     }
     async function tavernAttempt(context, messages, settings, parentSignal, timeoutMs, structured = false) {
-        const removeTuning = tuneTavernGptRequest(context, messages);
+        const removeTuning = tuneTavernGptRequest(context, messages, settings);
         const attempt = attemptSignal(parentSignal, timeoutMs);
         try {
             return await awaitWithSignal(context.generateRaw({
@@ -523,7 +524,7 @@
             try { data = JSON.parse(raw); }
             catch (_) { data = /^\s*data:/m.test(raw) ? parseSseResponse(raw, streamInterrupted) : { output_text: raw }; }
             const providerError = providerResponseError(data);
-            if (providerError) throw new Error(`Planner API 拒绝了任务 ${meta.task}：${providerError}`);
+            if (providerError) throw new Error(`Planner API 拒绝了任务 ${meta.task}：${providerError}；输入 ${meta.inputChars} 字，输出上限 ${maxTokens} Tokens，流式 ${options.stream === true ? '已开启' : '未开启'}`);
             try {
                 return extractJson(responseText(data) || raw, { jsonContract: options.jsonContract });
             } catch (error) {

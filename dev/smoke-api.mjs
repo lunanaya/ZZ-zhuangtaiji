@@ -55,6 +55,40 @@ assert.deepEqual(JSON.parse(tavernRequest.prompt[1].content), { task: 'test' });
 assert.deepEqual(await complete('BASE-SYSTEM', { task: 'bounded' }, { maxTokens: 500000 }), { ok: true });
 assert.equal(tavernRequest.responseLength, 3210, 'task limits must not override the user configured output budget');
 
+settings.gptMode = true;
+SillyTavern.getContext = () => ({
+    eventTypes: { CHAT_COMPLETION_SETTINGS_READY: 'chat-settings' },
+    eventSource: {
+        on(_name, handler) { completionSettingsHandler = handler; },
+        removeListener(_name, handler) { if (completionSettingsHandler === handler) completionSettingsHandler = null; },
+    },
+    async generateRaw(request) {
+        tavernGenerationData = { model: '[按次]gpt-5.5', messages: request.prompt };
+        completionSettingsHandler?.(tavernGenerationData);
+        return '{"ok":true}';
+    },
+});
+assert.deepEqual(await complete('BASE-SYSTEM', { task: 'tavern-gpt-alias' }), { ok: true });
+assert.equal(tavernGenerationData.reasoning_effort, 'low', 'GPT mode must tune pay-per-call GPT aliases used by the Tavern connection');
+assert.equal(tavernGenerationData.verbosity, 'low');
+
+SillyTavern.getContext = () => ({
+    eventTypes: { CHAT_COMPLETION_SETTINGS_READY: 'chat-settings' },
+    eventSource: {
+        on(_name, handler) { completionSettingsHandler = handler; },
+        removeListener(_name, handler) { if (completionSettingsHandler === handler) completionSettingsHandler = null; },
+    },
+    async generateRaw(request) {
+        tavernGenerationData = { model: 'gemini-3.1-pro-preview', messages: request.prompt };
+        completionSettingsHandler?.(tavernGenerationData);
+        return '{"ok":true}';
+    },
+});
+assert.deepEqual(await complete('BASE-SYSTEM', { task: 'tavern-gemini-unchanged' }), { ok: true });
+assert.equal(tavernGenerationData.reasoning_effort, undefined, 'Gemini Tavern requests must remain unchanged');
+assert.equal(tavernGenerationData.verbosity, undefined);
+settings.gptMode = false;
+
 SillyTavern.getContext = () => ({
     async generateRaw() {
         return '<think>先比较 {旧状态}，再作答。</think>\n```json\n{"ok":true,"nested":{"value":"} 在字符串内"}}\n```';
@@ -139,6 +173,10 @@ assert.equal(aliasBody.max_tokens, 3000);
 assert.equal(aliasBody.reasoning_effort, 'low');
 assert.equal(aliasBody.verbosity, 'low');
 assert.equal('temperature' in aliasBody, false);
+assert.deepEqual(await complete('BASE-SYSTEM', { task: 'external-alias-stream' }, { maxTokens: 2800, reasoningEffort: 'low', stream: true }), { ok: true });
+const streamingAliasBody = JSON.parse(externalRequest.request.body);
+assert.equal(streamingAliasBody.stream, true, 'GPT source reads must request streaming so reverse proxies receive data before their idle timeout');
+assert.equal(streamingAliasBody.max_tokens, 2800);
 settings.model = 'gpt-5.5';
 assert.deepEqual(await complete('BASE-SYSTEM', { task: 'external-gpt' }), { ok: true });
 const gptBody = JSON.parse(externalRequest.request.body);

@@ -2,16 +2,19 @@
     'use strict';
     const WSM = window.WorldStateMachine = window.WorldStateMachine || {};
     const KEY = 'worldStateMachine';
-    const RULES_VERSION = 22;
+    const RULES_VERSION = 26;
     const defaults = {
         rulesVersion: RULES_VERSION,
         enabled: true,
         autoInitialize: false,
         useTavernApi: true,
+        gptMode: false,
         jailbreakPrompt: '',
         followTavernFont: true,
         customFontFamily: 'Inter, "Microsoft YaHei", sans-serif',
         fontScale: 0.9,
+        launcherVisible: true,
+        launcherPosition: null,
         endpoint: '',
         apiKey: '',
         model: '',
@@ -76,6 +79,8 @@
                 // must migrate together with the core prompts; the previous
                 // customized text remains available in promptMigrationBackup.
                 causalEffects: WSM.Defaults.MODULE_PROMPTS.causalEffects,
+                organizations: WSM.Defaults.MODULE_PROMPTS.organizations,
+                schedules: WSM.Defaults.MODULE_PROMPTS.schedules,
                 pacing: WSM.Defaults.MODULE_PROMPTS.pacing,
                 planner: WSM.Defaults.MODULE_PROMPTS.planner,
                 characters: WSM.Defaults.MODULE_PROMPTS.characters,
@@ -102,7 +107,7 @@
         }
         const savedModules = root[KEY].injectionModules || {};
         root[KEY].injectionModules = Object.fromEntries(Object.entries(WSM.Defaults.INJECTION_MODULES).map(([id, value]) => [id, Object.assign({}, value, savedModules[id] || {})]));
-        if (needsRulesMigration) ['characters','npcActivities','relationships','knowledge','world','worldRules','events','processes','causalEffects','tasks','triggers','threads','progression','pacing','map'].forEach((id) => {
+        if (needsRulesMigration) ['characters','organizations','npcActivities','relationships','knowledge','world','worldRules','schedules','events','processes','causalEffects','tasks','triggers','threads','progression','pacing','map'].forEach((id) => {
             root[KEY].injectionModules[id].instruction = WSM.Defaults.INJECTION_MODULES[id].instruction;
         });
         if (needsRulesMigration && root[KEY].injectionModules.map) root[KEY].injectionModules.map.enabled = true;
@@ -114,6 +119,12 @@
         if (!['off','verySlow','slow','medium','fast'].includes(root[KEY].storyPacing.mode)) root[KEY].storyPacing.mode = 'off';
         root[KEY].storyPacing.allowSceneTransition = root[KEY].storyPacing.allowSceneTransition === true;
         root[KEY].storyPacing.allowTimeSkip = root[KEY].storyPacing.allowTimeSkip === true;
+        root[KEY].gptMode = root[KEY].gptMode === true;
+        root[KEY].launcherVisible = root[KEY].launcherVisible !== false;
+        const launcherPosition = root[KEY].launcherPosition;
+        root[KEY].launcherPosition = launcherPosition && Number.isFinite(Number(launcherPosition.x)) && Number.isFinite(Number(launcherPosition.y))
+            ? { x: Number(launcherPosition.x), y: Number(launcherPosition.y) }
+            : null;
         // Kept only as a compatibility field for older saved settings. Reading
         // and initialization are always manual from v0.9.21 onward.
         root[KEY].autoInitialize = false;

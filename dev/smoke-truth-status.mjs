@@ -31,19 +31,18 @@ assert.equal(normalizedNorthern.world.location.weather, '多云');
 assert.equal(normalizedNorthern.world.location.weatherMeta.truthStatus, 'system_generated');
 assert.notEqual(normalizedNorthern.world.time.display, '');
 assert.notEqual(normalizedNorthern.world.location.environment, '');
-assert.equal(normalizedNorthern.relationships.filter((item) => item.coverageOnly).length, 2);
-assert.ok(normalizedNorthern.relationships.every((item) => item.truthStatus === 'not_established'));
-assert.equal(normalizedNorthern.moduleCoverage.relationships.status, 'coverage_only');
-assert.equal(normalizedNorthern.moduleCoverage.tasks.status, 'unknown_empty');
+assert.deepEqual(normalizedNorthern.relationships, [], '未建立的关系只应记录覆盖状态，不能生成假关系卡');
+assert.equal(normalizedNorthern.moduleCoverage.relationships.status, 'unknown');
+assert.equal(normalizedNorthern.moduleCoverage.tasks.status, 'unknown');
 
 const auditedEmpty = WorldStateMachine.Defaults.createState();
 auditedEmpty.initialized = true;
 auditedEmpty.runtime.sourceSummary = { sourceRead: { audit: { totalReadableMessages: 12, processedMessages: 12, failedMessages: 0 } } };
-assert.equal(WorldStateMachine.Storage._test.normalizeState(auditedEmpty).moduleCoverage.tasks.status, 'checked_empty');
+assert.equal(WorldStateMachine.Storage._test.normalizeState(auditedEmpty).moduleCoverage.tasks.status, 'empty_confirmed');
 const failedCoverage = WorldStateMachine.Defaults.createState();
 failedCoverage.initialized = true;
 failedCoverage.moduleCoverage.tasks = { status: 'failed', basis: '任务来源块读取失败' };
-assert.equal(WorldStateMachine.Storage._test.normalizeState(failedCoverage).moduleCoverage.tasks.status, 'failed');
+assert.equal(WorldStateMachine.Storage._test.normalizeState(failedCoverage).moduleCoverage.tasks.status, 'retrieval_failed');
 
 const unknownHemisphere = WorldStateMachine.Defaults.createState();
 unknownHemisphere.initialized = true;
@@ -72,7 +71,7 @@ const normalizedRelationship = WorldStateMachine.Storage._test.normalizeState(re
 const possibleRomance = normalizedRelationship.relationships.find((item) => item.id === 'possible-romance');
 assert.equal(possibleRomance.truthStatus, 'suspected');
 assert.equal(possibleRomance.priority, 'L2', '推测关系不得成为L3核心事实');
-assert.equal(normalizedRelationship.relationships.find((item) => item.from === 'char' && item.to === 'user')?.truthStatus, 'not_established');
+assert.equal(normalizedRelationship.relationships.find((item) => item.from === 'char' && item.to === 'user'), undefined, '没有反向关系证据时不得生成占位关系');
 
 const transitionBase = WorldStateMachine.Defaults.createState();
 transitionBase.relationships = [{
@@ -96,9 +95,9 @@ const weatherJump = WorldStateMachine.Engine._test.applyStateDelta(weatherBase, 
 assert.equal(weatherJump.world.location.weather, '小雨', '无原文依据的系统天气不得从小雨突变为暴雪');
 
 const blocks = WorldStateMachine.Injection.fallbackBlocks(normalizedRelationship);
-assert.match(blocks.relationships, /疑似，不得写成事实/);
-assert.match(blocks.relationships, /尚未建立，不得自行升级/);
-assert.match(WorldStateMachine.Injection.fallbackBlocks(normalizedNorthern).world, /系统生成，保持连续/);
-assert.match(WorldStateMachine.Injection.fallbackBlocks(normalizedUnknown).world, /未知，禁止补造/);
+assert.equal(blocks.relationships, '', '疑似条目只能留在后台审计，不得发送给正文模型');
+assert.doesNotMatch(WorldStateMachine.Injection.fallbackBlocks(normalizedNorthern).world, /真实性|判断依据|来源引用|系统生成|sourceRefs|basis/, '正文注入不得暴露内部审计字段');
+const unknownWorldBlock = WorldStateMachine.Injection.fallbackBlocks(normalizedUnknown).world;
+assert.doesNotMatch(unknownWorldBlock, /季节：未明确|真实性|判断依据|来源引用|unknown|sourceRefs|basis/, '未知条目与审计字段不得发送给正文模型');
 
-console.log('Truth status, constrained inference, and relationship coverage smoke tests passed');
+console.log('Truth status, constrained inference, and evidence-backed relationship smoke tests passed');

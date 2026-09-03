@@ -104,7 +104,11 @@ const queuedTurns = WorldStateMachine.Engine._test.pendingTurnReads([
     { turnKey: 'turn-2', currentUserAction: { id: 3, content: '下一轮行动' } },
 ]);
 assert.deepEqual(queuedTurns.map((item) => item.turnKey), ['turn-1', 'turn-2'], '超时补账队列必须按轮次去重，避免下一次API重复结算');
-assert.equal(queuedTurns.some((item) => 'previousAssistantMessage' in item), false, '自动补账队列不得保留或重读上一轮助手正文');
+assert.equal(queuedTurns[0].previousAssistantMessage?.content, '上一轮正文', '未成功读取的助手正文必须保留到下一次单调用补账');
+const alreadyReadQueue = WorldStateMachine.Engine._test.pendingTurnReads([
+    { turnKey: 'turn-19', previousAssistantMessage: { id: 19, content: '已读取正文' }, previousAssistantFloor: 19, currentUserAction: { id: 20, content: '用户行动' } },
+], 19);
+assert.equal(alreadyReadQueue[0].previousAssistantMessage, null, '达到楼层高水位后不得自动重复读取同一助手正文');
 assert.equal(WorldStateMachine.Engine._test.shouldReuseTurnPlan('regenerate'), true, '重新回复必须复用同一轮计划，不得再次调用状态API');
 assert.equal(WorldStateMachine.Engine._test.shouldReuseTurnPlan('swipe'), true, '切换回复候选必须复用同一轮计划');
 assert.equal(WorldStateMachine.Engine._test.shouldReuseTurnPlan('normal'), false);
@@ -112,6 +116,8 @@ const previousBodyReceipt = WorldStateMachine.Engine._test.previousBodyReceipt({
 assert.equal(previousBodyReceipt.floor, 19, '手动读取必须保存可见楼层的一基编号');
 assert.equal(previousBodyReceipt.messageId, 'assistant-9', '手动读取必须保存助手消息ID');
 assert.match(previousBodyReceipt.messageKey, /^assistant-9:/, '楼层记录必须绑定正文哈希，避免把不同正文误认为同一份');
+assert.equal(WorldStateMachine.Engine._test.readFloorHighWater({ runtime: { lastReadFloor: 19, lastPreviousBodyFloor: 18, sourceSummary: { chatMessages: 17 } } }), 19, '自动读取去重必须使用已保存的最高楼层');
+assert.equal(WorldStateMachine.Engine._test.readReceiptRuntime({ runtime: { lastReadFloor: 19 } }, { ...previousBodyReceipt, floor: 18 }).lastReadFloor, 19, '手动重读较低楼层不得降低自动读取高水位');
 const compactTurn = WorldStateMachine.Engine._test.compactTurnState({
     identities: { user: '用户' }, organizations: [{ id: 'org', name: '组织', situation: '仍在活动', basis: ['原文'], sourceRefs: ['chat:1'], truthStatus: 'confirmed' }],
     reasoningAudit: { moduleDecisions: ['技术审计'] }, moduleCoverage: { organizations: { status: 'has_records' } },
@@ -121,6 +127,64 @@ assert.equal(compactTurn.organizations[0].name, '组织');
 assert.equal(compactTurn.organizations[0].sourceRefs, undefined, '普通轮次不得重复发送来源索引');
 assert.equal(compactTurn.reasoningAudit, undefined, '普通轮次不得重复发送审计表');
 assert.equal(compactTurn.runtime, undefined);
+const directSettlement = WorldStateMachine.Engine._test.normalizeSettlementResult({
+    stateDelta: { world: { location: { current: '第七层新地点' } }, characters: [{ id: 'hero', name: '新人物' }] },
+    actualChanges: ['地点与人物已更新'],
+});
+assert.equal(directSettlement.delta.statePatch.world.location.current, '第七层新地点', '直接写在 stateDelta 下的状态模块必须被应用，不得假成功');
+assert.equal(directSettlement.delta.statePatch.characters[0].name, '新人物');
+const directWorldSettlement = WorldStateMachine.Engine._test.normalizeSettlementResult({
+    time: { display: '昭国四年 秋 第十四日☆24:00-01:00' },
+    season: '秋',
+    seasonMeta: { truthStatus: 'confirmed' },
+    location: { current: '揽月轩' },
+    environment: '夜间室内',
+    weather: '多云',
+});
+assert.equal(directWorldSettlement.delta.statePatch.world.location.current, '揽月轩', '接口直接返回 world 栏目内容时必须包装为 world 增量');
+const nestedSettlement = WorldStateMachine.Engine._test.normalizeSettlementResult({
+    output: { stateDelta: { statePatch: { sceneState: { location: '新场景' } } }, actualChanges: ['进入新场景'] },
+});
+assert.equal(nestedSettlement.delta.statePatch.sceneState.location, '新场景', '接口的 output 包装层不得导致状态丢失');
+assert.deepEqual(WorldStateMachine.Engine._test.normalizeSettlementResult({ stateDelta: {} }).delta, {}, '显式空增量才可以作为无变化的成功结果');
+assert.deepEqual(WorldStateMachine.Engine._test.normalizeSettlementResult({ stateDelta: 'KEEP' }).delta, {}, '模型返回 KEEP 时应识别为无变化');
+assert.deepEqual(WorldStateMachine.Engine._test.normalizeSettlementResult({ stateDelta: { statePatch: null, collectionOps: null } }).delta.collectionOps, [], '兼容模型以 null 表示空增量字段');
+assert.equal(WorldStateMachine.Engine._test.normalizeSettlementResult({ stateDelta: [{ module: 'characters', op: 'remove', id: 'old' }] }).delta.collectionOps[0].id, 'old', '兼容直接返回操作数组');
+assert.throws(
+    () => WorldStateMachine.Engine._test.normalizeSettlementResult({ timelineEntry: {}, actualChanges: [] }),
+    /缺少可应用的 stateDelta/,
+    '缺少状态增量的普通对象不得更新楼层标记并报成功',
+);
+const storageBeforeIncrementalReconcile = WorldStateMachine.Storage;
+WorldStateMachine.Storage = {
+    ...(storageBeforeIncrementalReconcile || {}),
+    clone: (value) => structuredClone(value),
+    enforceTruthTransition: (_previous, value) => value,
+};
+const reconciledLists = WorldStateMachine.Engine._test.applyStateDelta({
+    revision: 3,
+    world: { location: {} },
+    characters: [
+        { id: 'changed', name: '旧姓名', situation: '旧状态' },
+        { id: 'kept', name: '未变人物', situation: '未变状态' },
+        { id: 'removed', name: '已离开人物', situation: '旧场景' },
+    ],
+    tasks: [],
+}, {
+    collectionOps: [
+        { module: 'characters', op: 'update', id: 'changed', value: { id: 'changed', name: '新姓名', situation: '新状态' } },
+        { module: 'characters', op: 'remove', id: 'removed' },
+    ],
+});
+assert.equal(reconciledLists.characters.find((item) => item.id === 'changed')?.situation, '新状态', '正文明确变化的列表条目必须更新');
+assert.equal(reconciledLists.characters.find((item) => item.id === 'kept')?.situation, '未变状态', '正文未改变的列表条目必须保留');
+assert.equal(reconciledLists.characters.some((item) => item.id === 'removed'), false, '正文明确失效的列表条目必须删除');
+const sceneUpdated = WorldStateMachine.Engine._test.applyAssistantSceneFacts({
+    world: { time: { display: '旧时间' }, location: { current: '旧地点' } },
+}, 'time:昭国四年 秋 第十四日☆24:00-01:00\nscene:兴州行宫·漱玉园至揽月轩');
+assert.equal(sceneUpdated.world.time.display, '昭国四年 秋 第十四日☆24:00-01:00', '正文末尾 time 必须覆盖列表的旧时间');
+assert.equal(sceneUpdated.world.location.current, '揽月轩', '场景发生迁移时必须保存最终地点');
+WorldStateMachine.Storage = storageBeforeIncrementalReconcile;
 assert.equal(WorldStateMachine.Engine._test.deletedAssistantCount([
     { signature: 'u1', role: 'user' }, { signature: 'a1', role: 'assistant' }, { signature: 'u2', role: 'user' }, { signature: 'a2', role: 'assistant' }, { signature: 'a3', role: 'assistant' },
 ], [{ signature: 'u1', role: 'user' }, { signature: 'a1', role: 'assistant' }]), 2, '删除五层中的多条助手回复时必须按助手数量回滚');

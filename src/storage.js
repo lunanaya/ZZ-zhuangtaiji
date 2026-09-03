@@ -1633,7 +1633,19 @@
             if (isChatGenerationSnapshot(item)) indexes.push(index);
         }
         if (!indexes.length) return { state: load(), rolledBack: 0 };
-        const target = box.history[indexes.at(-1)].state;
+        const target = clone(box.history[indexes.at(-1)].state);
+        const currentRuntime = box.state?.runtime || {};
+        target.runtime = Object.assign({}, target.runtime, {
+            // A deletion restores world state, but it must not erase the
+            // independent read high-water mark. Otherwise sending after a
+            // delete/reroll would charge for the same assistant floor again.
+            lastReadFloor: Math.max(Number(target.runtime?.lastReadFloor || 0), Number(currentRuntime.lastReadFloor || 0)),
+            lastPreviousBodyMessageId: currentRuntime.lastPreviousBodyMessageId || target.runtime?.lastPreviousBodyMessageId || '',
+            lastPreviousBodyMessageKey: currentRuntime.lastPreviousBodyMessageKey || target.runtime?.lastPreviousBodyMessageKey || '',
+            lastPreviousBodyFloor: Math.max(Number(target.runtime?.lastPreviousBodyFloor || 0), Number(currentRuntime.lastPreviousBodyFloor || 0)),
+            lastPreviousBodyContentHash: currentRuntime.lastPreviousBodyContentHash || target.runtime?.lastPreviousBodyContentHash || '',
+            previousBodyReadAt: Math.max(Number(target.runtime?.previousBodyReadAt || 0), Number(currentRuntime.previousBodyReadAt || 0)),
+        });
         const removed = new Set(indexes);
         box.history = box.history.filter((_item, index) => !removed.has(index));
         const state = await save(target, 'rollback-deleted-chat-generations', { snapshot: false });

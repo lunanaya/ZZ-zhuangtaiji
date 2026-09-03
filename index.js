@@ -1,7 +1,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '0.16.15';
+    const VERSION = '0.16.28';
     const baseUrl = new URL('./', import.meta.url).href;
     const modules = [
         'src/defaults.js',

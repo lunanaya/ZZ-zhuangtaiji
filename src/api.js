@@ -54,6 +54,7 @@
         return endpoint.href;
     }
     const STATE_ROOT_KEYS = ['identities','world','map','organizations','characters','npcActivities','relationships','knowledge','schedules','tasks','events','triggers','threads','processes','causalEffects','timeline','sceneState','reasoningAudit'];
+    const WORLD_DETAIL_KEYS = ['time','season','seasonMeta','location','environment','weather','currentConditions','currentConditionDetails'];
     const EVIDENCE_ROOT_KEYS = ['sourceRefs','canon','worldRules','chronology','timeline','anchors','resourceConstraints','organizations','characters','npcActivities','relationships','knowledge','schedules','locations','tasks','events','triggers','threads','processes','causal','progression','currentScene','uncertainties','messageResults','changes','conflicts','summaryChecks'];
     function objectKeyCount(value, keys) {
         if (!value || typeof value !== 'object' || Array.isArray(value)) return 0;
@@ -82,12 +83,27 @@
             if (value.digest && typeof value.digest === 'object') return 100;
             return objectKeyCount(value, EVIDENCE_ROOT_KEYS) >= 3 ? 50 : 0;
         }
+        if (contract === 'delta') {
+            for (let index = 0; index < envelopes.length; index += 1) {
+                const item = envelopes[index];
+                if (Object.prototype.hasOwnProperty.call(item, 'stateDelta')) return index ? 90 : 100;
+                if (Object.prototype.hasOwnProperty.call(item, 'delta')) return index ? 80 : 85;
+                if (item.state && typeof item.state === 'object' && !Array.isArray(item.state)) return index ? 70 : 75;
+            }
+            if (objectKeyCount(value, STATE_ROOT_KEYS) >= 1) return 50;
+            // A few OpenAI-compatible endpoints ignore the requested wrapper
+            // and return the changed `world` module itself. Keep that JSON as
+            // a usable delta candidate; the engine wraps it into statePatch.
+            return objectKeyCount(value, WORLD_DETAIL_KEYS) >= 2 ? 45 : 0;
+        }
         return 1;
     }
     function contractRichness(value, contract) {
         if (!value || typeof value !== 'object' || Array.isArray(value)) return 0;
         const root = contract === 'evidence'
             ? (value.evidence || value.digest || value.result?.evidence || value.result?.digest || value.data?.evidence || value.data?.digest || value.output?.evidence || value.output?.digest || value)
+            : contract === 'delta'
+                ? (value.stateDelta || value.delta || value.result?.stateDelta || value.result?.delta || value.data?.stateDelta || value.data?.delta || value.output?.stateDelta || value.output?.delta || value)
             : contract === 'state'
                 ? (value.state || value)
                 : value;
@@ -103,6 +119,7 @@
         if (contract === 'state') return '包含 state 的世界状态结果';
         if (contract === 'evidence') return '包含 evidence/digest 的资料证据';
         if (contract === 'digest') return '包含 digest 的资料摘要';
+        if (contract === 'delta') return '包含 stateDelta（或直接状态模块）的增量结算结果';
         return '有效结果';
     }
     function extractJson(value, options = {}) {
@@ -362,6 +379,40 @@
                 },
             },
             required: ['evidence'],
+            additionalProperties: true,
+        } : contract === 'delta' ? {
+            type: 'object',
+            properties: {
+                stateDelta: {
+                    type: 'object',
+                    properties: {
+                        statePatch: {
+                            type: 'object',
+                            properties: Object.fromEntries(STATE_ROOT_KEYS.map((key) => [key, {}])),
+                            additionalProperties: true,
+                        },
+                        collectionOps: {
+                            type: 'array',
+                            items: {
+                                type: 'object',
+                                properties: {
+                                    module: { type: 'string' },
+                                    op: { type: 'string' },
+                                    id: { type: 'string' },
+                                    value: {},
+                                },
+                                required: ['module','op','id'],
+                                additionalProperties: true,
+                            },
+                        },
+                    },
+                    required: ['statePatch','collectionOps'],
+                    additionalProperties: true,
+                },
+                timelineEntry: { type: 'object', additionalProperties: true },
+                actualChanges: { type: 'array', items: {} },
+            },
+            required: ['stateDelta','actualChanges'],
             additionalProperties: true,
         } : { type: 'object', additionalProperties: true };
         return {

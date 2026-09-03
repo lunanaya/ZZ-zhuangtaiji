@@ -151,22 +151,21 @@
         for (let i = 0; i < input.length; i += 1) result = ((result << 5) - result + input.charCodeAt(i)) | 0;
         return (result >>> 0).toString(36);
     }
-    function pendingTurnReads(value) {
+    function pendingTurnReads(value, readFloor = 0) {
         const rows = Array.isArray(value) ? value : [];
         const seen = new Set();
         return rows.map((item) => {
             if (!item || typeof item !== 'object') return null;
-            // Older versions queued the previous assistant body for automatic
-            // recovery. Previous-body reads are now manual-only, so discard it
-            // even when loading an existing queue.
-            const { previousAssistantMessage: _previousAssistantMessage, ...userTurnOnly } = item;
-            return userTurnOnly;
+            const previousFloor = Math.max(0, Math.floor(Number(item.previousAssistantFloor || 0)));
+            return previousFloor && previousFloor <= Number(readFloor || 0)
+                ? { ...item, previousAssistantMessage: null, previousAssistantFloor: 0 }
+                : { ...item };
         }).filter((item) => {
             if (!item || typeof item !== 'object') return false;
             const identity = safeText(item.turnKey) || hash(JSON.stringify(item));
             if (seen.has(identity)) return false;
             seen.add(identity);
-            return !!item.currentUserAction;
+            return !!(item.previousAssistantMessage || item.currentUserAction);
         }).slice(-6);
     }
     function shouldReuseTurnPlan(type) {
@@ -839,6 +838,109 @@
             operation?.value || {},
         ));
         return changes;
+    }
+    function normalizeSettlementDelta(delta) {
+        if (typeof delta === 'string') {
+            const text = delta.trim();
+            if (!text || /^(?:keep|no[_\s-]*changes?|unchanged|无变化|保持原状)$/i.test(text)) return {};
+            try { return normalizeSettlementDelta(JSON.parse(text)); }
+            catch (_error) { return null; }
+        }
+        if (Array.isArray(delta)) {
+            if (!delta.length) return {};
+            if (delta.every((item) => item && typeof item === 'object' && !Array.isArray(item) && (item.module || item.op))) {
+                return { collectionOps: delta };
+            }
+            return null;
+        }
+        if (!delta || typeof delta !== 'object') return null;
+        const keys = Object.keys(delta);
+        if (!keys.length) return {};
+        if (delta.keep === true || /^(?:keep|no[_\s-]*changes?|unchanged)$/i.test(safeText(delta.operation || delta.status || delta.action))) return {};
+        const hasPatch = Object.prototype.hasOwnProperty.call(delta, 'statePatch') || Object.prototype.hasOwnProperty.call(delta, 'patch');
+        const hasOps = Object.prototype.hasOwnProperty.call(delta, 'collectionOps') || Object.prototype.hasOwnProperty.call(delta, 'collections');
+        if (hasPatch || hasOps) {
+            const patch = delta.statePatch ?? delta.patch ?? {};
+            if (hasPatch && (typeof patch !== 'object' || Array.isArray(patch))) return null;
+            let collectionOps = delta.collectionOps;
+            let collections = delta.collections;
+            if (collectionOps == null && Object.prototype.hasOwnProperty.call(delta, 'collectionOps')) collectionOps = [];
+            if (collectionOps && !Array.isArray(collectionOps) && typeof collectionOps === 'object') collectionOps = [collectionOps];
+            if (Array.isArray(collections)) {
+                collectionOps = [...(Array.isArray(collectionOps) ? collectionOps : []), ...collections];
+                collections = undefined;
+            }
+            if (Object.prototype.hasOwnProperty.call(delta, 'collectionOps') && !Array.isArray(collectionOps)) return null;
+            if (collections && (typeof collections !== 'object' || Array.isArray(collections))) return null;
+            return { ...delta, ...(hasPatch ? { statePatch: patch } : {}), ...(collectionOps ? { collectionOps } : {}), ...(collections ? { collections } : {}), ...(collections === undefined ? { collections: undefined } : {}) };
+        }
+        // Some compatible endpoints ignore the requested wrapper and put the
+        // changed state modules directly below stateDelta. Treat those modules
+        // as a patch instead of silently accepting a no-op.
+        const stateKeys = new Set(Object.keys(WSM.Defaults?.STATE_SCHEMA || {}));
+        const statePatch = Object.fromEntries(Object.entries(delta).filter(([key]) => stateKeys.has(key)));
+        return Object.keys(statePatch).length ? { statePatch } : null;
+    }
+    function normalizeSettlementResult(rawResult) {
+        const root = rawResult && typeof rawResult === 'object' && !Array.isArray(rawResult) ? rawResult : null;
+        if (!root) throw new Error('结算响应不是 JSON 对象');
+        const stateKeys = new Set(Object.keys(WSM.Defaults?.STATE_SCHEMA || {}));
+        const worldKeys = new Set(Object.keys(WSM.Defaults?.STATE_SCHEMA?.world || {}));
+        const envelopes = [root, root.result, root.data, root.output]
+            .filter((item) => item && typeof item === 'object' && !Array.isArray(item));
+        const hasStatePayload = (item) => ['stateDelta','delta','state'].some((key) => Object.prototype.hasOwnProperty.call(item, key))
+            || Object.keys(item).some((key) => stateKeys.has(key))
+            || Object.keys(item).filter((key) => worldKeys.has(key)).length >= 2;
+        const payload = envelopes.find(hasStatePayload) || root;
+        const result = payload === root ? root : { ...root, ...payload };
+        const deltaWasSpecified = Object.prototype.hasOwnProperty.call(payload, 'stateDelta')
+            || Object.prototype.hasOwnProperty.call(payload, 'delta');
+        let delta = deltaWasSpecified ? normalizeSettlementDelta(payload.stateDelta ?? payload.delta) : null;
+        const legacyState = payload.state && typeof payload.state === 'object' && !Array.isArray(payload.state)
+            ? payload.state : null;
+        if (deltaWasSpecified && !delta) {
+            const rawDelta = payload.stateDelta ?? payload.delta;
+            const shape = rawDelta && typeof rawDelta === 'object' && !Array.isArray(rawDelta)
+                ? Object.entries(rawDelta).slice(0, 12).map(([key, value]) => `${key}:${Array.isArray(value) ? 'array' : typeof value}`).join('、')
+                : (Array.isArray(rawDelta) ? `array(${rawDelta.length})` : typeof rawDelta);
+            throw new Error(`stateDelta 格式无法应用；结构 ${shape || '空'}`);
+        }
+        if (!delta && !legacyState) {
+            const directState = Object.fromEntries(Object.entries(payload).filter(([key]) => stateKeys.has(key)));
+            if (Object.keys(directState).length) delta = { statePatch: directState };
+            else {
+                const directWorld = Object.fromEntries(Object.entries(payload).filter(([key]) => worldKeys.has(key)));
+                if (Object.keys(directWorld).length >= 2) delta = { statePatch: { world: directWorld } };
+            }
+            if (delta) {
+                // accepted a wrapper-less state/module response
+            }
+            else if (payload.noChanges === true) delta = {};
+            else {
+                const shape = Object.entries(payload).slice(0, 12)
+                    .map(([key, value]) => `${key}:${Array.isArray(value) ? 'array' : typeof value}`)
+                    .join('、');
+                throw new Error(`结算响应缺少可应用的 stateDelta${shape ? `；返回字段 ${shape}` : ''}`);
+            }
+        }
+        return { result, delta, legacyState };
+    }
+    function applyAssistantSceneFacts(state, assistantMemory) {
+        const text = safeText(assistantMemory?.content ?? assistantMemory);
+        if (!text) return state;
+        const lastField = (field) => [...text.matchAll(new RegExp(`^\\s*${field}\\s*[:：]\\s*(.+)$`, 'gim'))].at(-1)?.[1]?.trim() || '';
+        const header = [...text.matchAll(/【[^\n】]*?时间[:：]\s*([^|】]+)[^\n】]*?地点[:：]\s*([^|】]+)[^\n】]*?天气[:：]\s*([^|】]+)[^\n】]*?】/g)].at(-1);
+        const time = lastField('time') || safeText(header?.[1]);
+        const scene = lastField('scene') || safeText(header?.[2]);
+        const location = safeText(scene.split(/(?:至|→|->)/).at(-1));
+        if (!time && !location) return state;
+        const next = WSM.Storage.clone(state);
+        next.world ||= {};
+        next.world.time ||= {};
+        next.world.location ||= {};
+        if (time) next.world.time.display = time;
+        if (location) next.world.location.current = location;
+        return next;
     }
     function normalizeStateResult(result, baseState = null) {
         const envelopes = [result, result?.result, result?.data, result?.output].filter((item) => item && typeof item === 'object' && !Array.isArray(item));
@@ -2803,6 +2905,7 @@
             const startedAt = Date.now();
             const requestRecords = batches[index];
             let result;
+            let normalizedResult;
             try {
                 result = await WSM.Api.complete(
                     prepared.gptMode === true
@@ -3163,9 +3266,10 @@
         }
         const explicitRead = options.initialize === true || options.readFullChat === true;
         const readStartedAt = explicitRead ? Date.now() : 0;
-        // Ordinary turns use exactly one plugin call for the current user input
-        // and upcoming-reply plan. Assistant正文 is never read automatically;
-        // only the explicit “读取上一轮正文” action may submit it.
+        // Ordinary turns use exactly one plugin call. It automatically reads a
+        // previous assistant floor only when that floor is above the persisted
+        // read high-water mark, then applies the current user input and plans the
+        // reply in the same request. Rerolls reuse the plan and never enter here.
         if (!explicitRead) {
             const diceRound = settings.diceEnabled ? WSM.Dice?.createRound?.(key) : null;
             // Upgrade older two-pass baselines lazily and locally. The first
@@ -3179,13 +3283,21 @@
             ].filter(Boolean).join('\n');
             const historyRecall = WSM.Storage.retrieveHistory?.(recallQuery, { maxChars: 1200, evidenceCount: 4, state: current }) || { text: '' };
             const source = await WSM.Context.buildSource();
+            const previousAssistant = WSM.Context.latestAssistantMessage();
+            const previousReceipt = previousBodyReceipt(previousAssistant);
+            const readFloor = readFloorHighWater(current);
+            const previousAssistantMemory = previousAssistant?.content && previousReceipt.floor > readFloor
+                ? (WSM.Context.recentFullTextMessage?.(previousAssistant) || WSM.Context.meowMessage(previousAssistant))
+                : null;
             const currentUserAction = source?.currentUserAction || WSM.Context.latestUserMessage();
-            const recoveryQueue = pendingTurnReads(current.runtime?.pendingTurnReads);
-            reportProgress('正在推理并增量更新本轮状态', 'running', `读取本轮用户输入 + 规划下一段 · 不读取上一轮助手正文 · 插件 API 严格 1 次`);
+            const recoveryQueue = pendingTurnReads(current.runtime?.pendingTurnReads, readFloor);
+            reportProgress('正在推理并增量更新本轮状态', 'running', previousAssistantMemory
+                ? `自动读取第 ${previousReceipt.floor} 层助手正文 + 读取本轮用户输入 + 规划下一段 · 插件 API 严格 1 次`
+                : `正文已读取至第 ${readFloor || 0} 层，本轮不重复读取 + 读取用户输入 + 规划下一段 · 插件 API 严格 1 次`);
             let result;
             try {
                 result = await WSM.Api.complete(
-                    `${settings.plannerPrompt}\n\n这是普通轮次唯一一次状态机调用，必须在同一个JSON响应内完成 RECONCILE_BACKLOG→APPLY_USER_FACTS→REASON_NEXT。pendingTurnReads 只包含此前因超时或连接失败而尚未写入状态的用户输入，必须按 queuedAt 从旧到新逐项结算并去重；再读取 currentUserAction，只写入用户本轮明确提供、声明或已经完成的事实，行动尝试和期望结果不得预判成功；最后根据更新后的状态推演本轮正文最合理的下一步。禁止读取、索取或推断上一轮助手正文；该正文只能由用户点击“读取上一轮正文”单独处理。返回stateDelta、plan、moduleInjections、timelineEntry、actualChanges、npcUpdates与worldbookEntries；没有事实变化时stateDelta允许为空对象。不要续写正文。事务面板以用户角色为主角：主线/支线是主角目标；可触发事件是世界已经留下、尚未回应的剧情扣子。若返回affairsSuggestions，其中每项actionOptions必须针对具体内容生成，禁止固定模板。只输出JSON。`,
+                    `${settings.plannerPrompt}\n\n这是普通轮次唯一一次状态机调用，必须在同一个JSON响应内完成 RECONCILE_BACKLOG→RECONCILE_PREVIOUS→APPLY_USER_FACTS→REASON_NEXT。pendingTurnReads 是此前因超时或连接失败而尚未写入状态的原文，必须按 queuedAt 从旧到新逐项结算并去重；previousAssistantMessage 仅在该助手楼层尚未读取时出现，若非空则结算其中已经实际发生的事实；再读取 currentUserAction，只写入用户本轮明确提供、声明或已经完成的事实，行动尝试和期望结果不得预判成功；最后根据更新后的状态推演本轮正文最合理的下一步。返回stateDelta、plan、moduleInjections、timelineEntry、actualChanges、npcUpdates与worldbookEntries；没有事实变化时stateDelta允许为空对象。不要续写正文。事务面板以用户角色为主角：主线/支线是主角目标；可触发事件是世界已经留下、尚未回应的剧情扣子。若返回affairsSuggestions，其中每项actionOptions必须针对具体内容生成，禁止固定模板。只输出JSON。`,
                     {
                         phase: 'TURN_RECONCILE_AND_PRE_GENERATION_REASONING',
                         // Ordinary turns receive the complete semantic state,
@@ -3193,6 +3305,8 @@
                         // keeps using its original full source pipeline.
                         currentState: compactTurnState(current),
                         pendingTurnReads: recoveryQueue,
+                        previousAssistantMessage: previousAssistantMemory,
+                        previousAssistantFloor: previousAssistantMemory ? previousReceipt.floor : 0,
                         currentUserAction,
                         historyRecall: historyRecall.text || '',
                         ...(diceRound ? { diceRound } : {}),
@@ -3200,15 +3314,18 @@
                     // Keep the complete state/input payload, but ask only for a
                     // compact delta. Large output reservations were the main cause
                     // of multi-minute provider stalls on ordinary turns.
-                    { singleAttempt: true, maxTokens: 1800, timeoutMs: 75000 },
+                    { singleAttempt: true, maxTokens: 2500, timeoutMs: 90000, jsonContract: 'delta' },
                 );
+                normalizedResult = normalizeSettlementResult(result);
             } catch (error) {
                 const reason = safeText(error?.message || error);
                 const queued = pendingTurnReads([...recoveryQueue, {
                     turnKey: key,
                     queuedAt: Date.now(),
+                    previousAssistantMessage: previousAssistantMemory,
+                    previousAssistantFloor: previousAssistantMemory ? previousReceipt.floor : 0,
                     currentUserAction,
-                }]);
+                }], readFloor);
                 current.runtime = Object.assign({}, current.runtime, { pendingTurnReads: queued });
                 const fallbackPlan = Object.assign({}, current.planner?.plan || {}, diceRound ? { diceRound } : {});
                 current.planner = {
@@ -3223,35 +3340,39 @@
                 console.error('[WorldStateMachine] 普通轮次读取失败，已排队等待下一轮补账', error);
                 return current.planner;
             }
-            const delta = result?.stateDelta || result?.delta;
-            const legacyState = result?.state;
-            if ((delta && typeof delta === 'object') || (legacyState && typeof legacyState === 'object')) {
-                const candidate = delta && typeof delta === 'object' ? applyStateDelta(current, delta) : legacyState;
+            const settledResult = normalizedResult.result;
+            const delta = normalizedResult.delta;
+            const legacyState = normalizedResult.legacyState;
+            if (delta || legacyState) {
+                let candidate = delta ? applyStateDelta(current, delta) : normalizeStateCollections(mergeStatePatch(current, legacyState));
+                if (previousAssistantMemory) candidate = applyAssistantSceneFacts(candidate, previousAssistantMemory);
                 let updated = WSM.Storage.enforceLocks(current, candidate);
                 updated = syncIdentities(updated, current.identities);
-                updated = auditStateLifecycle(updated, result?.reasoningAudit || {});
+                updated = auditStateLifecycle(updated, settledResult?.reasoningAudit || {});
                 updated = rotateTriggersForNextTurn(current, updated);
                 updated.initialized = true;
-                const worldbookUpdate = WSM.WorldbookCompiler?.ingestReadResult?.(source, result);
+                const worldbookUpdate = WSM.WorldbookCompiler?.ingestReadResult?.(source, settledResult);
                 updated.runtime = Object.assign({}, current.runtime, updated.runtime, {
+                    ...(previousAssistantMemory ? readReceiptRuntime(current, previousReceipt) : {}),
                     pendingTurnReads: [],
                     worldbookInjection: worldbookUpdate?.report || current.runtime?.worldbookInjection || null,
-                    npcLastUpdatedElapsedMinutes: updateNpcClock(current, updated, { npcUpdates: result?.npcUpdates || [] }),
+                    npcLastUpdatedElapsedMinutes: updateNpcClock(current, updated, { npcUpdates: settledResult?.npcUpdates || [] }),
                 });
-                if (result.timelineEntry?.summary) {
+                if (settledResult.timelineEntry?.summary) {
                     updated.timeline = Array.isArray(updated.timeline) ? updated.timeline : [];
-                    const entry = Object.assign({ id: `turn-${Date.now()}` }, result.timelineEntry, { actualChanges: result.actualChanges || [] });
-                    if (!updated.timeline.some((item) => item?.id === entry.id || (item?.summary === entry.summary && item?.messageId === currentUserAction?.id))) {
-                        entry.messageId = currentUserAction?.id;
+                    const entry = Object.assign({ id: `turn-${Date.now()}` }, settledResult.timelineEntry, { actualChanges: settledResult.actualChanges || [] });
+                    const timelineMessageId = previousAssistantMemory ? previousAssistant?.id : currentUserAction?.id;
+                    if (!updated.timeline.some((item) => item?.id === entry.id || (item?.summary === entry.summary && item?.messageId === timelineMessageId))) {
+                        entry.messageId = timelineMessageId;
                         updated.timeline.push(entry);
                     }
                 }
                 const userMessage = currentUserAction;
-                const sourceRefs = [userMessage?.id]
+                const sourceRefs = [previousAssistantMemory ? previousAssistant?.id : null, userMessage?.id]
                     .filter((id) => id !== undefined && id !== null && String(id) !== '')
                     .map((id) => `chat:${id}`);
                 const ledgerChanges = delta && typeof delta === 'object' ? historyChangesFromDelta(delta, sourceRefs, `turn:${key}`) : [];
-                WSM.Storage.appendHistoryChanges?.(ledgerChanges, [userMessage].filter(Boolean).map((message) => ({
+                WSM.Storage.appendHistoryChanges?.(ledgerChanges, [previousAssistantMemory ? previousAssistant : null, userMessage].filter(Boolean).map((message) => ({
                     id: message.id,
                     index: Number(message.index || 0),
                     role: message.role,
@@ -3261,22 +3382,26 @@
                 })), { prefix: `turn:${key}` });
                 current = updated;
             } else {
-                current.runtime = Object.assign({}, current.runtime, { pendingTurnReads: [] });
+                current.runtime = Object.assign({}, current.runtime,
+                    previousAssistantMemory ? readReceiptRuntime(current, previousReceipt) : {},
+                    { pendingTurnReads: [] });
             }
-            const localPlan = Object.assign({}, result?.plan || {}, {
+            const localPlan = Object.assign({}, settledResult?.plan || {}, {
                 ...(diceRound ? { diceRound } : {}),
                 ...(historyRecall.text ? { historyRecall: historyRecall.text } : {}),
             });
             current.planner = {
                 lastRunAt: Date.now(), turnKey: key, plan: localPlan,
-                moduleInjections: result?.moduleInjections && typeof result.moduleInjections === 'object' ? result.moduleInjections : {}, injection: '', error: '', localOnly: false,
+                moduleInjections: settledResult?.moduleInjections && typeof settledResult.moduleInjections === 'object' ? settledResult.moduleInjections : {}, injection: '', error: '', localOnly: false,
             };
             current.planner.injection = WSM.Injection.compose(current, localPlan, current.planner.moduleInjections);
             current = await WSM.Storage.save(current, 'turn-reconcile-and-reason', {
                 snapshot: true, snapshotKind: 'generation', snapshotTurnKey: key,
             });
             await setStatePrompts(current, localPlan, current.planner.moduleInjections);
-            reportProgress('本轮推理与状态增量已完成', 'success', `状态已更新至 REV ${current.revision} · 本轮插件 API 1 次 · 未读取上一轮助手正文`);
+            reportProgress('本轮推理与状态增量已完成', 'success', previousAssistantMemory
+                ? `已自动读取第 ${previousReceipt.floor} 层助手正文并更新至 REV ${current.revision} · 本轮插件 API 1 次`
+                : `第 ${readFloor || 0} 层已标记读取，本轮未重复读取正文 · 状态更新至 REV ${current.revision} · 插件 API 1 次`);
             return current.planner;
         }
         if (!plannerAvailable(settings)) {
@@ -3364,9 +3489,15 @@
                     : '推进用户本轮行为后的世界后台，规划但不要假定正文将发生的事情。',
             source,
             currentState: plannerState(rebuildBase),
-            stateSchema: WSM.Defaults.STATE_SCHEMA,
-            moduleOwnership: WSM.Defaults.MODULE_OWNERSHIP,
-            modulePrompts: settings.modulePrompts || WSM.Defaults.MODULE_PROMPTS,
+            // Manual reconciliation already receives the populated preState and
+            // the reconciler's exact delta contract. Re-sending the full schema
+            // and every module prompt wastes the reasoning model's context and
+            // can leave its JSON unfinished before the output limit.
+            ...(latestOnly ? {} : {
+                stateSchema: WSM.Defaults.STATE_SCHEMA,
+                moduleOwnership: WSM.Defaults.MODULE_OWNERSHIP,
+                modulePrompts: settings.modulePrompts || WSM.Defaults.MODULE_PROMPTS,
+            }),
             simulationClock: rebuilding ? { elapsedMinutes: 0, display: '' } : { elapsedMinutes: Number(current.world?.time?.elapsedMinutes || 0), display: current.world?.time?.display || '' },
             npcSchedule: rebuilding ? [] : buildNpcSchedule(current),
             simulationRules: {
@@ -3621,6 +3752,25 @@
             contentHash: hash(message?.content),
         };
     }
+    function readFloorHighWater(state) {
+        return Math.max(0,
+            Math.floor(Number(state?.runtime?.lastReadFloor || 0)),
+            Math.floor(Number(state?.runtime?.lastPreviousBodyFloor || 0)),
+            Math.floor(Number(state?.runtime?.sourceSummary?.sourceRead?.coveredChatMessages || 0)),
+            Math.floor(Number(state?.runtime?.sourceSummary?.chatMessages || 0)),
+        );
+    }
+    function readReceiptRuntime(state, receipt) {
+        return {
+            lastSettledMessageId: receipt.messageKey,
+            lastPreviousBodyMessageId: receipt.messageId,
+            lastPreviousBodyMessageKey: receipt.messageKey,
+            lastPreviousBodyFloor: receipt.floor,
+            lastPreviousBodyContentHash: receipt.contentHash,
+            lastReadFloor: Math.max(readFloorHighWater(state), Number(receipt.floor || 0)),
+            previousBodyReadAt: Date.now(),
+        };
+    }
     function rotateTriggersForNextTurn(previous, candidate) {
         const next = candidate;
         const byId = new Map();
@@ -3680,51 +3830,51 @@
             moduleOwnership: WSM.Defaults.MODULE_OWNERSHIP,
             modulePrompts: settings.modulePrompts || WSM.Defaults.MODULE_PROMPTS,
             lockedPaths: current.lockedPaths || [],
+            ...(latestOnly ? { updateMode: {
+                baseline: 'preState 是“读取当前聊天”建立的完整可靠基础；只在此基础上增量更新',
+                preserveUnmentioned: true,
+                relateBodyToPanels: true,
+                inferCurrentValuesFromEstablishedFacts: true,
+                preferUpdateOverRemove: true,
+                pruneObsoleteOrUseless: true,
+                preserveStableAndFutureRelevant: true,
+            } } : {}),
         };
         try {
             const taskPrompt = latestOnly
-                ? `${settings.reconcilerPrompt}\n\n${TRUTH_POLICY_PROMPT}\n\n这是手动“读取上一轮正文”的唯一一次调用。只读取 actualAssistantMessage 中已经实际发生的正文事实，并与 preState 对照后返回最小增量。不要续写、不要规划下一轮、不要推进离屏世界、不要复述未变化模块。返回 stateDelta、timelineEntry、actualChanges；没有事实变化时 stateDelta 可以为空对象。不得要求第二次调用。只输出 JSON。`
+                ? `${settings.reconcilerPrompt}\n\n${TRUTH_POLICY_PROMPT}\n\n这是手动“读取上一轮正文”的唯一一次调用。preState 是“读取当前聊天”已经建立好的完整基础，不得重建整张状态表。先把 actualAssistantMessage 与现有面板逐项联系起来：正文明确改变了某个栏目，或能依据正文已成立事实可靠推导出新的当前值时，输出该项的最小增量。随后在同一次对账中执行生命周期清理：已完成、已失效、被新事实推翻的旧状态必须更新、归档或 remove；对当前场景、人物关系、未完事务、后续因果和长期记忆都已无作用的 L1 临时信息可以 remove。仍在生效、仍可能影响后续、正文未否定的信息必须保留；核心设定、长期事实、稳定人物背景和 L3 锚点不得因本轮未提及而删除。人物、事务、事件等列表中若旧描述已被本轮事实否定，优先用 update/replace 改成最新处境，不得同时残留矛盾旧描述；只有条目已经彻底失效或没有继续保留价值时才 remove。不要续写、不要规划下一轮、不要推进离屏世界、不要复述未变化模块。必须返回且只返回一个 JSON 对象，最外层必须是 {"stateDelta":{"statePatch":{},"collectionOps":[]},"timelineEntry":{},"actualChanges":[]}；严禁直接返回 time、season、location 等 world 内部字段。对象模块的变化写入 statePatch；列表条目只用 collectionOps，每项必须包含 module、op、id，create/update/replace 还必须包含合并后的完整 value。没有事实变化时仍返回 "stateDelta":{"statePatch":{},"collectionOps":[]}。不得要求第二次调用。`
                 : `${settings.reconcilerPrompt}\n\n${TRUTH_POLICY_PROMPT}\n\n本次结算必须在同一个 JSON 响应内同时完成增量状态结算、到期的离屏生态推进与世界书浓缩缓存更新。先结算 user/assistant 正文；再严格按 npcSchedule 执行一个有界后台 tick：realtime 可结算正文行动，background 只能沿既存 motives、currentGoals、routine、npcActivities、tasks、processes 或已成立因果继续，carry 必须保持。允许完全无变化，禁止给离屏人物凭空安排新目标、巧合或重大事件。用 npcUpdates 报告本次真正检查结果。除 stateDelta、timelineEntry、actualChanges、npcUpdates 字段外，返回 worldbookEntries 数组；每项沿用输入 worldbookRules 的 key，并只依据本轮 user/assistant 实际正文修正 core、triggers、rules、background。没有变化的状态模块和世界书条目必须省略，禁止为了显得完整而复述。不得要求第二次调用。`;
             const result = await WSM.Api.complete(taskPrompt, payload, latestOnly
-                ? { singleAttempt: true, maxTokens: 1600, timeoutMs: 75000 }
+                ? { singleAttempt: true, maxTokens: 4000, timeoutMs: 120000, jsonContract: 'delta' }
                 : { singleAttempt: true });
             if (WSM.Storage.currentChatKey() !== operationChatKey) return null;
-            const delta = result?.stateDelta || result?.delta;
-            const legacyState = result?.state;
-            const hasDelta = !!delta && typeof delta === 'object';
-            const hasLegacyState = !!legacyState && typeof legacyState === 'object';
-            // “读取上一轮正文”允许模型在确认没有持久变化时省略空的
-            // stateDelta。普通自动结算仍保持原来的严格响应校验。
-            if (!hasDelta && !hasLegacyState && !(latestOnly && result && typeof result === 'object')) throw new Error('结算响应缺少 stateDelta');
-            const candidate = hasDelta ? applyStateDelta(current, delta) : (hasLegacyState ? legacyState : current);
+            const normalized = normalizeSettlementResult(result);
+            const settledResult = normalized.result;
+            const delta = normalized.delta;
+            const legacyState = normalized.legacyState;
+            let candidate = delta ? applyStateDelta(current, delta) : normalizeStateCollections(mergeStatePatch(current, legacyState));
+            if (latestOnly) candidate = applyAssistantSceneFacts(candidate, assistantMemory);
             let next = WSM.Storage.enforceLocks(current, candidate);
             next = syncIdentities(next, current.identities);
-            next = auditStateLifecycle(next, result?.reasoningAudit || {});
+            next = auditStateLifecycle(next, settledResult?.reasoningAudit || {});
             next = rotateTriggersForNextTurn(current, next);
             next.initialized = true;
             next.planner = current.planner;
-            const worldbookUpdate = latestOnly ? null : WSM.WorldbookCompiler?.ingestReadResult?.(settleSource, result);
+            const worldbookUpdate = latestOnly ? null : WSM.WorldbookCompiler?.ingestReadResult?.(settleSource, settledResult);
             next.runtime = Object.assign({}, current.runtime, next.runtime, {
                 lastSettledMessageId: key,
-                ...(latestOnly ? {
-                    lastPreviousBodyMessageId: receipt.messageId,
-                    lastPreviousBodyMessageKey: receipt.messageKey,
-                    lastPreviousBodyFloor: receipt.floor,
-                    lastPreviousBodyContentHash: receipt.contentHash,
-                    lastReadFloor: receipt.floor,
-                    previousBodyReadAt: Date.now(),
-                } : {}),
+                ...(latestOnly ? readReceiptRuntime(current, receipt) : {}),
                 worldbookInjection: worldbookUpdate?.report || current.runtime?.worldbookInjection || null,
-                npcLastUpdatedElapsedMinutes: updateNpcClock(current, next, { npcUpdates: result?.npcUpdates || [] }),
+                npcLastUpdatedElapsedMinutes: updateNpcClock(current, next, { npcUpdates: settledResult?.npcUpdates || [] }),
             });
             // Manual final-injection edits are intentionally one generation
             // only. Once that assistant response has been reconciled, resume
             // normal state-derived composition.
             delete next.runtime.finalInjectionOverride;
             next.planner.injection = WSM.Injection.compose(next, next.planner?.plan || {}, next.planner?.moduleInjections || {});
-            if (result.timelineEntry?.summary) {
+            if (settledResult.timelineEntry?.summary) {
                 next.timeline = Array.isArray(next.timeline) ? next.timeline : [];
-                const entry = Object.assign({ id: `turn-${Date.now()}` }, result.timelineEntry, { actualChanges: result.actualChanges || [] });
+                const entry = Object.assign({ id: `turn-${Date.now()}` }, settledResult.timelineEntry, { actualChanges: settledResult.actualChanges || [] });
                 if (!next.timeline.some((item) => item?.id === entry.id || (item?.summary === entry.summary && item?.messageId === key))) {
                     entry.messageId = key;
                     next.timeline.push(entry);
@@ -3733,8 +3883,8 @@
             const userMessage = WSM.Context.latestUserMessage();
             const sourceRefs = [userMessage?.id, assistant?.id].filter((id) => id !== undefined && id !== null && String(id) !== '').map((id) => `chat:${id}`);
             let ledgerChanges = delta && typeof delta === 'object' ? historyChangesFromDelta(delta, sourceRefs, `turn:${key}`) : [];
-            if (!ledgerChanges.length && Array.isArray(result.actualChanges)) {
-                ledgerChanges = result.actualChanges.filter(Boolean).map((summary, index) => ({
+            if (!ledgerChanges.length && Array.isArray(settledResult.actualChanges)) {
+                ledgerChanges = settledResult.actualChanges.filter(Boolean).map((summary, index) => ({
                     changeId: `turn:${key}:actual:${index + 1}`,
                     factId: '', module: 'timeline', operation: 'upsert', entityId: `turn-${key}-${index + 1}`,
                     value: { time: safeText(next.world?.time?.display), summary: safeText(summary), granularity: 'turn' }, sourceRefs, origin: 'chat',
@@ -3848,5 +3998,5 @@
             }, 1000);
         }
     }
-    WSM.Engine = { init, plan: ensurePlan, settle: ensureSettle, readPreviousBody, interceptor, fallbackInjection, reportProgress, resetProgress, getProgress, cancelRead, isReading, syncRegisteredPrompt, refreshGptLocalState, clearRegisteredPrompts, _test: { ordinaryTurnCallPolicy, pendingTurnReads, shouldReuseTurnPlan, previousBodyReceipt, compactTurnState, deletedAssistantCount, generationBlockReason, plannerAvailable, activeChatAvailable, setPrompt, setStatePrompts, syncIdentities, initializeInSlices, sourceForInitializeSlice, rotateTriggersForNextTurn, completeSourceRecords, compactSourceChronicle, compactGptSourceChronicle, splitCompleteRecords, splitGptCompleteRecords, removeMirroredChatRecords, prepareSourceForStateRequests, buildStateWithinLimit, normalizeStateResult, normalizeStateCollection, normalizeStateCollections, normalizeGptIdentityAliases, reconcileEntityReferences, auditStateLifecycle, mergeStatePatch, applyStateDelta, applyHistoryLedger, historyChangesFromDelta, mergeCompleteEvidence, mergeAdjudicatedEvidence, supplementMissingEvidenceFromArchive, localEvidenceFromSource, deterministicMeowLedger, ensureDeterministicMeowLedger, sanitizeGptEvidence, sanitizeGptHydratedState, applyGptSceneToState, stateFromEvidence, firstHalfCacheKey, validateEvidenceContract, validateFilledEvidence, normalizeEvidenceFillShapes, completeExplicitlyAuditedEvidence, synthesizeEvidenceAudit, repairFinalFillFromSourceCompile, markIncompleteEvidence, preserveUnreturnedStateModules } };
+    WSM.Engine = { init, plan: ensurePlan, settle: ensureSettle, readPreviousBody, interceptor, fallbackInjection, reportProgress, resetProgress, getProgress, cancelRead, isReading, syncRegisteredPrompt, refreshGptLocalState, clearRegisteredPrompts, _test: { ordinaryTurnCallPolicy, pendingTurnReads, shouldReuseTurnPlan, previousBodyReceipt, readFloorHighWater, readReceiptRuntime, compactTurnState, deletedAssistantCount, generationBlockReason, plannerAvailable, activeChatAvailable, setPrompt, setStatePrompts, syncIdentities, initializeInSlices, sourceForInitializeSlice, rotateTriggersForNextTurn, completeSourceRecords, compactSourceChronicle, compactGptSourceChronicle, splitCompleteRecords, splitGptCompleteRecords, removeMirroredChatRecords, prepareSourceForStateRequests, buildStateWithinLimit, normalizeStateResult, normalizeSettlementDelta, normalizeSettlementResult, applyAssistantSceneFacts, normalizeStateCollection, normalizeStateCollections, normalizeGptIdentityAliases, reconcileEntityReferences, auditStateLifecycle, mergeStatePatch, applyStateDelta, applyHistoryLedger, historyChangesFromDelta, mergeCompleteEvidence, mergeAdjudicatedEvidence, supplementMissingEvidenceFromArchive, localEvidenceFromSource, deterministicMeowLedger, ensureDeterministicMeowLedger, sanitizeGptEvidence, sanitizeGptHydratedState, applyGptSceneToState, stateFromEvidence, firstHalfCacheKey, validateEvidenceContract, validateFilledEvidence, normalizeEvidenceFillShapes, completeExplicitlyAuditedEvidence, synthesizeEvidenceAudit, repairFinalFillFromSourceCompile, markIncompleteEvidence, preserveUnreturnedStateModules } };
 })();

@@ -123,9 +123,13 @@
         // indexed once without being re-sent on every turn.
         const values = Array.isArray(ctx?.chat) ? ctx.chat : [];
         return values
-            .filter((message) => options.includeHidden === true || message?.is_system !== true)
-            .map((message, index) => normalizeMessage(message, index, { preserveHiddenAuthor: options.includeHidden === true }))
-            .filter((item) => item.content);
+            // Preserve the real index in SillyTavern's complete chat array.
+            // Filtering first renumbered a 399-floor chat's latest authored
+            // message as floor 31 when most intervening records were hidden.
+            .map((message, index) => (options.includeHidden === true || message?.is_system !== true)
+                ? normalizeMessage(message, index, { preserveHiddenAuthor: options.includeHidden === true })
+                : null)
+            .filter((item) => item?.content);
     }
     function latestUserMessage(ctx = context()) {
         return [...chat(ctx)].reverse().find((item) => item.role === 'user') || null;

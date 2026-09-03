@@ -182,6 +182,9 @@ const manyEntries = Array.from({ length: 205 }, (_, index) => ({
 compilerConfig.entryKeys = manyEntries.map((entry) => entry.key);
 compilerConfig.knownEntryKeys = [...compilerConfig.entryKeys];
 const manySource = { worldbooks: [{ name: '全量地图书', entries: manyEntries }], chat: [{ role: 'user', content: '查看星港0城' }] };
+const rawStaticCatalog = WorldStateMachine.WorldbookCompiler.buildLocalStaticCatalog(manySource.worldbooks);
+assert.ok(rawStaticCatalog.locations.some((item) => item.name === '星港204城'), '未执行语义拆解时，原始世界书也必须建立本地静态地图');
+assert.ok(rawStaticCatalog.routes.some((item) => item.description.includes('星港204城通往北境204州')), '本地静态目录必须保留原文明确路线');
 await WorldStateMachine.WorldbookCompiler.processSource(manySource, { localOnly: true });
 assert.equal(WorldStateMachine.WorldbookCompiler.getReport().compiledCount, 205, '200条逐轮路由上限不得截断全量静态目录和审计报告');
 const staticCatalog = WorldStateMachine.WorldbookCompiler.getStaticCatalog();

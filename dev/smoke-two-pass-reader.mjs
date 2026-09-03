@@ -93,6 +93,11 @@ WorldStateMachine.Api = {
 };
 await import('../src/engine.js');
 
+assert.deepEqual(WorldStateMachine.Engine._test.ordinaryTurnCallPolicy(), {
+    apiCallsPerUserMessage: 1,
+    postGenerationApiCalls: 0,
+}, '普通轮次必须固定为每条用户消息一次状态机API，正文后不得追加第二次');
+
 const malformedFilledEvidence = completeEvidence({ tasks: ['把同一段剧情当任务摘要'] });
 assert.throws(() => WorldStateMachine.Engine._test.validateFilledEvidence(malformedFilledEvidence, '测试填表'), /未按模块表格填写/, '状态模块不得接受字符串摘要卡');
 
@@ -148,6 +153,19 @@ WorldStateMachine.Engine._test.repairFinalFillFromSourceCompile(repairedOrganiza
 assert.equal(repairedOrganizationEvidence.organizations.length, 1);
 assert.equal(repairedOrganizationEvidence.organizations[0].name, '昭国后宫', '第二遍只回传证据元数据时必须按唯一来源补回第一遍的专属字段');
 assert.equal(repairedOrganizationEvidence.organizations[0].truthStatus, 'confirmed');
+const namedOrganizationState = WorldStateMachine.Engine._test.stateFromEvidence(completeEvidence({
+    organizations: [
+        { id: 'generic-family-clause', name: '不同家族', kind: 'dynastic', situation: '不同家族程度不同', sourceRefs: ['worldbook:test:generic'] },
+        { id: 'generic-modern-family', name: '现代家族', kind: 'dynastic', situation: '现代家族通常使用家庭压力', sourceRefs: ['worldbook:test:generic'] },
+        { id: 'generic-private-clause', name: '不是私人势力', kind: 'faction', situation: '警方不是私人势力', sourceRefs: ['worldbook:test:generic'] },
+        { id: 'real-court', name: '昭国朝廷', kind: 'government', situation: '负责全国政务', sourceRefs: ['worldbook:test:court'] },
+    ],
+}), {}, WorldStateMachine.Defaults.createState()).state;
+assert.deepEqual(namedOrganizationState.organizations.map((item) => item.name), ['昭国朝廷'], '组织栏目只能保留明确命名实体，社会规则中的泛称短语不得建卡');
+const genericOrganizationState = WorldStateMachine.Engine._test.stateFromEvidence(completeEvidence({
+    organizations: [{ id: 'generic-modern-family', name: '现代家族', kind: 'dynastic', situation: '现代家族通常使用家庭压力', sourceRefs: ['worldbook:test:generic'] }],
+}), {}, WorldStateMachine.Defaults.createState()).state;
+assert.equal(genericOrganizationState.moduleCoverage.organizations.status, 'empty_confirmed', '全部组织候选都是规则泛称时应明确判空，而不是留下矛盾的has_records覆盖状态');
 const keptCompiledEvidence = WorldStateMachine.Engine._test.mergeAdjudicatedEvidence(
     completeEvidence({
         organizations: [{ id: 'court', name: '昭国朝廷', kind: 'government', sourceRefs: ['worldbook:test:court'] }],
@@ -578,11 +596,13 @@ WorldStateMachine.Api.complete = async (_prompt, request) => {
 const partialBase = WorldStateMachine.Defaults.createState();
 partialBase.initialized = true;
 partialBase.tasks = [{ id: 'keep-task', title: '必须保留的旧任务', status: 'active' }];
+partialBase.organizations = [{ id: 'old-org', name: '旧组织', kind: 'faction', situation: '仍在活动' }];
 const storageBeforePartial = WorldStateMachine.Storage;
 WorldStateMachine.Storage = { ...(storageBeforePartial || {}), clone: (value) => JSON.parse(JSON.stringify(value)) };
 const partialPrepared = {
     large: true, gptMode: true, localEvidence: completeEvidence({
         tasks: [{ id: 'local-task', title: '原文可确定的新任务', description: '前往新场景核验线索', status: 'active', sourceRefs: ['partial-b'], truthStatus: 'confirmed' }],
+        organizations: [{ id: 'local-org', name: '兴州王府', kind: 'dynastic', situation: '被禁军接管', sourceRefs: ['partial-b'], truthStatus: 'confirmed', priority: 'L2', activity: 'WARM' }],
     }), originalChars: 65124, includedChars: 33124,
     records: 2, sentRecords: 2, batches: [
         [{ ref: 'partial-a', kind: 'test', serializedJson: '{"half":"A"}' }],
@@ -597,8 +617,11 @@ const partialResult = await WorldStateMachine.Engine._test.buildStateWithinLimit
 assert.equal(partialCalls.length, 2, '第二步漏栏也不得产生第三次调用');
 assert.ok(partialResult.state.tasks.some((item) => item.title === '必须保留的旧任务'), 'an unreturned final module must retain the previous state instead of becoming empty');
 assert.ok(partialResult.state.tasks.some((item) => item.title === '原文可确定的新任务'), 'an unreturned final module must also retain deterministic local evidence');
+assert.ok(partialResult.state.organizations.some((item) => item.name === '旧组织'), 'an unreturned organization module must retain old state');
+assert.ok(partialResult.state.organizations.some((item) => item.name === '兴州王府'), 'an unreturned organization module must retain deterministic local extraction');
 assert.ok(partialResult.state.worldRules.some((item) => item.statement === '进入内城必须持有通行许可'), 'a field omitted by final request B must fall back to request A source compilation');
 assert.equal(partialPrepared.incompleteEvidenceKeys.includes('tasks'), true);
+assert.equal(partialPrepared.reportedIncompleteEvidenceKeys.includes('processes'), false, 'request A explicitly audited an empty module, so request B may omit its empty array without a false retrieval-failed warning');
 WorldStateMachine.Storage = storageBeforePartial;
 WorldStateMachine.Api.complete = normalComplete;
 

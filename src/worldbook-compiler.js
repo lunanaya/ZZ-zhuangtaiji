@@ -962,7 +962,8 @@
             const matches = part.match(new RegExp(`[A-Za-z0-9\\u3400-\\u9fff·]{1,20}${LOCATION_SUFFIX}`, 'g')) || [];
             matches.forEach((name) => {
                 const cleaned = text(name).replace(/^(?:这里|那里|该地|此地|其中|地图|地点|地理|区域|城市)/, '');
-                if (cleaned.length >= 2 && cleaned.length <= 28) found.add(cleaned);
+                const descriptive = /(?:参照|参考|逻辑|现实|虚构|社会|法律|商业|教育|娱乐|日常生活|基本|均为|类似|设定为)/;
+                if (cleaned.length >= 2 && cleaned.length <= 12 && !descriptive.test(cleaned)) found.add(cleaned);
             });
         });
         return [...found];
@@ -978,8 +979,8 @@
         if (/(?:园|岛|港)$/.test(value)) return 'landmark';
         return 'other';
     }
-    function getStaticCatalog() {
-        const compiledEntries = cachedCompiledEntries().filter((entry) => entry.sourceEnabled !== false);
+    function staticCatalogFromCompiled(compiledEntriesValue) {
+        const compiledEntries = (Array.isArray(compiledEntriesValue) ? compiledEntriesValue : []).filter((entry) => entry?.sourceEnabled !== false);
         const facts = WSM.Facts.merge(compiledEntries.flatMap((entry) => entry.facts || []));
         const locationRecords = new Map();
         const parentNames = new Map();
@@ -1059,6 +1060,30 @@
             worldRules: facts.filter((fact) => fact.owner === 'worldRules'),
         };
     }
+    function getStaticCatalog() {
+        return staticCatalogFromCompiled(cachedCompiledEntries());
+    }
+    function buildLocalStaticCatalog(worldbooks = []) {
+        const compiledEntries = (Array.isArray(worldbooks) ? worldbooks : []).flatMap((book, bookIndex) =>
+            (Array.isArray(book?.entries) ? book.entries : []).filter((entry) => entry?.enabled !== false && text(entry?.content)).map((entry, entryIndex) => {
+                const normalized = {
+                    ...entry,
+                    key: text(entry?.key) || `${text(book?.name) || bookIndex}::${entry?.id ?? entryIndex}`,
+                    id: entry?.id ?? entryIndex,
+                    bookName: text(entry?.bookName || book?.name),
+                    comment: text(entry?.comment),
+                };
+                const chunks = buildSemanticChunks(normalized);
+                return {
+                    key: normalized.key,
+                    label: normalized.comment || normalized.bookName,
+                    bookName: normalized.bookName,
+                    sourceEnabled: true,
+                    facts: sentenceFacts(normalized, chunks),
+                };
+            }));
+        return staticCatalogFromCompiled(compiledEntries);
+    }
     function getActiveFacts() { return clone(activeTurn?.routedFacts || []); }
     WSM.WorldbookCompiler = {
         normalizeConfig,
@@ -1088,6 +1113,7 @@
         },
         updateCompiledEntry,
         getStaticCatalog,
+        buildLocalStaticCatalog,
         getActiveFacts,
         clearCache() {
             try { localStorage.removeItem(CACHE_KEY); }

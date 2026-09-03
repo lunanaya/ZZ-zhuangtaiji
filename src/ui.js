@@ -488,7 +488,7 @@
             if (kind === 'trigger') {
                 const hookText = [item?.title, item?.hook, ...(Array.isArray(item?.conditions) ? item.conditions : [])]
                     .map((value) => String(value || '').replace(/<br\s*\/?>/gi, '；').trim()).filter(Boolean).join('；');
-                const establishedEntry = /(?:邀请|邀约|约见|召见|请(?:你|主角|前往|赴|参加)|请求|委托|拜托|要求(?:你|主角|答复|选择)|命令(?:你|主角)|询问(?:你|主角)|追问|等待(?:你|主角)?.{0,12}(?:来电|来信|回复|答复|决定|选择|回应)|需要(?:你|主角).{0,12}(?:决定|选择|回应))/.test(hookText);
+                const establishedEntry = /(?:邀请|邀约|约见|召见|请(?:你|主角|前往|赴|参加)|请求|委托|拜托|要求(?:你|主角|答复|选择)|命令(?:你|主角)|询问(?:你|主角)|追问|要不要|愿不愿|是否愿意|可愿|想不想|等待(?:你|主角)?.{0,12}(?:来电|来信|回复|答复|决定|选择|回应)|需要(?:你|主角).{0,12}(?:决定|选择|回应))/.test(hookText);
                 const speculative = /(?:可能|也许|或许|猜测|大概|或将|产生探究欲|感到担忧|感到不安)/.test(hookText);
                 if (!establishedEntry || speculative) return false;
             }
@@ -1182,7 +1182,7 @@
                     <div class="wsm-grid"><label>自定义字体<input id="wsm-custom-font-family" type="text" placeholder='例如："Microsoft YaHei", sans-serif'></label><label>字体大小（百分比）<input id="wsm-font-scale" type="number" min="60" max="140" step="5"></label></div>
                     <p class="wsm-settings-help">只调整状态机文字，不改变面板大小和按钮的可点击范围。建议使用 80%–100%。</p>
                     <div class="wsm-grid"><label>单次输出 Tokens<input id="wsm-max-tokens" type="number" min="256" max="16384"></label><label>注入最大字符<input id="wsm-injection-max" type="number" min="500"></label></div>
-                    <p class="wsm-settings-help">Tokens 是模型单次返回 JSON 的上限。普通轮次由状态机生成前推演 1 次、正文后事实观察 1 次；中间的正文模型是酒馆本身的生成请求。手动读取严格 2 次：全量提取 1 次、独立推演 1 次，不补第三次。</p>
+                    <p class="wsm-settings-help">Tokens 是模型单次返回 JSON 的上限。普通轮次每条新消息只调用状态机 1 次：结算上一段正文、吸收本轮用户明确事实、更新状态并规划下一段；酒馆随后自行生成正文，正文后不再追加状态机调用。手动读取严格 2 次：全量提取 1 次、独立推演 1 次，不补第三次。</p>
                     <label class="wsm-check"><input id="wsm-enabled" type="checkbox">启用自动状态机</label>
                     <p class="wsm-settings-help">打开插件或切换聊天不会自动读取和初始化。点击“读取当前聊天”建立或刷新状态；世界书拆解必须使用顶部单独按钮。</p>
                     <label class="wsm-check"><input id="wsm-block-on-planner-error" type="checkbox">Planner失败时严格阻止正文生成</label>
@@ -1190,9 +1190,9 @@
                 <section class="wsm-settings-section" data-settings-section="source">
                     <p class="wsm-settings-help">“分解正文”页面只管理聊天正文的读取范围；它与“拆解世界书”的条目选择和缓存独立，不会把聊天楼层列成世界书条目。</p>
                     <label>聊天总结标签（留空读取全文）<input id="wsm-summary-tag" type="text" maxlength="64" placeholder="meow_FM"></label>
-                    <p class="wsm-settings-help">填写标签名时只读取该标签内部，例如填写 meow_FM 对应 &lt;meow_FM&gt;…&lt;/meow_FM&gt;；留空时读取所选楼层的完整消息正文。</p>
-                    <div class="wsm-grid"><label>普通轮次读取最近正文条数（0=全部可见正文）<input id="wsm-recent-messages" type="number" min="0" max="200"></label></div>
-                    <section class="wsm-rollback-panel"><b>${icon('clipboard')}<span>可配置总结标签或读取全文</span></b><p>标签模式会跳过没有该标签的楼层；留空的全文模式会发送所选楼层的完整内容。世界书原文、角色卡和 Persona 仍作为资料读取，但不会顺带建立世界书拆解缓存。</p><small>需要分类和注入世界书时，请单独点击顶部“拆解世界书”。普通生成每轮只在正文结束后结算一次。</small></section>
+                    <p class="wsm-settings-help">填写标签名后采用混合读取：最近若干层读取可见正文，更早楼层只读取该总结标签；留空则全部读取正文。</p>
+                    <div class="wsm-grid"><label>普通轮次扫描最近楼层数（0=全部）<input id="wsm-recent-messages" type="number" min="0" max="200"></label><label>其中最近全文楼层数<input id="wsm-recent-full-text-messages" type="number" min="1" max="20"></label></div>
+                    <section class="wsm-rollback-panel"><b>${icon('clipboard')}<span>近层正文、远层总结</span></b><p>默认最近 5 层读取可见原文；5 层之外只读取 meow_FM（或你填写的标签），没有标签的旧楼层会跳过。这样既能结算最新正文，也不会反复注入整个历史。</p><small>世界书原文、角色卡和 Persona 仍作为资料来源。普通轮次在下一条用户消息到来时，用唯一一次调用结算上一段正文并规划下一段。</small></section>
                 </section>
                 <section class="wsm-settings-section" data-settings-section="pacing">
                     <p class="wsm-settings-help">控制正文模型每轮允许推进的最大幅度。关闭时保持正文模型原有节奏；该功能不会替模型规划剧情，也不会改变既定事实。</p>
@@ -1343,6 +1343,7 @@
         $('#wsm-max-tokens').value = s.maxTokens || 5000;
         $('#wsm-summary-tag').value = s.summaryTag ?? 'meow_FM';
         $('#wsm-recent-messages').value = s.recentMessages ?? 12;
+        $('#wsm-recent-full-text-messages').value = s.recentFullTextMessages ?? 5;
         $('#wsm-injection-max').value = s.injectionMaxChars || 3500;
         $('#wsm-enabled').checked = s.enabled !== false;
         $('#wsm-block-on-planner-error').checked = s.blockOnPlannerError === true;
@@ -1487,6 +1488,7 @@
             },
             summaryTag,
             recentMessages: Math.max(0, Math.min(200, Math.round(Number($('#wsm-recent-messages').value) || 0))),
+            recentFullTextMessages: Math.max(1, Math.min(20, Math.round(Number($('#wsm-recent-full-text-messages').value) || 5))),
             injectionMaxChars: Number($('#wsm-injection-max').value || 3500), injectionModules, modulePrompts,
             plannerPrompt: $('#wsm-planner-prompt').value, reconcilerPrompt: $('#wsm-reconciler-prompt').value, worldbookCompiler,
         });
@@ -1614,6 +1616,9 @@
             }
             catch (error) { WSM.Engine.reportProgress?.('读取或初始化失败', 'error', error.message); planner = { error: error.message }; }
             if (planner?.error) WSM.Engine.reportProgress?.('读取当前聊天失败', 'error', planner.error);
+            else if (WSM.Engine.getProgress?.().state === 'running' && WSM.Engine.isReading?.() !== true) {
+                WSM.Engine.reportProgress?.('读取当前聊天未完成', 'error', '读取任务已经结束，但没有产生完成状态；本次不会把旧档位结果当成新档位结果。');
+            }
             render();
         }
         if (action === 'compile-worldbook-main') {

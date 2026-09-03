@@ -38,11 +38,15 @@
         return text(ctx?.persona || ctx?.userPersona || ctx?.persona_description || ctx?.user_description || ctx?.power_user?.persona_description || window.power_user?.persona_description);
     }
     function identityNames(ctx = context()) {
+        const authoredUserName = [...(Array.isArray(ctx?.chat) ? ctx.chat : [])].reverse()
+            .find((message) => message?.is_user === true && message?.is_system !== true)?.name;
+        const messageUser = text(authoredUserName);
+        const usableMessageUser = messageUser && !/^(?:user|用户|玩家|you|你|<user>)$/i.test(messageUser) ? messageUser : '';
         return {
             // SillyTavern's name1 is the active user/persona name. Resolve it
             // every time instead of freezing a name into the archive so a
             // persona rename is reflected before both reading and injection.
-            user: text(ctx?.name1 || window.name1) || '<USER>',
+            user: usableMessageUser || text(ctx?.name1 || window.name1) || '<USER>',
             // A character-card title can be a version, pairing, collection or
             // filename rather than a person's name. Named people are extracted
             // from card/chat content instead of this metadata field.
@@ -122,6 +126,19 @@
             summaryTag: tag,
             originalChars: raw.length,
         };
+    }
+    function recentFullTextMessage(message, requestedTag = configuredSummaryTag()) {
+        if (!message) return null;
+        const raw = String(message.content ?? message.mes ?? '');
+        const tags = [...new Set(['thinking', 'meow_FM', 'INDRS', 'abstract', 'note', 'small_theater', normalizeSummaryTag(requestedTag)].filter(Boolean))];
+        let content = raw;
+        tags.forEach((tag) => {
+            const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            content = content.replace(new RegExp(`<${escaped}(?:\\s[^>]*)?>[\\s\\S]*?<\\/${escaped}>`, 'gi'), '\n');
+        });
+        content = text(content);
+        if (!content) return meowMessage(message, requestedTag);
+        return { ...message, content, memoryOnly: false, summaryTag: '', originalChars: raw.length };
     }
     function messagesByIds(ids, ctx = context(), options = {}) {
         const wanted = new Set((Array.isArray(ids) ? ids : []).map((id) => text(id)).filter(Boolean));
@@ -311,9 +328,17 @@
         const allChat = options.includeHidden === true && summaryTag ? chat(ctx, { includeHidden: true }) : visibleChat;
         const configuredCount = Number(settings.recentMessages);
         const recentCount = Number.isFinite(configuredCount) ? Math.max(0, Math.min(200, Math.round(configuredCount))) : 12;
+        const configuredFullTextCount = Number(settings.recentFullTextMessages);
+        const recentFullTextCount = Number.isFinite(configuredFullTextCount) ? Math.max(1, Math.min(20, Math.round(configuredFullTextCount))) : 5;
         const readAllVisible = options.fullChat === true || recentCount === 0;
         const selectedRawChat = readAllVisible ? allChat : allChat.slice(-recentCount);
-        const selectedChat = selectedRawChat.map((message) => meowMessage(message, summaryTag)).filter(Boolean);
+        const visiblePositions = selectedRawChat.map((message, index) => message.hidden ? -1 : index).filter((index) => index >= 0);
+        const fullTextPositions = new Set(visiblePositions.slice(-recentFullTextCount));
+        const selectedChat = selectedRawChat.map((message, index) => {
+            if (!summaryTag) return { ...message, memoryOnly: false, summaryTag: '', originalChars: String(message.content || '').length };
+            if (fullTextPositions.has(index)) return recentFullTextMessage(message, summaryTag);
+            return meowMessage(message, summaryTag);
+        }).filter(Boolean);
         const rawChat = Array.isArray(ctx?.chat) ? ctx.chat : [];
         const hiddenMessages = rawChat.filter((message) => message?.is_system === true).length;
         const worldbookResult = await worldbooks(ctx);
@@ -363,15 +388,17 @@
             tavernTextContext: {
                 source: 'SillyTavern.getContext().chat',
                 scope: summaryTag
-                    ? `${readAllVisible ? 'full' : 'recent'}-summary-tag-only:${summaryTag}`
+                    ? `${readAllVisible ? 'full' : 'recent'}-hybrid:${summaryTag}:latest-${recentFullTextCount}-full-text`
                     : `${readAllVisible ? 'full' : 'recent'}-message-text`,
-                readMode: summaryTag ? 'summary-tag' : 'full-text',
+                readMode: summaryTag ? 'hybrid-summary-tail' : 'full-text',
                 summaryTag,
+                recentFullTextMessages: recentFullTextCount,
                 totalMessages: allChat.length,
                 scannedMessages: selectedRawChat.length,
                 includedMessages: selectedChat.length,
-                meowMessages: summaryTag === 'meow_FM' ? selectedChat.length : 0,
-                summaryMessages: selectedChat.length,
+                meowMessages: summaryTag === 'meow_FM' ? selectedChat.filter((message) => message.memoryOnly === true).length : 0,
+                summaryMessages: selectedChat.filter((message) => message.memoryOnly === true).length,
+                fullTextMessages: selectedChat.filter((message) => message.memoryOnly === false).length,
                 skippedWithoutMeow: selectedRawChat.length - selectedChat.length,
                 truncated: selectedRawChat.length < allChat.length,
                 hiddenMessages,
@@ -412,5 +439,5 @@
         for (let i = 0; i < raw.length; i += 1) hash = Math.imul(hash ^ raw.charCodeAt(i), 16777619);
         return (hash >>> 0).toString(16);
     }
-    WSM.Context = { context, chat, messagesByIds, latestUserMessage, latestAssistantMessage, meowMessage, summaryContent, normalizeSummaryTag, identityNames, buildSource, sourceFingerprint, readWorldbook, listWorldbookEntries, listEnabledWorldNames, worldbookEntryKey, _test: { normalizeEntries, normalizeMessage, meowFMContent, summaryContent, normalizeSummaryTag } };
+    WSM.Context = { context, chat, messagesByIds, latestUserMessage, latestAssistantMessage, meowMessage, recentFullTextMessage, summaryContent, normalizeSummaryTag, identityNames, buildSource, sourceFingerprint, readWorldbook, listWorldbookEntries, listEnabledWorldNames, worldbookEntryKey, _test: { normalizeEntries, normalizeMessage, meowFMContent, summaryContent, normalizeSummaryTag, recentFullTextMessage } };
 })();

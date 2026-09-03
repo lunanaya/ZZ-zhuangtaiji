@@ -23,14 +23,14 @@ const chat = [
     },
     {
         id: 'old-2', index: 1, role: 'assistant',
-        content: '<meow_FM>serial: 002\ntime: 当夜\nscene: 京城·长街\nplot: 城门发生重大事故并被永久封锁\nseeds: 巡城卫将在换班后核查身份</meow_FM>',
+        content: '<meow_FM>serial: 002\ntime: 当夜\nscene: 京城·长街\nplot: 兴州王府被禁军接管，城门发生重大事故并被永久封锁\nseeds: 巡城卫将在换班后核查身份</meow_FM>',
     },
     {
         id: 'new-3', index: 2, role: 'assistant',
         content: '<meow_FM><serial>003</serial><time>次日辰时</time><scene>京城·客栈</scene><plot>用户抵达客栈。</plot><seeds>无</seeds></meow_FM>',
     },
 ];
-const source = { identities: { user: '用户', char: '角色' }, character: { name: '角色' }, worldbooks: [], chat };
+const source = { identities: { user: '用户', char: '角色' }, character: { name: '角色' }, worldbooks: [{ name: '制度', entries: [{ id: 1, content: '朝廷政令必须经过三省六部审核。' }] }], chat };
 const ledger = WorldStateMachine.Engine._test.deterministicMeowLedger(source);
 assert.equal(ledger.length, 3, 'every meow_FM block must become one searchable local ledger entry');
 assert.equal(new Set(ledger.map((item) => item.changeId)).size, 3, 'ledger ids must be stable and unique');
@@ -59,5 +59,22 @@ assert.equal(WorldStateMachine.Storage.loadHistoryMemory().ledger.length, 3);
 const prepared = WorldStateMachine.Engine._test.prepareSourceForStateRequests(source, { gptMode: false });
 assert.equal(prepared.localEvidence.currentScene.at(-1).location, '京城·客栈');
 assert.ok(prepared.localEvidence.timeline.some((item) => /永久封锁/.test(item.summary)), 'deterministic major milestones must survive locally before API adjudication');
+assert.ok(prepared.localEvidence.organizations.some((item) => item.name === '兴州王府'), 'named factions in meow_FM plot must be extracted locally');
+assert.ok(prepared.localEvidence.organizations.some((item) => item.name === '禁军'), 'named military bodies in meow_FM plot must be extracted locally');
+assert.ok(prepared.localEvidence.organizations.some((item) => item.name === '三省六部'), 'named institutions in worldbook text must be extracted locally');
+assert.equal(prepared.localEvidence.triggers.length, 0, 'old meow_FM seeds are unresolved threads, not protagonist-facing triggers');
+
+const invitationEvidence = WorldStateMachine.Engine._test.localEvidenceFromSource({
+    identities: { user: '用户', char: '角色' }, character: { name: '角色' }, worldbooks: [],
+    chat: [{ id: 'invite', role: 'assistant', content: '我邀请你明日去观星台，你愿不愿意？' }],
+});
+assert.equal(invitationEvidence.triggers.length, 1, 'an explicit unanswered invitation to the protagonist must become a trigger');
+assert.equal(invitationEvidence.triggers[0].truthStatus, 'confirmed');
+
+const negatedInvitationEvidence = WorldStateMachine.Engine._test.localEvidenceFromSource({
+    identities: { user: '用户', char: '角色' }, character: { name: '角色' }, worldbooks: [],
+    chat: [{ id: 'negated', role: 'assistant', content: '他没有问你愿不愿意，也没有给你拒绝的余地。' }],
+});
+assert.equal(negatedInvitationEvidence.triggers.length, 0, 'a sentence explicitly denying player choice must not become a trigger');
 
 console.log('Fast meow_FM ledger and local fallback smoke tests passed');

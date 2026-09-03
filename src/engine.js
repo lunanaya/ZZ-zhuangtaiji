@@ -4,11 +4,19 @@
     const PROMPT_ID = 'WORLD_STATE_MACHINE_CONTEXT';
     const DEPTH_PROMPT_IDS = Array.from({ length: 5 }, (_, depth) => `${PROMPT_ID}_DEPTH_${depth}`);
     let planningPromise = null;
+    let planningController = null;
+    let planningChatKey = '';
+    let planningIntent = '';
     let settlingPromise = null;
     let activeReadController = null;
     let bound = false;
     let settingsBound = false;
     let operationProgress = { state: 'idle', message: '', details: '', at: 0, startedAt: 0, elapsedMs: 0, steps: [] };
+    const ORDINARY_TURN_CALL_BUDGET = 1;
+    const AUTO_POST_GENERATION_CALLS = 0;
+    function ordinaryTurnCallPolicy() {
+        return { apiCallsPerUserMessage: ORDINARY_TURN_CALL_BUDGET, postGenerationApiCalls: AUTO_POST_GENERATION_CALLS };
+    }
 
     const safeText = (value) => String(value ?? '').trim();
     function cancellationError() { return Object.assign(new Error('用户已终止读取'), { name: 'AbortError' }); }
@@ -29,17 +37,34 @@
         const steps = last?.message === step.message && last?.details === step.details && last?.state === step.state
             ? [...previous.slice(0, -1), step]
             : [...previous, step].slice(-36);
-        operationProgress = { ...step, startedAt, steps };
+        operationProgress = { ...step, startedAt, steps, chatKey: WSM.Storage?.currentChatKey?.() || '' };
         try { window.dispatchEvent(new CustomEvent('wsm-operation-progress', { detail: operationProgress })); }
         catch (_error) { /* Progress reporting must never interrupt planning. */ }
         return operationProgress;
     }
-    function getProgress() { return { ...operationProgress, steps: (operationProgress.steps || []).map((step) => ({ ...step })) }; }
+    function getProgress() {
+        const activeChatKey = WSM.Storage?.currentChatKey?.() || '';
+        if (operationProgress.chatKey && activeChatKey && operationProgress.chatKey !== activeChatKey) {
+            return { state: 'idle', message: '', details: '', at: Date.now(), startedAt: 0, elapsedMs: 0, steps: [], chatKey: activeChatKey };
+        }
+        return { ...operationProgress, steps: (operationProgress.steps || []).map((step) => ({ ...step })) };
+    }
     function resetProgress() {
-        operationProgress = { state: 'idle', message: '', details: '', at: Date.now(), startedAt: 0, elapsedMs: 0, steps: [] };
+        operationProgress = { state: 'idle', message: '', details: '', at: Date.now(), startedAt: 0, elapsedMs: 0, steps: [], chatKey: WSM.Storage?.currentChatKey?.() || '' };
         try { window.dispatchEvent(new CustomEvent('wsm-operation-progress', { detail: operationProgress })); }
         catch (_error) { /* Resetting display state must never interrupt clearing. */ }
         return getProgress();
+    }
+    function stateBelongsToActiveChat(state) {
+        if (!state?.initialized) return true;
+        const activeNames = WSM.Context?.identityNames?.() || {};
+        const storedUser = safeText(state?.identities?.user);
+        const activeUser = safeText(activeNames.user);
+        if (storedUser && activeUser && storedUser !== '<USER>' && activeUser !== '<USER>' && storedUser !== activeUser) return false;
+        const lastUserId = safeText(state?.runtime?.lastUserMessageId);
+        if (!lastUserId) return true;
+        const activeMessages = WSM.Context?.chat?.(WSM.Context.context?.(), { includeHidden: true }) || [];
+        return activeMessages.some((message) => safeText(message?.id) === lastUserId);
     }
     function syncIdentities(state, names = WSM.Context?.identityNames?.() || { user: '<USER>', char: '' }) {
         const next = state;
@@ -174,6 +199,7 @@
             hiddenChatMessages: Number(source?.tavernTextContext?.hiddenMessages || 0),
             chatReadMode: safeText(source?.tavernTextContext?.readMode || 'summary-tag'),
             summaryTag: safeText(source?.tavernTextContext?.summaryTag || ''),
+            recentFullTextMessages: Number(source?.tavernTextContext?.recentFullTextMessages || 0),
             requestedWorldbooks: source?.worldbookDiagnostics?.requestedNames || [],
             loadedWorldbooks: source?.worldbookDiagnostics?.loadedNames || [],
             failedWorldbooks: source?.worldbookDiagnostics?.failedNames || [],
@@ -263,7 +289,7 @@
             includedChatChars,
             note: source?.tavernTextContext?.readMode === 'full-text'
                 ? '按用户设置扫描聊天全文；原聊天仍保留在SillyTavern。'
-                : `仅扫描聊天楼层的<${source?.tavernTextContext?.summaryTag || 'meow_FM'}>标签内容；无该标签的楼层未发送。`,
+                : `最近 ${source?.tavernTextContext?.recentFullTextMessages || 5} 层读取可见正文；更早楼层仅扫描<${source?.tavernTextContext?.summaryTag || 'meow_FM'}>标签。`,
         };
         return { source: clone, compacted: true, coveredMessages: chat.length, compactedMessages, originalChatChars, includedChatChars };
     }
@@ -333,7 +359,7 @@
             originalChatChars, includedChatChars,
             note: source?.tavernTextContext?.readMode === 'full-text'
                 ? '按顺序扫描用户选择的聊天全文；世界书、user资料卡和char资料卡由独立完整记录读取。'
-                : `按顺序扫描聊天中的<${source?.tavernTextContext?.summaryTag || 'meow_FM'}>标签内容；无标签楼层未发送。`,
+                : `最近 ${source?.tavernTextContext?.recentFullTextMessages || 5} 层读取可见正文；更早楼层仅扫描<${source?.tavernTextContext?.summaryTag || 'meow_FM'}>标签；世界书和资料卡由独立记录读取。`,
         };
         return { source: clone, compacted: true, coveredMessages: chat.length, compactedMessages: clone.semanticChronicle.compactedMessages, originalChatChars, includedChatChars };
     }
@@ -430,7 +456,10 @@
         const latestStart = Math.max(0, (Array.isArray(source?.chat) ? source.chat.length : 0) - 8);
         const gptLatestRefs = (Array.isArray(source?.chat) ? source.chat : []).slice(-8)
             .map((message, index) => `chat:${message?.id ?? message?.index ?? latestStart + index}`).map(safeText).filter(Boolean);
-        const scannedLocalEvidence = localEvidenceFromSource(source);
+        const localWorldbookCatalog = WSM.WorldbookCompiler?.buildLocalStaticCatalog?.(source?.worldbooks || []);
+        const scannedLocalEvidence = localEvidenceFromSource(localWorldbookCatalog
+            ? { ...source, compiledWorldbookRules: localWorldbookCatalog }
+            : source);
         const localEvidence = options.gptMode === true ? compactGptLocalEvidence(scannedLocalEvidence, gptScene) : scannedLocalEvidence;
         const chronicle = options.gptMode === true && rawSerialized.length > 50000
             ? compactGptSourceChronicle(source, GPT_SOURCE_TARGET_CHARS)
@@ -495,7 +524,7 @@
         } catch (error) { console.debug('[WorldStateMachine] 无法保存请求 A 证据缓存', error); }
     }
     function firstHalfCacheKey(prepared, settings) {
-        return `semantic-two-stage-v25:${hash(JSON.stringify({
+        return `semantic-two-stage-v26:${hash(JSON.stringify({
             model: settings?.model || '', endpoint: settings?.useTavernApi === false ? settings?.endpoint || '' : 'tavern',
             gptMode: prepared?.gptMode === true,
             records: prepared?.batches || prepared?.halves || [],
@@ -1141,6 +1170,28 @@
         });
         return merged;
     }
+    function compactEvidenceForAdjudication(input) {
+        const evidence = mergeCompleteEvidence(input);
+        const itemLimits = { characters: 20, worldRules: 16, locations: 20, moduleCoverage: 24, moduleDecisions: 24 };
+        const compactValue = (value, key = '', depth = 0) => {
+            if (typeof value === 'string') return boundedText(value, depth <= 1 ? 360 : 220);
+            if (typeof value === 'number' || typeof value === 'boolean' || value == null) return value;
+            if (Array.isArray(value)) {
+                const limit = ['sourceRefs','basis','evidence','conditions','requirements','actionOptions'].includes(key) ? 4 : 8;
+                return value.slice(0, limit).map((item) => compactValue(item, key, depth + 1));
+            }
+            if (typeof value === 'object') return Object.fromEntries(Object.entries(value)
+                .filter(([field, fieldValue]) => fieldValue !== '' && fieldValue != null && !['auditOrigin','raw','originalText'].includes(field))
+                .map(([field, fieldValue]) => [field, compactValue(fieldValue, field, depth + 1)]));
+            return safeText(value);
+        };
+        return Object.fromEntries(EVIDENCE_KEYS.map((key) => {
+            const values = Array.isArray(evidence[key]) ? evidence[key] : [];
+            const limit = itemLimits[key] || 10;
+            return [key, values.slice(key === 'timeline' || key === 'chronology' ? -limit : 0, key === 'timeline' || key === 'chronology' ? undefined : limit)
+                .map((item) => compactValue(item, key, 0))];
+        }));
+    }
     const ARCHIVE_FALLBACK_EVIDENCE_KEYS = ['anchors','resourceConstraints','relationships','knowledge','threads'];
     function supplementMissingEvidenceFromArchive(input) {
         const evidence = mergeCompleteEvidence(input);
@@ -1174,6 +1225,53 @@
             if (!identity || evidence[key].some((value) => evidenceItemText(value) === identity)) return;
             evidence[key].push(item);
         };
+        (source.compiledWorldbookRules?.locations || []).forEach((item) => uniquePush('locations', {
+            ...item,
+            priority: item.priority || 'L3',
+            activity: item.activity || 'COLD',
+            status: item.status || 'known',
+            origin: item.origin || '世界书静态地图',
+            truthStatus: item.truthStatus || 'confirmed',
+        }));
+        const organizationKind = (name) => {
+            if (/(?:皇室|王府|家族)$/.test(name)) return 'dynastic';
+            if (/(?:禁军|军队|军营|卫)$/.test(name)) return 'military';
+            if (/(?:朝廷|中书省|门下省|尚书省|六部|衙|官府|内阁)$/.test(name)) return 'government';
+            if (/(?:商会|协会|联盟|教会|宗门|门派|帮会)$/.test(name)) return 'association';
+            return 'faction';
+        };
+        const cleanOrganizationName = (value) => {
+            let name = safeText(value).replace(/^[“”"'‘’《》〈〉【】\[\]（）()，,。；;：:\s]+|[“”"'‘’《》〈〉【】\[\]（）()，,。；;：:\s]+$/g, '');
+            const leadingNoise = /^(?:暗处有|处有|更有|还有|另有|以及|并且|身为|来自|进入|离开|效忠|加入|隶属|掌控|接管|清洗|围剿|调查|针对|赦免|抹去|断绝|查封|安抚|脱离|依附|周围|地方|某些|这个|那个|整个|掉了|兵把|我为|并|且|却|而|又|已|正|曾|将|把|被|由|从|在|对|向|为|是|有|与|和|及|其|该|这|那)+/;
+            let previous = '';
+            while (name && name !== previous) {
+                previous = name;
+                name = safeText(name.replace(leadingNoise, ''));
+            }
+            // “大皇子夏启行势力”在短窗口匹配时可能从“子”开始；只在
+            // 后面仍是完整人名式势力名时去掉这个残留称谓字。
+            name = name.replace(/^子(?=[\u3400-\u9fff]{2,3}势力$)/, '');
+            if (/^(?:皇室|王府|家族|势力|组织|母家势力)$/.test(name)) return '';
+            if (/^(?:你|我|他|她|其|我们|他们)(?:家族|王府|势力)$/.test(name)) return '';
+            return name;
+        };
+        const extractOrganizations = (input, ref, sourceLabel) => {
+            const text = String(input || '').replace(/<[^>]+>/g, '\n');
+            const pattern = /(?:[\u3400-\u9fff]{1,4}(?:皇室|王府|家族|商会|协会|联盟|教会|宗门|门派|帮会|势力)|禁军|三省六部|中书省|门下省|尚书省|六部|朝廷|官府|内阁)/g;
+            text.split(/\n+|(?<=[。！？；!?;])/).map(safeText).filter(Boolean).forEach((sentence) => {
+                if (/(?:可能|也许|或许|大概|疑似|据猜测)/.test(sentence) || /(?:势力|组织|王府|家族).{0,6}或(?:者)?[\u3400-\u9fff]{1,8}(?:势力|组织|王府|家族|派)/.test(sentence)) return;
+                for (const match of sentence.matchAll(pattern)) {
+                    const name = cleanOrganizationName(match[0]);
+                    if (!name) continue;
+                    uniquePush('organizations', {
+                        id: `local-organization-${hash(name)}`, name, kind: organizationKind(name),
+                        situation: sentence.slice(0, 220), leaderIds: [], jurisdiction: '', goals: [], resources: [], relationshipRefs: [],
+                        priority: 'L2', activity: 'WARM', truthStatus: 'confirmed', sourceRefs: [ref].filter(Boolean),
+                        basis: [`${sourceLabel}明确提及该组织或制度实体`],
+                    });
+                }
+            });
+        };
         const card = source.character && typeof source.character === 'object' ? source.character : {};
         const cardLabel = safeText(card.name);
         const chats = Array.isArray(source.chat) ? source.chat : [];
@@ -1195,6 +1293,7 @@
         (source.worldbooks || []).forEach((book, bookIndex) => (book.entries || []).forEach((entry, entryIndex) => {
             const ref = `worldbook:${book?.name || bookIndex}:${entry?.id ?? entryIndex}`;
             const entryContent = String(entry?.content || '');
+            extractOrganizations(entryContent, ref, '世界书');
             const entryLines = entryContent.replace(/<[^>]+>/g, '\n').split(/\n+|(?<=[。！？；!?;])/).map(safeText);
             entryLines
                 .filter((line) => line.length >= 10 && line.length <= 360 && rulePattern.test(line))
@@ -1217,6 +1316,14 @@
                     basis: ['世界书明确规定皇帝的裁决权限及适用程序'],
                 }));
         }));
+        (source.compiledWorldbookRules?.facts || []).filter((fact) => fact?.owner === 'organizations').forEach((fact) => {
+            const name = safeText(fact.name || fact.organization || fact.statement?.match(/([\u3400-\u9fff]{2,10}(?:皇室|王府|家族|商会|联盟|教会|宗门|门派|帮会|势力|禁军|朝廷))/)?.[1]);
+            if (!name) return;
+            uniquePush('organizations', {
+                ...fact, id: fact.id || `compiled-organization-${hash(name)}`, name, kind: fact.kind || organizationKind(name),
+                situation: safeText(fact.situation || fact.statement), truthStatus: fact.truthStatus || 'confirmed',
+            });
+        });
         (source.compiledWorldbookRules?.facts || []).forEach((fact) => {
             if (fact?.owner === 'worldRules' || rulePattern.test(safeText(fact?.statement))) ruleCandidates.push(fact);
         });
@@ -1357,6 +1464,7 @@
             const currentProgress = field(indrs, '当前进度');
             const todo = field(indrs, '待办事项');
             const seeds = field(memory, 'seeds');
+            if (plot) extractOrganizations(plot, ref, '聊天总结');
             [plot, seeds].filter(Boolean)
                 .flatMap((value) => String(value).split(/<br\s*\/?>|(?<=[。！？!?；;])/i))
                 .forEach((sentence) => extractKnowledgeSentence(sentence, ref));
@@ -1454,7 +1562,8 @@
                 });
             }
             if (todo && !GPT_EMPTY_ITEM_PATTERN.test(todo)) uniquePush('tasks', { title: todo.split(/[，,；;]/)[0].slice(0, 80), description: todo, status: 'active', ownerIds: ['user'], sourceRefs: [ref], truthStatus: 'confirmed' });
-            if (seeds && !GPT_EMPTY_ITEM_PATTERN.test(seeds)) uniquePush('triggers', { title: seeds.split(/[。；;]/)[0].slice(0, 80), conditions: [seeds], status: 'armed', sourceRefs: [ref], truthStatus: 'suspected' });
+            // meow_FM 的 seeds 是长期伏笔/未决线索，不等于主角当前可以
+            // 回应的剧情入口。它们由 threads/processes 接管，不能整栏照抄为 trigger。
             if (currentProgress && !GPT_EMPTY_ITEM_PATTERN.test(currentProgress)) uniquePush('progression', { direction: currentProgress, currentMovement: plot, sourceRefs: [ref], truthStatus: 'confirmed' });
             if (time || location || weather || currentProgress || plot) latestScene = {
                 time, location, weather, environment: currentProgress || plot,
@@ -1467,6 +1576,7 @@
         // labels, or honorifics here. Identity extraction belongs to the
         // evidence reader, which must return the exact quoted basis.
         const recentStart = Math.max(0, chats.length - 16);
+        const latestAssistantIndex = chats.reduce((latest, message, index) => message?.role === 'assistant' ? index : latest, -1);
         chats.slice(recentStart).forEach((message, offset) => {
             if (message?.role !== 'assistant') return;
             const index = recentStart + offset;
@@ -1475,6 +1585,22 @@
                 .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
                 .replace(/<(?:meow_FM|INDRS|abstract|note)[^>]*>[\s\S]*?<\/(?:meow_FM|INDRS|abstract|note)>/gi, '')
                 .replace(/\[[^\]]{0,80}\]/g, '');
+            extractOrganizations(visible, ref, '最近正文');
+            if (index === latestAssistantIndex) {
+                visible.split(/(?<=[。！？!?；;])/).map(safeText).filter((sentence) => sentence.length >= 5 && sentence.length <= 240).forEach((sentence) => {
+                    const directedEntry = /(?:邀请|邀约|约见|召见|请你|请求你|委托你|拜托你|要求你|命令你|询问你|追问你|要不要|愿不愿|是否愿意|可愿|想不想|等待你.{0,12}(?:答复|决定|选择|回应)|需要你.{0,12}(?:决定|选择|回应))/.test(sentence);
+                    const speculative = /(?:可能|也许|或许|猜测|大概|或将)/.test(sentence);
+                    const negatedChoice = /(?:没有|并未|未曾|不曾).{0,12}(?:问你|询问你|邀请你|请求你|给你.{0,8}(?:选择|拒绝|回应)|让你.{0,8}(?:选择|决定|回应))/.test(sentence);
+                    if (!directedEntry || speculative || negatedChoice) return;
+                    const title = safeText(sentence).slice(0, 72);
+                    uniquePush('triggers', {
+                        id: `local-trigger-${hash(sentence)}`, title, hook: sentence, conditions: [sentence], status: 'armed',
+                        effectsIfTriggered: [], blockedReasons: [], userVisible: true, userRelevance: '正文已经直接向主角提出，且主角尚未回应',
+                        priority: 'L2', activity: 'HOT', truthStatus: 'confirmed', sourceRefs: [ref],
+                        basis: ['最后一条助手正文明确向主角留下等待回应的入口'],
+                    });
+                });
+            }
             visible.split(/(?<=[。！？!?；;])/).map(safeText).filter((sentence) => sentence.length >= 6 && sentence.length <= 180).forEach((sentence) => {
                 const explicitConstraint = /(禁足|封锁.{0,24}(?:道路|城门|地区|建筑)|不得离开|不能离开|无法离开|不许离开|哪儿也别去|只能留在|必须留在|没有.{0,12}(?:权限|许可|通行证|门卡)|必须持有.{0,12}(?:许可|通行证|门卡))/.test(sentence);
                 if (!explicitConstraint || GPT_SUBJECTIVE_SPECULATION_PATTERN.test(sentence)) return;
@@ -1526,6 +1652,19 @@
             { value: card.scenario, ref: 'character:scenario', label: '角色卡明确设定' },
         ].forEach(({ value, ref, label }) => String(value || '').split(/\n+|(?<=[。！？!?；;])/).forEach((sentence) => extractKnowledgeSentence(sentence, ref, label)));
         evidence.processes = evidence.processes.slice(-8);
+        const organizationsByName = new Map();
+        evidence.organizations.forEach((item) => {
+            const name = cleanOrganizationName(item?.name || item?.organization || item?.faction || item?.group);
+            if (!name) return;
+            const normalized = { ...item, id: item?.id || `local-organization-${hash(name)}`, name, kind: item?.kind || organizationKind(name) };
+            const previous = organizationsByName.get(name);
+            organizationsByName.set(name, previous ? {
+                ...previous, ...normalized,
+                sourceRefs: [...new Set([...(previous.sourceRefs || []), ...(normalized.sourceRefs || [])])].slice(-3),
+                basis: [...new Set([...(previous.basis || []), ...(normalized.basis || [])])].slice(-2),
+            } : normalized);
+        });
+        evidence.organizations = [...organizationsByName.values()].slice(-12);
         const deceasedNames = new Set(evidence.anchors.map((item) => safeText(item?.fact).match(/^(.+?)已经死亡$/)?.[1]).filter(Boolean));
         const latestNpcActivity = new Map();
         evidence.npcActivities.forEach((item) => {
@@ -1553,6 +1692,16 @@
             'npcActivities', 'npcActivities',
             '本地已从最近可见正文确认仍在进行的离场NPC活动',
             '本地已检查最近可见正文；当前没有明确写出的、离开玩家视野后仍在进行且需要保持连续性的NPC活动',
+        );
+        localAudit(
+            'organizations', 'organizations',
+            '本地已从世界书和最近正文提取明确命名、当前仍有作用的组织或制度实体',
+            '本地已检查世界书和最近正文；当前没有明确命名且需要独立维护的组织或势力',
+        );
+        localAudit(
+            'triggers', 'triggers',
+            '最后一条助手正文存在直接面向主角、尚未得到回应的邀请、请求、问话或选择',
+            '已检查最后一条助手正文；当前没有直接面向主角且尚未回应的剧情入口',
         );
         if (latestScene) uniquePush('currentScene', latestScene);
         return evidence;
@@ -2122,6 +2271,18 @@
         );
         return WSM.Storage.save(state, 'shared-local-normalization', { snapshot: true, snapshotKind: 'organization' });
     }
+    function isNamedOrganization(value) {
+        const name = safeText(value).replace(/^[《“”"'【】\[\]\s]+|[《“”"'【】\[\]\s]+$/g, '');
+        if (!name || name.length > 28 || /[，。；：:！？]/.test(name)) return false;
+        // The model sometimes turns clauses from social-setting prose into
+        // organization names (for example “不同家族” or “不是私人势力”).
+        // Such generic noun phrases belong to worldRules, not organization
+        // cards.  Require either a recognisable institutional suffix or a
+        // short standalone institution title, then reject grammatical debris.
+        if (/(?:不是|不同|现代|通常|有人|容易|受到|对方|自己的|人物与|稳定与|利益与|婚姻或|知道对方|立自己的|维护家族|厌恶家族)/.test(name)) return false;
+        if (/^(?:人物|角色|家族|组织|势力|企业|公司|机构|集团|社会|家庭|富有家庭)$/.test(name)) return false;
+        return /(?:氏|家族|集团|公司|企业|财团|基金会|协会|委员会|政府|王府|皇室|朝廷|内阁|议会|军|军团|禁军|警方|法院|检察院|公安局|警局|学校|学院|大学|医院|画廊|工作室|事务所|商会|公会|组织|势力|帮|会|门|宗|派|党)$/.test(name);
+    }
     function stateFromEvidence(firstEvidence, secondEvidence, baseState = null) {
         const evidence = mergeCompleteEvidence(firstEvidence, secondEvidence);
         const state = mergeStatePatch(baseState || WSM.Defaults.createState(), {});
@@ -2273,7 +2434,7 @@
             kind: safeText(item.kind || item.type || 'other'), leaderIds: Array.isArray(item.leaderIds) ? item.leaderIds.map(safeText).filter(Boolean) : [],
             jurisdiction: safeText(item.jurisdiction || item.scope), goals: Array.isArray(item.goals) ? item.goals.map(safeText).filter(Boolean) : [],
             resources: Array.isArray(item.resources) ? item.resources.map(safeText).filter(Boolean) : [], situation: safeText(item.situation || item.summary || text),
-        })).filter((item) => item.name), 24);
+        })).filter((item) => isNamedOrganization(item.name)), 24);
         const mappedCharacters = mapped(evidence.characters, 'character', (item, text, id) => ({
             ...item, id: safeText(item.id || id), name: safeText(item.name || item.character || item.person || item.characterId || text.split(/[：:]/)[0].trim().slice(0, 80)),
             identity: safeText(item.identity), location: safeText(item.location || item.currentLocation), situation: safeText(item.situation || item.currentSituation),
@@ -2416,7 +2577,7 @@
             userVisible: item.userVisible !== false, userRelevance: safeText(item.userRelevance),
         })).filter((item) => {
             const hookText = [item.title, item.hook, ...(item.conditions || [])].map(safeText).filter(Boolean).join('；');
-            const establishedEntry = /(?:邀请|邀约|约见|召见|请(?:你|主角|前往|赴|参加)|请求|委托|拜托|要求(?:你|主角|答复|选择)|命令(?:你|主角)|询问(?:你|主角)|追问|等待(?:你|主角)?.{0,12}(?:来电|来信|回复|答复|决定|选择|回应)|需要(?:你|主角).{0,12}(?:决定|选择|回应))/.test(hookText);
+            const establishedEntry = /(?:邀请|邀约|约见|召见|请(?:你|主角|前往|赴|参加)|请求|委托|拜托|要求(?:你|主角|答复|选择)|命令(?:你|主角)|询问(?:你|主角)|追问|要不要|愿不愿|是否愿意|可愿|想不想|等待(?:你|主角)?.{0,12}(?:来电|来信|回复|答复|决定|选择|回应)|需要(?:你|主角).{0,12}(?:决定|选择|回应))/.test(hookText);
             const speculative = /(?:可能|也许|或许|猜测|大概|或将|将来或许|产生探究欲|感到担忧|感到不安)/.test(hookText);
             const status = safeText(item.status).toLowerCase();
             return establishedEntry && !speculative && !['triggered','expired','resolved','completed'].includes(status);
@@ -2490,6 +2651,13 @@
                 basis: safeText(value.basis || value.reason) || '读取器已检查该模块但未给出可验证依据', checkedRevision: Number(state.revision || 0),
             }] : null;
         }).filter(Boolean));
+        if (evidence.organizations.length > 0 && state.organizations.length === 0) {
+            state.moduleCoverage.organizations = {
+                status: 'empty_confirmed',
+                basis: '组织候选均为社会规则中的泛称或句子碎片，没有可验证的命名组织实体',
+                checkedRevision: Number(state.revision || 0),
+            };
+        }
         state.reasoningAudit = {
             matchedRules: evidence.matchedRules.map((item) => safeText(objectItem(item).id || objectItem(item).ruleId || item)).filter(Boolean),
             derivedFacts: evidence.derivedFacts,
@@ -2537,6 +2705,9 @@
         let mergedEvidence = cachedCheckpoint && typeof cachedCheckpoint === 'object'
             ? mergeCompleteEvidence(cachedCheckpoint)
             : mergeCompleteEvidence();
+        prepared.sourceCompileCoverage = Array.isArray(cachedCheckpoint?.__sourceCompileCoverage)
+            ? cachedCheckpoint.__sourceCompileCoverage.map((item) => (item && typeof item === 'object' ? { ...item } : item))
+            : [];
         let incompleteEvidenceKeys = new Set(Array.isArray(cachedCheckpoint?.__incompleteEvidenceKeys) ? cachedCheckpoint.__incompleteEvidenceKeys : []);
         let recoveryRecords = [];
         let reasoningPlan = {};
@@ -2572,7 +2743,7 @@
                         sourceRecords: requestRecords,
                         sourceBoundary: payload?.sourceBoundary || {},
                         ...(finalStage ? {
-                            sourceCompile: mergeCompleteEvidence(mergedEvidence),
+                            sourceCompile: compactEvidenceForAdjudication(mergedEvidence),
                             currentState: plannerState(_baseState),
                         } : {}),
                         completeCoverage: {
@@ -2641,6 +2812,8 @@
                     else evidence.moduleCoverage.push(replacement);
                 });
                 validateEvidenceContract(evidence, '第一次全资料提取');
+                prepared.sourceCompileCoverage = (evidence.moduleCoverage || [])
+                    .map((item) => (item && typeof item === 'object' ? { ...item } : item));
             }
             synthesizeEvidenceAudit(evidence);
             if (finalStage) {
@@ -2691,7 +2864,12 @@
                 mergedEvidence = finalSnapshot;
             } else mergedEvidence = mergeCompleteEvidence(mergedEvidence, evidence);
             if (contract.complete) completedBatches = index + 1;
-            await writeFirstHalfCache(cacheKey, { ...mergedEvidence, __completedBatches: completedBatches, __incompleteEvidenceKeys: [...incompleteEvidenceKeys] });
+            await writeFirstHalfCache(cacheKey, {
+                ...mergedEvidence,
+                __completedBatches: completedBatches,
+                __incompleteEvidenceKeys: [...incompleteEvidenceKeys],
+                __sourceCompileCoverage: prepared.sourceCompileCoverage || [],
+            });
             reportProgress('本批读取完成并保存断点', 'running', `已完成 ${completedBatches}/${batches.length} 批 · 本批 ${(durationMs / 1000).toFixed(1)} 秒 · 累计 API ${prepared.requestAttempts} 次 · 缓存复用 ${prepared.cacheHits} 批`);
         }
         reportProgress('全部资料批次读取完成', 'running', `运行资料 ${prepared.sentRecords || prepared.records} 项已覆盖 · 严格串行 ${batches.length} 批 · 本次 API ${prepared.requestAttempts} 次 · 缓存复用 ${prepared.cacheHits} 批`);
@@ -2711,16 +2889,32 @@
         const localCoverageByModule = new Map((prepared.localEvidence?.moduleCoverage || [])
             .filter((item) => item?.auditOrigin === 'deterministic-local')
             .map((item) => [safeText(item?.module || item?.name), item]).filter(([module]) => module));
+        const sourceCoverageByModule = new Map((prepared.sourceCompileCoverage || [])
+            .filter((item) => ['has_records','covered','empty_confirmed','not_applicable'].includes(safeText(item?.status).toLowerCase()))
+            .map((item) => [safeText(item?.module || item?.name), item]).filter(([module]) => module));
         evidenceWithLocalFallback.moduleCoverage = (evidenceWithLocalFallback.moduleCoverage || []).map((item) => {
             const module = safeText(item?.module || item?.name);
-            const local = localCoverageByModule.get(module);
-            return local && ['retrieval_failed','failed','unknown'].includes(safeText(item?.status).toLowerCase()) ? { ...item, ...local } : item;
+            const fallback = localCoverageByModule.get(module) || sourceCoverageByModule.get(module);
+            return fallback && ['retrieval_failed','failed','unknown'].includes(safeText(item?.status).toLowerCase()) ? { ...item, ...fallback } : item;
         });
-        const locallyAuditedKeys = new Set([...locallyAuditedModules]
+        const coveredModuleNames = new Set((evidenceWithLocalFallback.moduleCoverage || [])
+            .map((item) => safeText(item?.module || item?.name)).filter(Boolean));
+        sourceCoverageByModule.forEach((item, module) => {
+            if (!coveredModuleNames.has(module)) evidenceWithLocalFallback.moduleCoverage.push({ ...item });
+        });
+        // Request A's explicit coverage survives underneath request B.  If A
+        // positively audited a module as empty/not-applicable, B is allowed to
+        // omit the corresponding empty array without turning that audit into a
+        // retrieval failure.  This matters especially for a brand-new chat,
+        // where processes/threads/schedules are often legitimately absent.
+        const positivelyAuditedModules = new Set((evidenceWithLocalFallback.moduleCoverage || [])
+            .filter((item) => ['has_records','covered','empty_confirmed','not_applicable'].includes(safeText(item?.status).toLowerCase()))
+            .map((item) => safeText(item?.module || item?.name)).filter(Boolean));
+        const positivelyAuditedKeys = new Set([...positivelyAuditedModules]
             .flatMap((module) => STATE_EVIDENCE_GROUPS[module] || []));
         prepared.reportedIncompleteEvidenceKeys = prepared.incompleteEvidenceKeys.filter((key) => {
             if (Array.isArray(evidenceWithLocalFallback[key]) && evidenceWithLocalFallback[key].length > 0) return false;
-            return !locallyAuditedKeys.has(key);
+            return !positivelyAuditedKeys.has(key);
         });
         const auditedEvidence = markIncompleteEvidence(evidenceWithLocalFallback, prepared.reportedIncompleteEvidenceKeys, '两批资料读取');
         const completedEvidence = supplementMissingEvidenceFromArchive(auditedEvidence);
@@ -2732,6 +2926,10 @@
         const hydrated = applyGptSceneToState(stateFromEvidence(finalEvidence, {}, _baseState), prepared);
         hydrated.plan = reasoningPlan;
         hydrated.moduleInjections = reasoningInjections;
+        // Keep the stronger preservation rule for state assembly: even when A
+        // proves that no *new* record exists, an omitted B field must not erase
+        // a valid pre-existing card.  reportedIncompleteEvidenceKeys is only
+        // the user-facing coverage warning set.
         return preserveUnreturnedStateModules(hydrated, _baseState, prepared.incompleteEvidenceKeys);
     }
     function updateNpcClock(previous, next, plan, initialize = false) {
@@ -2892,9 +3090,11 @@
         }
         const explicitRead = options.initialize === true || options.readFullChat === true;
         const readStartedAt = explicitRead ? Date.now() : 0;
-        // Ordinary turns use one independent pre-generation reasoning call.
-        // The main text model is SillyTavern's own generation request; after it
-        // replies, settle() uses one separate facts-only observation call.
+        // Ordinary turns use exactly one plugin call.  That call reconciles the
+        // previous assistant text (if it has not been observed yet), applies
+        // facts explicitly supplied by the new user message, and then plans the
+        // upcoming reply.  The assistant response itself is reconciled at the
+        // start of the next user turn, so no post-generation API is needed.
         if (!explicitRead) {
             const diceRound = settings.diceEnabled ? WSM.Dice?.createRound?.(key) : null;
             // Upgrade older two-pass baselines lazily and locally. The first
@@ -2908,12 +3108,19 @@
             ].filter(Boolean).join('\n');
             const historyRecall = WSM.Storage.retrieveHistory?.(recallQuery, { maxChars: 1200, evidenceCount: 4, state: current }) || { text: '' };
             const source = await WSM.Context.buildSource();
+            const previousAssistant = WSM.Context.latestAssistantMessage();
+            const previousAssistantId = assistantKey(previousAssistant);
+            const previousAssistantMemory = previousAssistant?.content && current.runtime?.lastSettledMessageId !== previousAssistantId
+                ? (WSM.Context.recentFullTextMessage?.(previousAssistant) || WSM.Context.meowMessage(previousAssistant))
+                : null;
+            reportProgress('正在推理并增量更新本轮状态', 'running', `结算上一段已发生正文 + 读取本轮用户输入 + 规划下一段 · 插件 API 严格 1 次`);
             const result = await WSM.Api.complete(
-                `${settings.plannerPrompt}\n\n这是普通轮次的独立生成前推演。只根据已结算currentState、用户本轮输入和可见世界书路由，推演当前各方最合理的下一步与正文所需上下文；不要续写正文，不要假定用户行动成功，不要修改事实状态。事务面板以用户角色为主角：主线/支线是主角目标；可触发事件是世界已经留下、尚未回应的剧情扣子。若返回affairsSuggestions，其中每项actionOptions必须针对具体内容生成，禁止固定模板。只输出JSON。`,
+                `${settings.plannerPrompt}\n\n这是普通轮次唯一一次状态机调用，必须在同一个JSON响应内完成 RECONCILE_PREVIOUS→APPLY_USER_FACTS→REASON_NEXT。先读取previousAssistantMessage：若非空，结算其中已经实际发生的事实；再读取currentUserAction，只写入用户本轮明确提供、声明或已经完成的事实，行动尝试和期望结果不得预判成功；最后根据更新后的状态推演本轮正文最合理的下一步。返回stateDelta、plan、moduleInjections、timelineEntry、actualChanges、npcUpdates与worldbookEntries；没有事实变化时stateDelta允许为空对象。不要续写正文。事务面板以用户角色为主角：主线/支线是主角目标；可触发事件是世界已经留下、尚未回应的剧情扣子。若返回affairsSuggestions，其中每项actionOptions必须针对具体内容生成，禁止固定模板。只输出JSON。`,
                 {
-                    phase: 'PRE_GENERATION_REASONING',
+                    phase: 'TURN_RECONCILE_AND_PRE_GENERATION_REASONING',
                     currentState: plannerState(current),
                     currentUserAction: source?.currentUserAction || WSM.Context.latestUserMessage(),
+                    previousAssistantMessage: previousAssistantMemory,
                     recentChat: source?.chat || [],
                     worldbookRules: WSM.WorldbookCompiler?.getReport?.(current.runtime?.worldbookInjection)?.entries || [],
                     historyRecall: historyRecall.text || '',
@@ -2921,7 +3128,49 @@
                 },
                 { singleAttempt: true },
             );
-            const localPlan = Object.assign({}, result?.plan || result || {}, {
+            const delta = result?.stateDelta || result?.delta;
+            const legacyState = result?.state;
+            if ((delta && typeof delta === 'object') || (legacyState && typeof legacyState === 'object')) {
+                const candidate = delta && typeof delta === 'object' ? applyStateDelta(current, delta) : legacyState;
+                let updated = WSM.Storage.enforceLocks(current, candidate);
+                updated = syncIdentities(updated, current.identities);
+                updated = auditStateLifecycle(updated, result?.reasoningAudit || {});
+                updated = rotateTriggersForNextTurn(current, updated);
+                updated.initialized = true;
+                const worldbookUpdate = WSM.WorldbookCompiler?.ingestReadResult?.(source, result);
+                updated.runtime = Object.assign({}, current.runtime, updated.runtime, {
+                    ...(previousAssistantMemory ? { lastSettledMessageId: previousAssistantId } : {}),
+                    worldbookInjection: worldbookUpdate?.report || current.runtime?.worldbookInjection || null,
+                    npcLastUpdatedElapsedMinutes: updateNpcClock(current, updated, { npcUpdates: result?.npcUpdates || [] }),
+                });
+                if (result.timelineEntry?.summary) {
+                    updated.timeline = Array.isArray(updated.timeline) ? updated.timeline : [];
+                    const entry = Object.assign({ id: `turn-${Date.now()}` }, result.timelineEntry, { actualChanges: result.actualChanges || [] });
+                    if (!updated.timeline.some((item) => item?.id === entry.id || (item?.summary === entry.summary && item?.messageId === previousAssistantId))) {
+                        entry.messageId = previousAssistantId;
+                        updated.timeline.push(entry);
+                    }
+                }
+                const userMessage = source?.currentUserAction || WSM.Context.latestUserMessage();
+                const sourceRefs = [previousAssistantMemory ? previousAssistant?.id : null, userMessage?.id]
+                    .filter((id) => id !== undefined && id !== null && String(id) !== '')
+                    .map((id) => `chat:${id}`);
+                const ledgerChanges = delta && typeof delta === 'object' ? historyChangesFromDelta(delta, sourceRefs, `turn:${key}`) : [];
+                WSM.Storage.appendHistoryChanges?.(ledgerChanges, [previousAssistantMemory ? previousAssistant : null, userMessage].filter(Boolean).map((message) => ({
+                    id: message.id,
+                    index: Number(message.index || 0),
+                    role: message.role,
+                    hidden: message.hidden === true,
+                    contentHash: hash(message.content),
+                    changeIds: ledgerChanges.map((change) => change.changeId),
+                })), { prefix: `turn:${key}` });
+                current = updated;
+            } else if (previousAssistantMemory) {
+                // A valid no-change response still counts as observing the
+                // previous assistant message and must not be re-sent forever.
+                current.runtime = Object.assign({}, current.runtime, { lastSettledMessageId: previousAssistantId });
+            }
+            const localPlan = Object.assign({}, result?.plan || {}, {
                 ...(diceRound ? { diceRound } : {}),
                 ...(historyRecall.text ? { historyRecall: historyRecall.text } : {}),
             });
@@ -2930,10 +3179,11 @@
                 moduleInjections: result?.moduleInjections && typeof result.moduleInjections === 'object' ? result.moduleInjections : {}, injection: '', error: '', localOnly: false,
             };
             current.planner.injection = WSM.Injection.compose(current, localPlan, current.planner.moduleInjections);
-            current = await WSM.Storage.save(current, 'pre-generation-reasoning', {
+            current = await WSM.Storage.save(current, 'turn-reconcile-and-reason', {
                 snapshot: true, snapshotKind: 'generation',
             });
             await setStatePrompts(current, localPlan, current.planner.moduleInjections);
+            reportProgress('本轮推理与状态增量已完成', 'success', `状态已更新至 REV ${current.revision} · 本轮插件 API 1 次 · 正文生成后不再追加调用`);
             return current.planner;
         }
         if (!plannerAvailable(settings)) {
@@ -2952,7 +3202,8 @@
             return current.planner;
         }
 
-        const rebuilding = options.initialize === true;
+        const provenanceMismatch = options.interactiveRead === true && current.initialized && !stateBelongsToActiveChat(current);
+        const rebuilding = options.initialize === true || provenanceMismatch;
         // A rebuild starts from a clean state, but the old persisted state is
         // retained until the replacement succeeds. Cancellation/failure is safe.
         const rebuildBase = rebuilding ? syncIdentities(WSM.Defaults.createState()) : current;
@@ -2966,7 +3217,7 @@
         const refreshWorld = !rebuilding && current.initialized && (current.runtime?.needsWorldRefresh === true || fullChatRefresh);
         const initializing = !current.initialized || rebuilding;
         const configuredSummaryTag = safeText(settings.summaryTag);
-        const configuredChatLabel = configuredSummaryTag ? `<${configuredSummaryTag}> 总结` : '可见聊天全文';
+        const configuredChatLabel = configuredSummaryTag ? `最近 ${settings.recentFullTextMessages || 5} 层正文 + 更早<${configuredSummaryTag}>总结` : '可见聊天全文';
         if (initializing || refreshWorld) reportProgress('第 1/3 步：正在读取酒馆资料', 'running', `角色卡、Persona、已启用世界书和${configuredChatLabel}`);
         const source = await WSM.Context.buildSource({
             fullChat: initializing || refreshWorld || options.initialize,
@@ -2980,7 +3231,7 @@
         const completeSourceSnapshot = initializing || refreshWorld ? JSON.parse(JSON.stringify(source)) : null;
         if (initializing || refreshWorld) {
             const preview = summarizeSource(source);
-            const chatLabel = preview.summaryTag ? `<${preview.summaryTag}> 总结` : '聊天全文';
+            const chatLabel = preview.summaryTag ? `最近 ${preview.recentFullTextMessages || 5} 层正文 + 更早<${preview.summaryTag}>总结` : '聊天全文';
             reportProgress('第 2/3 步：本地资料收集完成，正在准备结构化读取', 'running', `模型尚未开始读取 · ${chatLabel} ${preview.chatMessages} 条（扫描 ${preview.chatTotalMessages} 层） · 世界书原文 ${preview.loadedWorldbooks.length} 本 · 读取失败 ${preview.failedWorldbooks.length} 本 · 未执行世界书拆解`);
         }
         const fingerprint = WSM.Context.sourceFingerprint(source);
@@ -3009,7 +3260,7 @@
                 scope: source?.tavernTextContext?.scope || '',
                 instruction: source?.tavernTextContext?.readMode === 'full-text'
                     ? '聊天 sourceRecords 是用户选择的可见消息全文；可以读取其中正文和结构化标签，但不得读取未包含的隐藏系统楼层。'
-                    : `聊天 sourceRecords 只包含用户指定的<${source?.tavernTextContext?.summaryTag || 'meow_FM'}>标签内容；没有该标签的文本不在来源中。`,
+                    : `聊天 sourceRecords 采用混合边界：最近 ${source?.tavernTextContext?.recentFullTextMessages || 5} 层是可见正文，更早楼层只包含<${source?.tavernTextContext?.summaryTag || 'meow_FM'}>总结标签；不得把未包含的旧正文当作来源。`,
             },
             instructions: initializing
                 ? '完整理解角色卡、Persona、sourceBoundary允许的聊天内容与已启用世界书，建立初始持久世界状态；不得读取或推断被源边界排除的内容。除user和char外，提取3至12名最相关的既存NPC。'
@@ -3079,10 +3330,12 @@
             next = normalizeGptIdentityAliases(next, safeText(source?.character?.name));
             next = auditStateLifecycle(next, result?.reasoningAudit || {});
             const auditedEmptyModules = AUDITED_MODULES.filter((module) => !stateModuleHasContent(next, module));
+            const confirmedEmptyModules = auditedEmptyModules.filter((module) => ['empty_confirmed','not_applicable']
+                .includes(safeText(next.moduleCoverage?.[module]?.status).toLowerCase()));
             sourceSummary.moduleAudit = {
                 total: AUDITED_MODULES.length,
                 filled: AUDITED_MODULES.length - auditedEmptyModules.length,
-                emptyConfirmed: auditedEmptyModules,
+                emptyConfirmed: confirmedEmptyModules,
             };
             next.initialized = true;
             next.runtime = Object.assign({}, rebuildBase.runtime, next.runtime, {
@@ -3143,7 +3396,7 @@
                 const durationMs = Math.max(0, Date.now() - readStartedAt);
                 const incompleteModules = auditedModulesForMissingEvidence(prepared.reportedIncompleteEvidenceKeys || prepared.incompleteEvidenceKeys || [])
                     .filter((module) => !stateModuleHasContent(next, module));
-                const chatLabel = sourceSummary.summaryTag ? `<${sourceSummary.summaryTag}> 总结` : '聊天全文';
+                const chatLabel = sourceSummary.summaryTag ? `最近 ${sourceSummary.recentFullTextMessages || 5} 层正文 + 更早<${sourceSummary.summaryTag}>总结` : '聊天全文';
                 const moduleAudit = sourceSummary.moduleAudit || { total: AUDITED_MODULES.length, filled: 0, emptyConfirmed: [] };
                 const emptyText = (moduleAudit.emptyConfirmed || []).map(moduleDisplayName).join('、');
                 if (incompleteModules.length) {
@@ -3179,18 +3432,34 @@
         }
     }
     async function ensurePlan(options = {}) {
-        if (planningPromise) return planningPromise;
+        const requestedChatKey = WSM.Storage.currentChatKey();
+        const requestedIntent = options.initialize === true || options.readFullChat === true ? 'full-read' : 'turn-plan';
+        if (planningPromise) {
+            if (planningChatKey === requestedChatKey && planningIntent === requestedIntent) return planningPromise;
+            planningController?.abort();
+            try { await planningPromise; }
+            catch (_error) { /* Start the requested chat operation below. */ }
+            if (WSM.Storage.currentChatKey() !== requestedChatKey) return { cancelled: true };
+        }
         const interactiveRead = options.interactiveRead === true;
-        const controller = interactiveRead ? new AbortController() : null;
-        if (controller) activeReadController = controller;
-        const maximumCalls = options.initialize === true || options.readFullChat === true ? 2 : 1;
-        planningPromise = WSM.Api.withCallBudget(maximumCalls, maximumCalls === 2 ? 'extract-then-reason' : 'pre-generation-reasoning', () => plan({
+        const controller = new AbortController();
+        planningController = controller;
+        planningChatKey = requestedChatKey;
+        planningIntent = requestedIntent;
+        if (interactiveRead) activeReadController = controller;
+        const maximumCalls = options.initialize === true || options.readFullChat === true ? 2 : ORDINARY_TURN_CALL_BUDGET;
+        const runPromise = WSM.Api.withCallBudget(maximumCalls, maximumCalls === 2 ? 'extract-then-reason' : 'pre-generation-reasoning', () => plan({
             ...options, signal: controller?.signal || options.signal,
-        })).finally(() => {
-            planningPromise = null;
+        }));
+        const wrappedPromise = runPromise.finally(() => {
+            if (planningController === controller) planningController = null;
+            if (planningChatKey === requestedChatKey) planningChatKey = '';
+            if (planningIntent === requestedIntent) planningIntent = '';
             if (activeReadController === controller) activeReadController = null;
         });
-        return planningPromise;
+        planningPromise = wrappedPromise;
+        try { return await wrappedPromise; }
+        finally { if (planningPromise === wrappedPromise) planningPromise = null; }
     }
     function cancelRead() {
         if (!activeReadController || activeReadController.signal.aborted) return false;
@@ -3262,13 +3531,16 @@
         const assistant = WSM.Context.latestAssistantMessage();
         const key = assistantKey(assistant);
         if (!assistant?.content || (!options.force && current.runtime?.lastSettledMessageId === key)) return null;
-        const assistantMemory = WSM.Context.meowMessage(assistant);
+        // 最新正文必须能被自动结算，即使正文模型没有输出总结标签。
+        // 历史上下文仍由 buildSource 的“近层正文、远层总结”边界控制。
+        const assistantMemory = WSM.Context.recentFullTextMessage?.(assistant) || WSM.Context.meowMessage(assistant);
         if (!assistantMemory) return null;
         const settings = WSM.Settings.get();
         if (!plannerAvailable(settings)) return null;
         const settleSource = await WSM.Context.buildSource();
         if (WSM.Storage.currentChatKey() !== operationChatKey) return null;
         const recent = settleSource.chat;
+        reportProgress('正在自动读取最新正文', 'running', `最近 ${settleSource.tavernTextContext?.recentFullTextMessages || 5} 层读取正文，更早楼层读取<${settleSource.tavernTextContext?.summaryTag || 'meow_FM'}>总结 · 本轮事实观察 API 1 次`);
         const worldbookReport = WSM.WorldbookCompiler?.getReport?.(current.runtime?.worldbookInjection) || null;
         const payload = {
             phase: 'POST_GENERATION_RECONCILE',
@@ -3343,11 +3615,14 @@
                 contentHash: hash(message.content),
                 changeIds: sourceRefs.includes(`chat:${message.id}`) ? changeIds : [],
             })), { prefix: `turn:${key}` });
-            return await WSM.Storage.save(next, 'reconcile', { snapshot: false });
+            const saved = await WSM.Storage.save(next, 'reconcile', { snapshot: false });
+            reportProgress('最新正文已自动结算', 'success', `已读取最新助手正文并更新至 REV ${saved.revision} · 最近 ${settleSource.tavernTextContext?.recentFullTextMessages || 5} 层正文 + 更早总结 · 本轮 API 1 次`);
+            return saved;
         } catch (error) {
             const next = WSM.Storage.load();
             next.planner = Object.assign({}, next.planner, { error: `结算失败：${safeText(error?.message || error)}` });
             await WSM.Storage.save(next, 'reconcile-error', { snapshot: false });
+            reportProgress('最新正文自动结算失败', 'error', safeText(error?.message || error));
             console.error('[WorldStateMachine] 正文结算失败', error);
             return null;
         }
@@ -3370,10 +3645,8 @@
         source.on(before, async (type) => {
             if (isForeground(type) && WSM.Storage.load().initialized) await ensurePlan();
         });
-        const onAssistant = () => window.setTimeout(() => ensureSettle(), 500);
-        [events.CHARACTER_MESSAGE_RENDERED, events.MESSAGE_RECEIVED].filter(Boolean).forEach((name) => source.on(name, onAssistant));
-        if (events.GENERATION_ENDED) source.on(events.GENERATION_ENDED, () => window.setTimeout(() => ensureSettle(), 250));
         if (events.CHAT_CHANGED) source.on(events.CHAT_CHANGED, () => {
+            planningController?.abort();
             if (activeReadController && !activeReadController.signal.aborted) activeReadController.abort();
             void setPrompt('');
             void WSM.WorldbookCompiler?.setWorldbookPrompts?.({});
@@ -3402,5 +3675,5 @@
             }, 1000);
         }
     }
-    WSM.Engine = { init, plan: ensurePlan, settle: ensureSettle, interceptor, fallbackInjection, reportProgress, resetProgress, getProgress, cancelRead, isReading, syncRegisteredPrompt, refreshGptLocalState, clearRegisteredPrompts, _test: { generationBlockReason, plannerAvailable, activeChatAvailable, setPrompt, setStatePrompts, syncIdentities, initializeInSlices, sourceForInitializeSlice, rotateTriggersForNextTurn, completeSourceRecords, compactSourceChronicle, compactGptSourceChronicle, splitCompleteRecords, splitGptCompleteRecords, removeMirroredChatRecords, prepareSourceForStateRequests, buildStateWithinLimit, normalizeStateResult, normalizeStateCollection, normalizeStateCollections, normalizeGptIdentityAliases, reconcileEntityReferences, auditStateLifecycle, mergeStatePatch, applyStateDelta, applyHistoryLedger, historyChangesFromDelta, mergeCompleteEvidence, mergeAdjudicatedEvidence, supplementMissingEvidenceFromArchive, localEvidenceFromSource, deterministicMeowLedger, ensureDeterministicMeowLedger, sanitizeGptEvidence, sanitizeGptHydratedState, applyGptSceneToState, stateFromEvidence, firstHalfCacheKey, validateEvidenceContract, validateFilledEvidence, normalizeEvidenceFillShapes, completeExplicitlyAuditedEvidence, synthesizeEvidenceAudit, repairFinalFillFromSourceCompile, markIncompleteEvidence, preserveUnreturnedStateModules } };
+    WSM.Engine = { init, plan: ensurePlan, settle: ensureSettle, interceptor, fallbackInjection, reportProgress, resetProgress, getProgress, cancelRead, isReading, syncRegisteredPrompt, refreshGptLocalState, clearRegisteredPrompts, _test: { ordinaryTurnCallPolicy, generationBlockReason, plannerAvailable, activeChatAvailable, setPrompt, setStatePrompts, syncIdentities, initializeInSlices, sourceForInitializeSlice, rotateTriggersForNextTurn, completeSourceRecords, compactSourceChronicle, compactGptSourceChronicle, splitCompleteRecords, splitGptCompleteRecords, removeMirroredChatRecords, prepareSourceForStateRequests, buildStateWithinLimit, normalizeStateResult, normalizeStateCollection, normalizeStateCollections, normalizeGptIdentityAliases, reconcileEntityReferences, auditStateLifecycle, mergeStatePatch, applyStateDelta, applyHistoryLedger, historyChangesFromDelta, mergeCompleteEvidence, mergeAdjudicatedEvidence, supplementMissingEvidenceFromArchive, localEvidenceFromSource, deterministicMeowLedger, ensureDeterministicMeowLedger, sanitizeGptEvidence, sanitizeGptHydratedState, applyGptSceneToState, stateFromEvidence, firstHalfCacheKey, validateEvidenceContract, validateFilledEvidence, normalizeEvidenceFillShapes, completeExplicitlyAuditedEvidence, synthesizeEvidenceAudit, repairFinalFillFromSourceCompile, markIncompleteEvidence, preserveUnreturnedStateModules } };
 })();

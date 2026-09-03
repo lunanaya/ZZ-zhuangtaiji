@@ -493,14 +493,16 @@ testContext.getWorldInfo = async (name) => name === '分析世界书' ? {
 } : { entries: {} };
 const source = await WorldStateMachine.Context.buildSource();
 assert.equal(source.tavernTextContext.source, 'SillyTavern.getContext().chat');
-assert.equal(source.tavernTextContext.includedMessages, 1);
+assert.equal(source.tavernTextContext.includedMessages, 2);
 assert.equal(source.tavernTextContext.scannedMessages, 2);
-assert.equal(source.tavernTextContext.skippedWithoutMeow, 1);
-assert.match(source.tavernTextContext.scope, /summary-tag-only:meow_FM/);
-assert.match(source.chat[0].content, /两人在飞机上发生争执/);
-assert.doesNotMatch(source.chat[0].content, /不可发送|伸手挡住|small_theater|thinking/);
-assert.equal(source.currentUserAction, null);
-assert.match(source.latestAssistantText.content, /当日下午/);
+assert.equal(source.tavernTextContext.skippedWithoutMeow, 0);
+assert.equal(source.tavernTextContext.readMode, 'hybrid-summary-tail');
+assert.match(source.tavernTextContext.scope, /hybrid:meow_FM:latest-5-full-text/);
+assert.match(source.chat[0].content, /飞机上闹起来了/);
+assert.match(source.chat[1].content, /伸手挡住我的反击/);
+assert.doesNotMatch(source.chat[1].content, /不可发送|small_theater|thinking|两人在飞机上发生争执/);
+assert.equal(source.currentUserAction.role, 'user');
+assert.match(source.latestAssistantText.content, /伸手挡住/);
 assert.deepEqual(source.worldbookDiagnostics.loadedNames, ['分析世界书']);
 assert.equal(source.worldbookDiagnostics.entryCounts['分析世界书'], 2);
 assert.match(source.worldbooks[0].entries[0].content, /旁观者反应/);
@@ -512,12 +514,37 @@ testContext.chat = [
 ];
 const customTagSource = await WorldStateMachine.Context.buildSource();
 assert.equal(customTagSource.tavernTextContext.summaryTag, 'abstract');
-assert.equal(customTagSource.tavernTextContext.readMode, 'summary-tag');
-assert.equal(customTagSource.chat.length, 1);
-assert.match(customTagSource.chat[0].content, /两人离开机场/);
-assert.doesNotMatch(customTagSource.chat[0].content, /不应读取|没有标签的用户正文/);
+assert.equal(customTagSource.tavernTextContext.readMode, 'hybrid-summary-tail');
+assert.equal(customTagSource.chat.length, 2);
+assert.match(customTagSource.chat[0].content, /没有标签的用户正文/);
+assert.match(customTagSource.chat[1].content, /两人离开机场/);
+assert.doesNotMatch(customTagSource.chat[1].content, /不应读取/);
+
+WorldStateMachine.Settings.update({ summaryTag: 'meow_FM', recentMessages: 12, recentFullTextMessages: 5 });
+testContext.chat = Array.from({ length: 8 }, (_value, index) => ({
+    is_user: index % 2 === 0,
+    name: index % 2 === 0 ? '林知夏' : '夏以昼',
+    mes: `第${index + 1}层可见正文<meow_FM><plot>第${index + 1}层总结</plot></meow_FM>`,
+    send_date: `hybrid-${index + 1}`,
+}));
+const hybridSource = await WorldStateMachine.Context.buildSource();
+assert.equal(hybridSource.chat.length, 8);
+hybridSource.chat.slice(0, 3).forEach((message, index) => {
+    assert.equal(message.memoryOnly, true, `第${index + 1}个旧楼层必须只读取总结`);
+    assert.match(message.content, /总结/);
+    assert.doesNotMatch(message.content, /可见正文/);
+});
+hybridSource.chat.slice(-5).forEach((message, index) => {
+    assert.equal(message.memoryOnly, false, `最近第${index + 1}个楼层必须读取正文`);
+    assert.match(message.content, /可见正文/);
+    assert.doesNotMatch(message.content, /总结/);
+});
 
 WorldStateMachine.Settings.update({ summaryTag: '' });
+testContext.chat = [
+    { is_user: true, name: '林知夏', mes: '这是没有标签的用户正文。', send_date: 'u2' },
+    { is_user: false, name: '夏以昼', mes: '<abstract><time>傍晚</time><plot>两人离开机场。</plot></abstract><meow_FM><plot>不应读取这一个标签。</plot></meow_FM>', send_date: 'a2' },
+];
 const fullTextSource = await WorldStateMachine.Context.buildSource();
 assert.equal(fullTextSource.tavernTextContext.readMode, 'full-text');
 assert.equal(fullTextSource.chat.length, 2);
@@ -715,9 +742,10 @@ let settleCalls = 0;
 WorldStateMachine.Api.complete = async (_system, payload) => {
     settleCalls += 1;
     assert.equal(payload.phase, 'POST_GENERATION_RECONCILE');
-    assert.match(payload.actualAssistantMessage.content, /林知夏停止打闹/);
-    assert.doesNotMatch(payload.actualAssistantMessage.content, /<content>|他替我系好安全带。<\/content>/);
-    assert.equal(payload.recentChat.length, 1, '结算上下文也只能发送含meow_FM的楼层');
+    assert.match(payload.actualAssistantMessage.content, /他替我系好安全带/);
+    assert.doesNotMatch(payload.actualAssistantMessage.content, /林知夏停止打闹|meow_FM/);
+    assert.equal(payload.recentChat.length, 2, '结算上下文必须包含最近用户与助手正文');
+    assert.equal(payload.recentChat.every((message) => message.memoryOnly === false), true, '最近五层必须作为正文而非总结发送');
     assert.ok(Array.isArray(payload.worldbookRules));
     assert.equal(payload.npcSchedule.find((item) => item.characterId === 'char')?.mode, 'background', '到达后台间隔的离屏NPC必须进入同一次结算');
     assert.equal(payload.simulationRules.allowNoSignificantChange, true);

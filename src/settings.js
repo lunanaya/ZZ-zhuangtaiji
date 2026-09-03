@@ -23,6 +23,7 @@
         temperature: 0.15,
         maxTokens: 5000,
         recentMessages: 12,
+        recentFullTextMessages: 5,
         summaryTag: 'meow_FM',
         maxSourceChars: 60000,
         injectionDepth: 0,
@@ -134,6 +135,8 @@
         root[KEY].maxTokens = Math.max(256, Math.min(16384, Math.round(Number(root[KEY].maxTokens) || defaults.maxTokens)));
         const recentMessages = Number(root[KEY].recentMessages);
         root[KEY].recentMessages = Number.isFinite(recentMessages) ? Math.max(0, Math.min(200, Math.round(recentMessages))) : defaults.recentMessages;
+        const recentFullTextMessages = Number(root[KEY].recentFullTextMessages);
+        root[KEY].recentFullTextMessages = Number.isFinite(recentFullTextMessages) ? Math.max(1, Math.min(20, Math.round(recentFullTextMessages))) : defaults.recentFullTextMessages;
         root[KEY].summaryTag = typeof root[KEY].summaryTag === 'string' ? root[KEY].summaryTag.trim() : defaults.summaryTag;
         delete root[KEY].calibrationConcurrency;
         window.extension_settings[KEY] = root[KEY];

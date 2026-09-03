@@ -1190,7 +1190,7 @@
             <div class="wsm-shell">
                 <button id="wsm-main-close" class="wsm-icon-button" data-action="close" aria-label="关闭">${icon('close')}</button>
                 <header class="wsm-header"><div class="wsm-actions">
-                    <div class="wsm-read-action"><button id="wsm-read-current" data-action="read-current">读取当前聊天</button><section id="wsm-operation-status" class="wsm-operation-status" role="status" aria-live="polite"><div class="wsm-operation-current"><b></b><small></small></div><div class="wsm-operation-steps" aria-label="读取步骤"></div></section></div><button id="wsm-read-previous" data-action="read-previous">读取上一轮正文</button><button id="wsm-compile-worldbook" data-action="compile-worldbook-main">拆解世界书</button><button id="wsm-clear-read" data-action="clear-read">清空读取</button><button data-action="organize">整理状态</button><button data-action="settings">设置</button>
+                    <div class="wsm-read-action"><button id="wsm-read-current" data-action="read-current">读取当前聊天</button><section id="wsm-operation-status" class="wsm-operation-status" role="status" aria-live="polite"><div class="wsm-operation-current"><b></b><small></small></div><div class="wsm-operation-steps" aria-label="读取步骤"></div></section></div><button id="wsm-read-previous" data-action="read-previous">读取上一轮正文</button><button id="wsm-compile-worldbook" data-action="compile-worldbook-main">拆解世界书</button><button id="wsm-clear-read" data-action="clear-read">清空读取</button><button data-action="organize">整理状态</button><button data-action="settings">设置</button><small id="wsm-read-floor" class="wsm-read-floor" aria-live="polite"></small>
                 </div></header>
                 <nav class="wsm-category-bar">${categoryButtons}</nav>
                 <div class="wsm-body"><nav class="wsm-tabs">${tabs}</nav><main class="wsm-main">
@@ -1308,7 +1308,18 @@
         const operation = $('#wsm-operation-status');
         const readCurrent = $('#wsm-read-current');
         const clearRead = $('#wsm-clear-read');
+        const readFloor = $('#wsm-read-floor');
         if (!operation || !readCurrent || !clearRead) return;
+        if (readFloor) {
+            const floor = Math.max(0, Math.floor(Number(
+                state.runtime?.lastReadFloor
+                || state.runtime?.lastPreviousBodyFloor
+                || state.runtime?.sourceSummary?.sourceRead?.coveredChatMessages
+                || state.runtime?.sourceSummary?.chatMessages
+                || 0
+            )));
+            readFloor.textContent = floor ? `正文已读取至第 ${floor} 层` : '正文尚未建立读取位置';
+        }
         if (status) {
             status.textContent = progress.state === 'running' ? '正在读取…' : (state.initialized ? `REV ${state.revision} · ${state.world?.time?.display || '时间未定'}` : '等待初始化');
             status.dataset.state = progress.state === 'success' || (state.initialized && progress.state !== 'running' && progress.state !== 'error') ? 'success' : (progress.state || 'idle');
@@ -1654,7 +1665,7 @@
                 const result = await WSM.Engine.readPreviousBody();
                 await WSM.Engine?.syncRegisteredPrompt?.();
                 render();
-                notify(result?.status === 'already-read' ? '上一轮正文已经读取，无需重复调用 API' : '上一轮正文已读取并更新插件状态', 'success');
+                notify(`第 ${result?.floor || '?'} 层助手正文已读取并更新插件状态`, 'success');
             } catch (error) {
                 WSM.Engine.reportProgress?.('上一轮正文读取失败', 'error', error.message);
                 notify(`读取失败：${error.message}`, 'error');

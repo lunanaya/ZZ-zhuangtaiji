@@ -518,7 +518,7 @@ stateDelta为空表示完整KEEP。update只提交变化字段并由程序合并
             sceneState: { location: '', presentCharacterIds: [], currentIssue: '', completedActions: [], pendingResponses: [], obstacles: [], interactionPoints: [], endConditions: [], truthStatus: 'not_applicable', basis: [], sourceRefs: [] },
             reasoningAudit: { matchedRules: [], derivedFacts: [], conflicts: [], staleStates: [], actorFeasibility: [], causalCandidates: [], moduleDecisions: [] },
             planner: { lastRunAt: 0, turnKey: '', plan: null, moduleInjections: {}, injection: '', error: '' },
-            runtime: { lastSettledMessageId: '', lastUserMessageId: '', sourceFingerprint: '', sourceSummary: null, npcLastUpdatedElapsedMinutes: {}, needsWorldRefresh: false },
+            runtime: { lastSettledMessageId: '', lastPreviousBodyMessageId: '', lastPreviousBodyMessageKey: '', lastPreviousBodyFloor: 0, lastPreviousBodyContentHash: '', lastReadFloor: 0, lastUserMessageId: '', sourceFingerprint: '', sourceSummary: null, npcLastUpdatedElapsedMinutes: {}, needsWorldRefresh: false },
             moduleCoverage: {},
             lockedPaths: [],
         };

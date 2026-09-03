@@ -104,9 +104,14 @@ const queuedTurns = WorldStateMachine.Engine._test.pendingTurnReads([
     { turnKey: 'turn-2', currentUserAction: { id: 3, content: '下一轮行动' } },
 ]);
 assert.deepEqual(queuedTurns.map((item) => item.turnKey), ['turn-1', 'turn-2'], '超时补账队列必须按轮次去重，避免下一次API重复结算');
+assert.equal(queuedTurns.some((item) => 'previousAssistantMessage' in item), false, '自动补账队列不得保留或重读上一轮助手正文');
 assert.equal(WorldStateMachine.Engine._test.shouldReuseTurnPlan('regenerate'), true, '重新回复必须复用同一轮计划，不得再次调用状态API');
 assert.equal(WorldStateMachine.Engine._test.shouldReuseTurnPlan('swipe'), true, '切换回复候选必须复用同一轮计划');
 assert.equal(WorldStateMachine.Engine._test.shouldReuseTurnPlan('normal'), false);
+const previousBodyReceipt = WorldStateMachine.Engine._test.previousBodyReceipt({ id: 'assistant-9', index: 18, content: '上一轮正文' });
+assert.equal(previousBodyReceipt.floor, 19, '手动读取必须保存可见楼层的一基编号');
+assert.equal(previousBodyReceipt.messageId, 'assistant-9', '手动读取必须保存助手消息ID');
+assert.match(previousBodyReceipt.messageKey, /^assistant-9:/, '楼层记录必须绑定正文哈希，避免把不同正文误认为同一份');
 const compactTurn = WorldStateMachine.Engine._test.compactTurnState({
     identities: { user: '用户' }, organizations: [{ id: 'org', name: '组织', situation: '仍在活动', basis: ['原文'], sourceRefs: ['chat:1'], truthStatus: 'confirmed' }],
     reasoningAudit: { moduleDecisions: ['技术审计'] }, moduleCoverage: { organizations: { status: 'has_records' } },

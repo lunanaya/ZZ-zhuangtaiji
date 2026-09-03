@@ -1603,6 +1603,15 @@
     function isGenerationSnapshot(item) {
         return item?.kind === 'generation' || item?.kind === 'organization' || item?.reason === 'planner';
     }
+    function isChatGenerationSnapshot(item) {
+        if (item?.kind !== 'generation') return false;
+        if (String(item?.turnKey || '')) return true;
+        // Compatibility with snapshots written before turnKey was persisted.
+        // These reasons are all pre-generation chat nodes; initialization and
+        // organization snapshots remain deliberately excluded.
+        return ['turn-reconcile-and-reason', 'planner', 'pre-generation-reasoning']
+            .includes(String(item?.reason || ''));
+    }
     function history() { return clone(envelope().history.filter(isGenerationSnapshot).slice(0, HISTORY_LIMIT)); }
     async function rollbackPreviousGeneration() {
         const box = envelope();
@@ -1615,13 +1624,13 @@
         const requested = Math.max(0, Math.floor(Number(count || 0)));
         if (!requested) return { state: load(), rolledBack: 0 };
         const box = envelope();
-        // Only ordinary-turn snapshots carry turnKey. Manual organization and
-        // initialization snapshots must never be consumed by chat deletion.
+        // Prefer turnKey snapshots, while still recognizing chat nodes saved by
+        // older plugin versions. Manual organization and initialization
+        // snapshots must never be consumed by chat deletion.
         const indexes = [];
         for (let index = 0; index < box.history.length && indexes.length < requested; index += 1) {
             const item = box.history[index];
-            const ordinaryTurn = String(item?.turnKey || '') || item?.reason === 'turn-reconcile-and-reason';
-            if (item?.kind === 'generation' && ordinaryTurn) indexes.push(index);
+            if (isChatGenerationSnapshot(item)) indexes.push(index);
         }
         if (!indexes.length) return { state: load(), rolledBack: 0 };
         const target = box.history[indexes.at(-1)].state;
@@ -1709,6 +1718,6 @@
         readSourceReadCache, readSourceReadArchive, writeSourceReadCache,
         loadHistoryMemory, beginHistoryCalibration, readHistoryCalibrationChunk, writeHistoryCalibrationChunk,
         completeHistoryCalibration, setHistoryBaseline, setTwoPassHistoryBaseline, appendHistoryChanges, retrieveHistory, historyAudit,
-        _test: { normalizeState, normalizeMapHierarchy, mapTypeFromName, compactState, compactTimeline, ensureInitializedModuleCoverage, memoryItemCount, RETENTION_LIMITS, historyTerms, evidenceExcerpt, changeText, normalizeTruthItem, ensureRelationshipCoverage, refreshModuleCoverage, truthMeta, currentChatKey },
+        _test: { normalizeState, normalizeMapHierarchy, mapTypeFromName, compactState, compactTimeline, ensureInitializedModuleCoverage, memoryItemCount, RETENTION_LIMITS, historyTerms, evidenceExcerpt, changeText, normalizeTruthItem, ensureRelationshipCoverage, refreshModuleCoverage, truthMeta, currentChatKey, isChatGenerationSnapshot },
     };
 })();

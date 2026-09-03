@@ -726,8 +726,22 @@ assert.equal(organized.state.knowledge.some((item) => item.id === 'organize-temp
 assert.equal(organized.state.knowledge.some((item) => item.id === 'organize-temp-hot'), true, '临时清理不得删除HOT的L1');
 assert.equal(organized.state.tasks.some((item) => item.id === 'organize-active-task'), true, '临时清理不得删除仍在进行的任务');
 assert.equal(WorldStateMachine.Storage.history()[0]?.kind, 'organization', '整理前必须建立可回滚快照');
+assert.equal(WorldStateMachine.Storage._test.isChatGenerationSnapshot({ kind: 'generation', reason: 'pre-generation-reasoning', turnKey: '' }), true, '旧版生成节点必须能随删除楼层自动回退');
+assert.equal(WorldStateMachine.Storage._test.isChatGenerationSnapshot({ kind: 'generation', reason: 'planner', turnKey: '' }), true, '无turnKey的当前规划节点必须能随删除楼层自动回退');
+assert.equal(WorldStateMachine.Storage._test.isChatGenerationSnapshot({ kind: 'organization', reason: 'organize-smart', turnKey: '' }), false, '整理快照不得被删除楼层操作消耗');
+assert.equal(WorldStateMachine.Storage._test.isChatGenerationSnapshot({ kind: 'generation', reason: 'initialize', turnKey: '' }), false, '初始化快照不得被删除楼层操作消耗');
 await WorldStateMachine.Storage.rollbackPreviousGeneration();
 assert.equal(WorldStateMachine.Storage.load().knowledge.some((item) => item.id === 'organize-temp-old'), true, '回滚应恢复整理前状态');
+
+const legacyRollbackBox = activeChatStore();
+const legacyRollbackTarget = structuredClone(legacyRollbackBox.state);
+legacyRollbackTarget.revision = 12;
+legacyRollbackTarget.world = { ...legacyRollbackTarget.world, location: { ...legacyRollbackTarget.world.location, current: '删除前节点' } };
+legacyRollbackBox.state = { ...structuredClone(legacyRollbackTarget), revision: 20, world: { ...legacyRollbackTarget.world, location: { ...legacyRollbackTarget.world.location, current: '删除后节点' } } };
+legacyRollbackBox.history = [{ kind: 'generation', reason: 'pre-generation-reasoning', turnKey: '', state: legacyRollbackTarget }];
+const legacyRollbackResult = await WorldStateMachine.Storage.rollbackGenerations(1);
+assert.equal(legacyRollbackResult.rolledBack, 1, '删除楼层必须实际消费旧版生成节点');
+assert.equal(WorldStateMachine.Storage.load().world.location.current, '删除前节点', '删除楼层必须恢复旧版快照中的上一节点');
 
 testContext.generateRaw = async () => '{"ok":true}';
 testContext.chat = [

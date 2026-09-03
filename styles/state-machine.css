@@ -16,10 +16,11 @@
 .wsm-header b { color:var(--wsm-text); font-family:ui-monospace,monospace; letter-spacing:2px; }
 .wsm-header span { margin-left:14px; color:var(--wsm-dim); font-size:12px; }
 .wsm-header #wsm-status[data-state="success"] { color:#278445; font-weight:800; text-shadow:0 1px 0 #fff; }
-.wsm-actions { display:grid; width:100%; grid-template-columns:repeat(4,max-content) minmax(0,1fr); grid-template-rows:auto auto; gap:3px 8px; align-items:start; }
+.wsm-actions { display:grid; width:100%; grid-template-columns:repeat(6,max-content) minmax(0,1fr); grid-template-rows:auto auto auto; gap:3px 8px; align-items:start; }
 .wsm-read-action { display:contents; }
 .wsm-read-action>#wsm-read-current { grid-column:1; grid-row:1; justify-self:start; }
 .wsm-read-action>.wsm-operation-status { grid-column:1 / -1; grid-row:2; }
+.wsm-read-floor { grid-column:1 / -1; grid-row:3; padding:1px 2px 0; color:var(--wsm-dim); font-size:10.5px; line-height:1.2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .wsm-actions>button { justify-self:start; }
 #wsm-root #wsm-main-close { position:absolute!important; top:13px; right:14px; z-index:30; margin:0; background:#fff2e1; }
 #wsm-root button { border:1px solid var(--wsm-line); border-radius:7px; padding:6px 10px; background:#fff2e1; color:var(--wsm-text); cursor:pointer; box-shadow:0 2px 5px #929ec426; }
@@ -450,16 +451,15 @@
 .wsm-operation-steps>div[data-state="success"]>b,.wsm-operation-steps>div[data-state="done"]>b { color:#278445; }
 .wsm-turn-read-popup { position:fixed!important; inset:0!important; z-index:5004!important; display:grid; place-items:center; padding:18px; box-sizing:border-box; pointer-events:auto; background:#4f587744; backdrop-filter:blur(3px); color:var(--wsm-text,#4f5877); font-family:var(--wsm-font-family,Inter,"Microsoft YaHei",sans-serif); }
 .wsm-turn-read-popup[hidden] { display:none!important; }
-.wsm-turn-read-card { display:grid; grid-template-columns:34px minmax(0,1fr); align-items:center; gap:12px; width:min(420px,calc(100vw - 36px)); padding:17px 18px; box-sizing:border-box; border:1px solid var(--wsm-line,#929ec4); border-radius:11px; background:#fff8ef; box-shadow:0 18px 52px #30374f55; }
+.wsm-turn-read-card { display:inline-flex; align-items:center; gap:9px; width:auto; max-width:calc(100vw - 36px); padding:9px 13px; box-sizing:border-box; border:1px solid var(--wsm-line,#929ec4); border-radius:9px; background:#fff8ef; box-shadow:0 12px 36px #30374f44; }
 .wsm-turn-read-card>div { min-width:0; }
-.wsm-turn-read-card strong { display:block; color:#4f5877; font-size:15px; }
-.wsm-turn-read-card p { margin:5px 0 3px; color:#59627f; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
-.wsm-turn-read-card small { color:#727b9a; font-size:11px; }
-.wsm-turn-read-spinner { width:25px; height:25px; box-sizing:border-box; border:3px solid #929ec455; border-top-color:#a96719; border-radius:50%; animation:wsm-turn-read-spin .8s linear infinite; }
+.wsm-turn-read-card strong { display:block; color:#4f5877; font-size:13px; line-height:20px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.wsm-turn-read-card p,.wsm-turn-read-card small { display:none; }
+.wsm-turn-read-spinner { flex:0 0 auto; width:18px; height:18px; box-sizing:border-box; border:2px solid #929ec455; border-top-color:#a96719; border-radius:50%; animation:wsm-turn-read-spin .8s linear infinite; }
 .wsm-turn-read-popup[data-state="success"] .wsm-turn-read-spinner { border:0; animation:none; display:grid; place-items:center; background:#35a354; color:#fff; }
-.wsm-turn-read-popup[data-state="success"] .wsm-turn-read-spinner::after { content:"✓"; font-size:17px; font-weight:800; }
+.wsm-turn-read-popup[data-state="success"] .wsm-turn-read-spinner::after { content:"✓"; font-size:13px; font-weight:800; }
 .wsm-turn-read-popup[data-state="error"] .wsm-turn-read-spinner { border-color:#c64b3f; animation:none; position:relative; }
-.wsm-turn-read-popup[data-state="error"] .wsm-turn-read-spinner::after { content:"×"; position:absolute; inset:0; display:grid; place-items:center; color:#c64b3f; font-size:18px; font-weight:800; }
+.wsm-turn-read-popup[data-state="error"] .wsm-turn-read-spinner::after { content:"×"; position:absolute; inset:0; display:grid; place-items:center; color:#c64b3f; font-size:14px; font-weight:800; }
 @keyframes wsm-turn-read-spin { to { transform:rotate(360deg); } }
 .wsm-choice-panel { margin-top:12px; padding-top:11px; border-top:1px solid #929ec455; }
 .wsm-choice-panel>header { display:flex; justify-content:space-between; gap:10px; align-items:center; margin-bottom:8px; }

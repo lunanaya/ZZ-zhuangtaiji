@@ -27,7 +27,7 @@ assert.deepEqual(state.triggers[0].effectsIfTriggered, ['玩家遇见逃避搜�
 
 const prompt = WorldStateMachine.Defaults.PLANNER_PROMPT;
 const reconciler = WorldStateMachine.Defaults.RECONCILER_PROMPT;
-assert.match(prompt, /当前任务 vs 可触发事件/);
+assert.match(prompt, /任务 vs 可触发事件/);
 assert.match(prompt, /可触发事件 vs 长期线程/);
 assert.match(prompt, /长期线程 vs 世界进程/);
 assert.match(prompt, /即使用户角色不参与也会自行变化/);

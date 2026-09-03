@@ -54,14 +54,22 @@ assert.match(hiddenActivityIntent, /不代表我已经知道状态栏中的后�
 assert.equal(Object.prototype.hasOwnProperty.call(WorldStateMachine.UI._test.interactionActions, 'world'), false, '世界状态必须保持只读');
 assert.equal(Object.prototype.hasOwnProperty.call(WorldStateMachine.UI._test.interactionActions, 'progression'), false, '剧情推进后台快照必须保持只读');
 assert.equal(Object.keys(WorldStateMachine.Settings.get().modulePrompts).length, Object.keys(WorldStateMachine.Defaults.MODULE_PROMPTS).length);
-assert.equal(WorldStateMachine.Settings.get().rulesVersion, 26);
+assert.equal(WorldStateMachine.Settings.get().rulesVersion, 28);
 assert.equal(Object.prototype.hasOwnProperty.call(WorldStateMachine.UI._test.interactionActions, 'map'), false, '场景地图必须保持纯本地只读展示');
 assert.equal(WorldStateMachine.Settings.get().injectionModules.knowledge.enabled, true, '秘密知识边界必须能够参与统一注入');
 assert.equal(WorldStateMachine.Settings.get().injectionModules.worldRules.enabled, true, '硬规则库必须默认启用');
 assert.equal(WorldStateMachine.Settings.get().injectionModules.resourceConstraints.enabled, true, '资源与硬约束必须默认参与行动可行性检查');
 assert.match(WorldStateMachine.Settings.get().modulePrompts.resourceConstraints, /不得凭空生成钱、人手、交通、门卡、许可或物品/);
 assert.equal(WorldStateMachine.UI._test.intentPanel('map', { id: 'hq', name: '夏氏集团总部' }, ['travel']), '', '地图不得生成发送给正文AI的交互按钮');
-assert.match(WorldStateMachine.Settings.get().plannerPrompt, /事件节点、世界进程与因果影响/);
+const questOptions = WorldStateMachine.UI._test.dynamicIntentOptions('tasks', {
+    id: 'restore-crown', title: '复兴皇权', questType: 'main', actionOptions: [
+        { id: 'court-support', label: '争取朝臣支持', intent: '我准备先与能够接触的朝臣商议复兴皇权。', description: '从现有政治关系入手' },
+    ],
+});
+assert.equal(questOptions[0].label, '争取朝臣支持');
+assert.match(WorldStateMachine.UI._test.buildIntentMessage(state, 'tasks', { id: 'restore-crown', title: '复兴皇权', actionOptions: questOptions }, 'court-support'), /与能够接触的朝臣商议/);
+assert.equal(WorldStateMachine.UI._test.interactionActions.tasks.length, 0, '任务不得再使用固定关注/介入/调查模板');
+assert.match(WorldStateMachine.Settings.get().plannerPrompt, /时间线、世界进程与因果影响/);
 assert.match(WorldStateMachine.Settings.get().plannerPrompt, /实际 user\/assistant 正文/);
 assert.match(WorldStateMachine.Settings.get().plannerPrompt, /剧情压力与空转侦测器/);
 assert.match(WorldStateMachine.Settings.get().plannerPrompt, /Phantasm 世界运作逻辑（最高优先级）/);
@@ -74,8 +82,8 @@ assert.match(WorldStateMachine.Settings.get().modulePrompts.relationships, /禁�
 assert.match(WorldStateMachine.Settings.get().modulePrompts.characters, /persistentConditions.*恢复逻辑/);
 assert.match(WorldStateMachine.Settings.get().modulePrompts.npcActivities, /每人只保留一条/);
 assert.match(WorldStateMachine.Settings.get().modulePrompts.knowledge, /L1普通、L2重要、L3核心/);
-assert.match(WorldStateMachine.Settings.get().modulePrompts.tasks, /现在能采取有效行动/);
-assert.match(WorldStateMachine.Settings.get().modulePrompts.triggers, /等待条件=trigger/);
+assert.match(WorldStateMachine.Settings.get().modulePrompts.tasks, /主线与支线目标/);
+assert.match(WorldStateMachine.Settings.get().modulePrompts.triggers, /剧情扣子/);
 assert.match(WorldStateMachine.Settings.get().modulePrompts.threads, /世界不依赖用户也会演变.*process/);
 assert.match(WorldStateMachine.Settings.get().modulePrompts.processes, /即使用户角色不参与/);
 assert.match(WorldStateMachine.Settings.get().plannerPrompt, /同一条信息只能有一个“主归属模块”/);
@@ -115,17 +123,17 @@ assert.match(WorldStateMachine.Injection.fallbackBlocks(retentionState).resource
 assert.equal(retentionState.knowledge.filter((item) => item.priority === 'L3').length, 45, 'L3核心知识不得因容量自动删除');
 assert.equal(retentionState.npcActivities.find((item) => item.characterId === 'char')?.action, '当前活动', '每个NPC只保留当前活动快照');
 const invalidCardState = WorldStateMachine.Defaults.createState();
+invalidCardState.tasks = [{ id: 'empty-task', title: '无。', ownerIds: ['user'], status: 'active' }];
 invalidCardState.relationships = [
     { id: 'blank-relation', from: '', to: '', status: '', priority: 'L3', activity: 'HOT' },
     { id: 'valid-relation', from: 'user', to: 'char', status: '彼此信任但仍有分歧', priority: 'L2', activity: 'HOT' },
     { id: 'duplicate-relation', from: 'user', to: 'char', status: '彼此信任但仍有分歧（当前版本）', priority: 'L2', activity: 'HOT' },
 ];
-invalidCardState.events = [{ id: 'blank-event', title: '', summary: '' }, { id: 'title-only-event', title: '只有标题', summary: '' }];
 invalidCardState.npcActivities = [{ id: 'blank-activity', characterId: 'char', action: '' }];
 WorldStateMachine.Storage._test.compactState(invalidCardState);
+assert.deepEqual(invalidCardState.tasks, [], '“无。”不得被保存成当前任务卡');
 assert.equal(invalidCardState.relationships.length, 1, '初始化或更新产生的空关系卡与同对象旧版本必须被程序清理');
 assert.equal(invalidCardState.relationships[0].id, 'duplicate-relation');
-assert.deepEqual(invalidCardState.events, [], '缺少事件内容的半成品不得形成卡片');
 assert.deepEqual(invalidCardState.npcActivities, [], '缺少实际活动的半成品不得形成卡片');
 assert.match(WorldStateMachine.UI._test.displayValue('{"location":"漱玉殿","participants":["夏寻樨","夏以昼"],"time":"戌初","activity":"步入宴会厅"}{"location":"漱玉园","activity":"提前离席"}'), /地点：漱玉殿.*相关人物：夏寻樨、夏以昼.*发生的事：步入宴会厅.*地点：漱玉园.*发生的事：提前离席/);
 assert.doesNotMatch(WorldStateMachine.UI._test.displayValue('{"location":"漱玉殿","activity":"步入宴会厅"}'), /[{}\[\]"]/);
@@ -133,7 +141,7 @@ const deltaBase = WorldStateMachine.Defaults.createState();
 deltaBase.revision = 7;
 deltaBase.tasks = [{ id: 'gallery', title: '开设画廊', priority: 'L2', status: 'active', progress: '寻找铺面' }];
 deltaBase.relationships = [{ id: 'rel', from: 'user', to: 'char', priority: 'L3', status: '长期亲密' }];
-deltaBase.events = [{ id: 'temporary', title: '临时事件', priority: 'L1', status: 'occurred', summary: '已结束' }];
+deltaBase.timeline = [{ id: 'temporary', priority: 'L1', summary: '已结束' }];
 const keptDelta = WorldStateMachine.Engine._test.applyStateDelta(deltaBase, { statePatch: {}, collectionOps: [] });
 assert.deepEqual(keptDelta.tasks, deltaBase.tasks, '空增量必须完整KEEP');
 const changedDelta = WorldStateMachine.Engine._test.applyStateDelta(deltaBase, {
@@ -143,14 +151,14 @@ const changedDelta = WorldStateMachine.Engine._test.applyStateDelta(deltaBase, {
     },
     collectionOps: [
         { module: 'tasks', op: 'update', id: 'gallery', value: { progress: '已取得铺面，计划书已提交' } },
-        { module: 'events', op: 'remove', id: 'temporary' },
+        { module: 'timeline', op: 'remove', id: 'temporary' },
     ],
 });
 assert.equal(changedDelta.tasks.length, 1);
 assert.equal(changedDelta.tasks[0].progress, '已取得铺面，计划书已提交');
 assert.equal(changedDelta.tasks[0].title, '开设画廊');
 assert.equal(changedDelta.relationships[0].status, '长期亲密', '未变化模块不得被重写');
-assert.equal(changedDelta.events.length, 0);
+assert.equal(changedDelta.timeline.length, 0);
 assert.equal(changedDelta.world.location.current, '临江路铺面');
 assert.equal(changedDelta.progression.direction, '画廊线从取得铺面转向实际筹备');
 assert.equal(changedDelta.progression.activity, 'HOT', '剧情推进发生实质变化时应自动升温');
@@ -297,13 +305,6 @@ state.characters = [
 ];
 state.relationships = [{ from: 'user', to: 'char', status: '相互试探' }];
 state.npcActivities = [{ characterId: 'char', movement: '从书房前往客厅', location: '夏家·客厅', action: '整理会议文件，准备16:00公司会议' }];
-state.events = [{
-    id: 'event-talk',
-    title: '午后谈话',
-    status: 'ongoing',
-    summary: '双方的交流仍然平稳',
-    outcome: '',
-}];
 state.factAnchors = [
     { id: 'anchor-cold', fact: '夏砚知已经取得临江路商铺', priority: 'L3', activity: 'COLD', truthStatus: 'confirmed', sourceRefs: ['chat:anchor-cold'] },
     { id: 'anchor-hot', fact: '夏以昼已经回国并接管集团总部事务', priority: 'L3', activity: 'HOT', truthStatus: 'confirmed', sourceRefs: ['chat:anchor-hot'] },
@@ -318,7 +319,6 @@ assert.doesNotMatch(mapMarkup, /data-wsm-intent-module="map"|<button[^>]+wsm-map
 assert.match(result, /\[外置状态权威\]/);
 assert.match(result, /不得另行输出 <INDRS>/);
 assert.equal(result.match(/16:00公司会议/g)?.length, 1);
-assert.doesNotMatch(result, /午后谈话/, '与当前客观状态完全重复的事件内容应被去重');
 assert.match(result, /夏以昼已经回国并接管集团总部事务/);
 assert.doesNotMatch(result, /夏砚知已经取得临江路商铺/, 'COLD 事实锚点应长期保存但不常驻注入');
 assert.match(result, /林知夏｜核心人物；位置：夏家·客厅（在场）/);
@@ -337,7 +337,7 @@ assert.match(depthPrompts[1], /\[世界状态\]/);
 assert.match(depthPrompts[1], /\[人物概况\]/);
 assert.match(depthPrompts[2], /\[人物关系\]/);
 assert.doesNotMatch(Object.values(depthPrompts).join('\n'), /\[场景地图\]/, '所有注入深度都必须排除场景地图');
-assert.equal(depthPrompts[3], undefined, '完全重复的世界事件不应占用注入深度');
+assert.equal(depthPrompts[3], undefined, '没有对应内容时不应占用注入深度');
 assert.match(depthPrompts[4], /\[NPC活动轨迹\]/);
 assert.doesNotMatch(result, /\[剧情节奏\]/, '剧情节奏默认关闭时不得注入');
 WorldStateMachine.Settings.update({ storyPacing: { mode: 'verySlow', allowSceneTransition: false, allowTimeSkip: false } });
@@ -363,12 +363,12 @@ assert.doesNotMatch(plannerNamed, /<char>|\bchar\b/i);
 
 const renamedState = structuredClone(state);
 renamedState.characters[0].name = '林知夏';
-renamedState.events.push({ id: 'rename-check', title: '称呼检查', summary: '林知夏已经完成登记', status: 'occurred' });
+renamedState.timeline.push({ id: 'rename-check', summary: '林知夏已经完成登记' });
 testContext.name1 = '夏寻樨';
 WorldStateMachine.Engine._test.syncIdentities(renamedState);
 assert.equal(renamedState.identities.user, '夏寻樨');
 assert.equal(renamedState.characters.find((item) => item.id === 'user').name, '夏寻樨');
-assert.match(renamedState.events.find((item) => item.id === 'rename-check').summary, /夏寻樨已经完成登记/);
+assert.match(renamedState.timeline.find((item) => item.id === 'rename-check').summary, /夏寻樨已经完成登记/);
 assert.doesNotMatch(JSON.stringify(renamedState), /林知夏|<char>/i, '改名后旧用户名与角色占位符不得残留');
 assert.equal(WorldStateMachine.Injection._test.replaceIdentityTokens('user与<char>交谈', renamedState), '夏寻樨与相关人物交谈');
 testContext.name1 = '林知夏';
@@ -482,7 +482,7 @@ WorldStateMachine.Settings.update({ diceEnabled: false });
 
 testContext.chat = [
     { is_user: true, name: '林知夏', mes: '我和他在飞机上闹起来了。', send_date: 'u1' },
-    { is_user: false, name: '夏以昼', mes: '他笑着伸手挡住我的反击。', send_date: 'a1' },
+    { is_user: false, name: '夏以昼', mes: '<thinking>不可发送的思考</thinking><content>他笑着伸手挡住我的反击。</content><meow_FM><time>当日下午</time><plot>两人在飞机上发生争执。</plot></meow_FM><small_theater>不可发送的小剧场</small_theater>', send_date: 'a1' },
 ];
 globalThis.selected_world_info = ['分析世界书'];
 testContext.getWorldInfo = async (name) => name === '分析世界书' ? {
@@ -493,12 +493,38 @@ testContext.getWorldInfo = async (name) => name === '分析世界书' ? {
 } : { entries: {} };
 const source = await WorldStateMachine.Context.buildSource();
 assert.equal(source.tavernTextContext.source, 'SillyTavern.getContext().chat');
-assert.equal(source.tavernTextContext.includedMessages, 2);
-assert.match(source.chat[0].content, /飞机上闹起来/);
-assert.match(source.latestAssistantText.content, /伸手挡住/);
+assert.equal(source.tavernTextContext.includedMessages, 1);
+assert.equal(source.tavernTextContext.scannedMessages, 2);
+assert.equal(source.tavernTextContext.skippedWithoutMeow, 1);
+assert.match(source.tavernTextContext.scope, /summary-tag-only:meow_FM/);
+assert.match(source.chat[0].content, /两人在飞机上发生争执/);
+assert.doesNotMatch(source.chat[0].content, /不可发送|伸手挡住|small_theater|thinking/);
+assert.equal(source.currentUserAction, null);
+assert.match(source.latestAssistantText.content, /当日下午/);
 assert.deepEqual(source.worldbookDiagnostics.loadedNames, ['分析世界书']);
 assert.equal(source.worldbookDiagnostics.entryCounts['分析世界书'], 2);
 assert.match(source.worldbooks[0].entries[0].content, /旁观者反应/);
+
+WorldStateMachine.Settings.update({ summaryTag: 'abstract' });
+testContext.chat = [
+    { is_user: true, name: '林知夏', mes: '这是没有标签的用户正文。', send_date: 'u2' },
+    { is_user: false, name: '夏以昼', mes: '<abstract><time>傍晚</time><plot>两人离开机场。</plot></abstract><meow_FM><plot>不应读取这一个标签。</plot></meow_FM>', send_date: 'a2' },
+];
+const customTagSource = await WorldStateMachine.Context.buildSource();
+assert.equal(customTagSource.tavernTextContext.summaryTag, 'abstract');
+assert.equal(customTagSource.tavernTextContext.readMode, 'summary-tag');
+assert.equal(customTagSource.chat.length, 1);
+assert.match(customTagSource.chat[0].content, /两人离开机场/);
+assert.doesNotMatch(customTagSource.chat[0].content, /不应读取|没有标签的用户正文/);
+
+WorldStateMachine.Settings.update({ summaryTag: '' });
+const fullTextSource = await WorldStateMachine.Context.buildSource();
+assert.equal(fullTextSource.tavernTextContext.readMode, 'full-text');
+assert.equal(fullTextSource.chat.length, 2);
+assert.match(fullTextSource.chat[0].content, /没有标签的用户正文/);
+assert.match(fullTextSource.chat[1].content, /不应读取这一个标签/);
+assert.equal(fullTextSource.currentUserAction.role, 'user');
+WorldStateMachine.Settings.update({ summaryTag: 'meow_FM' });
 
 const selectedKey = WorldStateMachine.Context.worldbookEntryKey('分析世界书', '0');
 WorldStateMachine.Settings.update({ worldbookCompiler: { enabled: true, entryKeys: [selectedKey], budget: 300, contextMessages: 8, failClosed: true } });
@@ -574,7 +600,7 @@ testContext.chatMetadata.worldStateMachine = { state: {
     ],
 }, history: [] };
 const migrated = WorldStateMachine.Storage.load();
-assert.equal(migrated.schemaVersion, 23);
+assert.equal(migrated.schemaVersion, 24);
 assert.equal(migrated.world.season, '未明确', '虚构地点无法确定南北半球时不得只凭月份写死季节');
 assert.equal(migrated.world.seasonMeta.truthStatus, 'unknown');
 assert.equal(migrated.world.location.weather, '多云');
@@ -613,9 +639,8 @@ assert.equal('injuries' in migrated.characters[0], false);
 assert.equal(migrated.knowledge[0].priority, 'L2');
 assert.equal(migrated.knowledge[0].disclosure, 'confidential');
 assert.equal('concealedBy' in migrated.knowledge[0], false);
-assert.equal(migrated.events[0].status, 'occurred');
-assert.equal(migrated.events[0].summary, '董事公开反对投资方案');
-assert.equal('developments' in migrated.events[0], false);
+assert.deepEqual(migrated.events, []);
+assert.ok(migrated.timeline.some((item) => /董事公开反对投资方案/.test(item.summary)), '旧版已结束世界事件必须迁入时间线');
 assert.equal(migrated.causalEffects[0].status, 'active');
 assert.deepEqual(migrated.causalEffects[0].decayConditions, []);
 assert.equal('at' in migrated.npcActivities[0], false);
@@ -641,7 +666,7 @@ completeInitialState.initialized = true;
 completeInitialState.identities = { user: '用户', char: '角色' };
 completeInitialState.runtime.sourceSummary = { sourceRead: { mode: 'single-pass-complete-source' } };
 WorldStateMachine.Storage._test.compactState(completeInitialState);
-for (const module of ['worldRules','factAnchors','resourceConstraints','characters','npcActivities','relationships','knowledge','tasks','events','triggers','threads','processes','causalEffects','timeline']) {
+for (const module of ['worldRules','factAnchors','resourceConstraints','characters','npcActivities','relationships','knowledge','tasks','triggers','threads','processes','causalEffects','timeline']) {
     assert.deepEqual(completeInitialState[module], [], `没有证据时${module}必须保持空集合，不能生成占位卡`);
 }
 assert.deepEqual(completeInitialState.map.locations, [], '没有地点证据时地图必须保持空集合');
@@ -674,7 +699,7 @@ assert.equal(WorldStateMachine.Storage.load().knowledge.some((item) => item.id =
 testContext.generateRaw = async () => '{"ok":true}';
 testContext.chat = [
     { is_user: true, name: '林知夏', mes: '我停止打闹，坐回座位。', send_date: 'u2' },
-    { is_user: false, name: '夏以昼', mes: '他替我系好安全带。', send_date: 'a2' },
+    { is_user: false, name: '夏以昼', mes: '<content>他替我系好安全带。</content><meow_FM><time>当日下午</time><plot>林知夏停止打闹并坐回座位，夏以昼替她系好安全带。</plot></meow_FM>', send_date: 'a2' },
 ];
 activeChatStore().state = {
     ...migrated, initialized: true, planner: { turnKey: 'u2:test', plan: {}, moduleInjections: {}, injection: '', error: '' },
@@ -690,6 +715,9 @@ let settleCalls = 0;
 WorldStateMachine.Api.complete = async (_system, payload) => {
     settleCalls += 1;
     assert.equal(payload.phase, 'POST_GENERATION_RECONCILE');
+    assert.match(payload.actualAssistantMessage.content, /林知夏停止打闹/);
+    assert.doesNotMatch(payload.actualAssistantMessage.content, /<content>|他替我系好安全带。<\/content>/);
+    assert.equal(payload.recentChat.length, 1, '结算上下文也只能发送含meow_FM的楼层');
     assert.ok(Array.isArray(payload.worldbookRules));
     assert.equal(payload.npcSchedule.find((item) => item.characterId === 'char')?.mode, 'background', '到达后台间隔的离屏NPC必须进入同一次结算');
     assert.equal(payload.simulationRules.allowNoSignificantChange, true);
@@ -707,6 +735,7 @@ localStorage.setItem('wsm_two_pass_first_half_cache_v3', '{"cached":true}');
 localStorage.setItem('wsm_two_pass_first_half_cache_v4', '{"cached":true}');
 localStorage.setItem('wsm_two_pass_first_half_cache_v5', '{"cached":true}');
 localStorage.setItem('wsm_two_pass_first_half_cache_v6', '{"cached":true}');
+localStorage.setItem('wsm_two_pass_first_half_cache_v9', '{"cached":true}');
 assert.notEqual(localStorage.getItem('wsm_worldbook_compiler_cache_v3'), null, '清空测试前应存在世界书拆解缓存');
 activeChatStore().sourceReadCache = { cached: { evidence: { currentScene: ['旧读取'] } } };
 activeChatStore().historyMemory = { status: 'complete' };
@@ -718,6 +747,7 @@ assert.equal(localStorage.getItem('wsm_two_pass_first_half_cache_v3'), null, '�
 assert.equal(localStorage.getItem('wsm_two_pass_first_half_cache_v4'), null, '彻底清空必须删除当前GPT两阶段读取缓存');
 assert.equal(localStorage.getItem('wsm_two_pass_first_half_cache_v5'), null, '彻底清空必须删除GPT覆盖式两阶段读取缓存');
 assert.equal(localStorage.getItem('wsm_two_pass_first_half_cache_v6'), null, '彻底清空必须删除GPT高分辨率两阶段读取缓存');
+assert.equal(localStorage.getItem('wsm_two_pass_first_half_cache_v9'), null, '彻底清空必须删除旧版证据契约缓存');
 assert.equal(activeChatStore().sourceReadCache, undefined, '彻底清空必须删除聊天级读取缓存');
 assert.equal(activeChatStore().historyMemory, undefined, '彻底清空必须删除历史读取记忆');
 assert.deepEqual(WorldStateMachine.WorldbookCompiler.getStaticCatalog().worldRules, [], '彻底清空后静态硬规则目录必须为空');

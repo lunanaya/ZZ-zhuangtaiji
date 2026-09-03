@@ -37,6 +37,12 @@ const recoveredEvidence = WorldStateMachine.Api._test.extractJson(
     { jsonContract: 'evidence' },
 );
 assert.equal((recoveredEvidence.evidence || recoveredEvidence).threads[0].title, '未决线', '外层未闭合但模块完整时必须本地修复，不能把内层卡片误报为几十个无关JSON');
+const richerRecoveredEvidence = WorldStateMachine.Api._test.extractJson(
+    '{"evidence":{"sourceRefs":["示例"]}}\n{"evidence":{"sourceRefs":["chat:1"],"canon":[{"summary":"真实资料"}],"characters":[{"name":"夏以昼"}],"threads":[{"title":"未完成',
+    { jsonContract: 'evidence' },
+);
+assert.equal((richerRecoveredEvidence.evidence || richerRecoveredEvidence).canon[0].summary, '真实资料', '较小的闭合示例不能抢走后面可修复的真实答案');
+assert.equal((richerRecoveredEvidence.evidence || richerRecoveredEvidence).characters[0].name, '夏以昼');
 let operationId = 0;
 const complete = (system, payload, options = {}) => WorldStateMachine.Api.withCallBudget(
     1,

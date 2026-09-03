@@ -31,19 +31,27 @@ state.relationships = [
     { id: 'old-b', from: 'character-olda', to: '乙', status: '甲与乙是协作关系。', truthStatus: 'confirmed' },
 ];
 state.schedules = [{ id: 'go-destination', title: '约两日后前往目的地', participantIds: ['user','person-a'], expectedTime: '约两日后', preconditions: ['完成准备工作'], status: 'agreed', truthStatus: 'confirmed' }];
-state.events = [{ id: 'old-event', title: '测试事件结束', status: 'occurred', outcome: '测试事件已有结果', truthStatus: 'confirmed' }];
 state.processes = [{ id: 'done-process', title: '测试进程', status: 'resolved', currentDirection: '进程已完成', truthStatus: 'confirmed' }];
 state.resourceConstraints = [{ id: 'old-limit', condition: '测试用户必须留在测试地点', status: 'satisfied', truthStatus: 'confirmed' }];
 state.npcActivities = [{ id: 'bad-visible', characterId: 'person-a', action: '与测试用户继续当前对话', truthStatus: 'confirmed' }, { id: 'remote', characterId: 'person-b', action: '执行既有后台任务', truthStatus: 'confirmed' }];
 
 const audited = WorldStateMachine.Engine._test.auditStateLifecycle(state);
 assert.equal(audited.world.currentConditions.length, 0, '场景剧情摘要不得留在世界当前客观状态');
-assert.equal(audited.events.length, 0, '已发生完毕的事件必须归档');
 assert.equal(audited.processes.length, 0, '已完成进程必须归档');
 assert.equal(audited.resourceConstraints.length, 0, '已解除约束必须移除');
 assert.deepEqual(audited.npcActivities.map((item) => item.characterId), ['person-b'], '在场人物不得保留后台NPC轨迹');
-assert.ok(audited.timeline.some((item) => /测试事件已有结果/.test(item.summary)));
 assert.ok(audited.reasoningAudit.moduleDecisions.some((item) => item.operation === 'ARCHIVE'));
+
+const migrated = WorldStateMachine.Storage._test.normalizeState({
+    schemaVersion: 23, initialized: true,
+    events: [
+        { id: 'old-event', title: '测试事件结束', status: 'occurred', outcome: '测试事件已有结果', location: '测试地点', truthStatus: 'confirmed' },
+        { id: 'live-event', title: '测试局势仍在发展', status: 'ongoing', summary: '各方仍在交涉', truthStatus: 'confirmed' },
+    ],
+});
+assert.equal(migrated.events.length, 0, '旧世界事件字段迁移后必须清空');
+assert.ok(migrated.timeline.some((item) => /测试事件已有结果/.test(item.summary)), '已结束事件必须迁入时间线');
+assert.ok(migrated.processes.some((item) => /各方仍在交涉/.test(item.currentDirection)), '进行中事件必须迁入世界进程');
 assert.ok(audited.relationships.every((item) => !String(item.from).startsWith('character-') && !String(item.to).startsWith('character-')), '旧随机人物引用必须按姓名对齐');
 assert.ok(audited.relationships.some((item) => item.from === 'person-a' && item.to === 'user'));
 assert.ok(audited.relationships.some((item) => item.from === 'user' && item.to === 'person-a'), '正式关系必须分别建立双方向记录');

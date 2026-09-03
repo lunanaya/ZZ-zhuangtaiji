@@ -15,9 +15,9 @@ globalThis.localStorage = {
 await import('../src/defaults.js');
 
 const calls = [];
-const auditedModules = ['world','worldRules','factAnchors','resourceConstraints','organizations','map','characters','npcActivities','relationships','knowledge','schedules','tasks','events','triggers','threads','progression','processes','causalEffects','timeline'];
+const auditedModules = ['world','worldRules','factAnchors','resourceConstraints','organizations','map','characters','npcActivities','relationships','knowledge','schedules','tasks','triggers','threads','progression','processes','causalEffects','timeline'];
 const completeEvidence = (value = {}) => ({
-    sourceRefs: [], canon: [], worldRules: [], chronology: [], timeline: [], anchors: [], resourceConstraints: [], organizations: [], characters: [], npcActivities: [], relationships: [], knowledge: [], schedules: [], locations: [], tasks: [], events: [], triggers: [], threads: [], processes: [], causal: [], progression: [], currentScene: [], uncertainties: [], matchedRules: [], derivedFacts: [], conflicts: [], staleStates: [], actorFeasibility: [], causalCandidates: [],
+    sourceRefs: [], canon: [], worldRules: [], chronology: [], timeline: [], anchors: [], resourceConstraints: [], organizations: [], characters: [], npcActivities: [], relationships: [], knowledge: [], schedules: [], locations: [], tasks: [], triggers: [], threads: [], processes: [], causal: [], progression: [], currentScene: [], uncertainties: [], matchedRules: [], derivedFacts: [], conflicts: [], staleStates: [], actorFeasibility: [], causalCandidates: [],
     moduleCoverage: auditedModules.map((module) => ({ module, status: 'empty_confirmed', basis: '测试已检查' })),
     moduleDecisions: auditedModules.map((module) => ({ module, operation: 'KEEP', reason: '测试已检查' })),
     ...value,
@@ -32,10 +32,9 @@ WorldStateMachine.Api = {
                     worldRules: [{ statement: '进入资料室必须登记', sourceRefs: ['worldbook:test:1'] }],
                     chronology: [{ time: '夜晚', summary: '资料室发生重大事故并被永久封锁', sourceRefs: ['chat:1'] }],
                     timeline: [{ summary: '资料室发生重大事故并被永久封锁', sourceRefs: ['chat:1'] }],
-                    characters: [{ id: 'test-char', name: '测试角色', identity: '资料管理员', location: '资料室', situation: '正在整理资料' }],
+                    characters: [{ id: 'user', name: '测试用户', identity: '测试用户' }, { id: 'test-char', name: '测试角色', identity: '资料管理员', location: '资料室', situation: '正在整理资料' }],
                     relationships: [], npcActivities: [{ characterId: '测试角色', action: '整理资料', sourceRefs: ['chat:1'] }],
                     knowledge: [], locations: [{ name: '资料室' }], tasks: [],
-                    events: [{ title: '资料室重大事故', summary: '资料室发生重大事故并被永久封锁', sourceRefs: ['chat:1'] }],
                     triggers: [], threads: [], processes: [{ title: '资料整理', currentDirection: '整理持续进行' }],
                     causal: [], progression: [{ direction: '继续整理资料', currentMovement: '已经开始整理' }],
                     currentScene: [{ time: '夜晚', location: '资料室', weather: '炎热', environment: '空调开启', presentCharacterIds: [] }], uncertainties: [],
@@ -50,7 +49,21 @@ WorldStateMachine.Api = {
                     worldRules: [{ statement: '进入测试地点必须持有通行许可', scope: ['测试地点'], conditions: ['进入时'], exceptions: [], sourceRefs: ['worldbook:test:1'] }],
                     chronology: [], characters: [{ id: 'test-char', name: '测试角色', identity: '资料管理员', situation: '前段人物资料' }], relationships: [],
                     npcActivities: [{ characterId: 'test-char', action: '在后台整理资料', location: '资料室' }],
-                    knowledge: [], locations: [], tasks: [], events: [], triggers: [], threads: [], processes: [], timeline: [], causal: [], currentScene: [], uncertainties: [],
+                    knowledge: [], locations: [], tasks: [], triggers: [], threads: [], processes: [], timeline: [], causal: [], currentScene: [], uncertainties: [],
+                }),
+            };
+        }
+        if (payload.task === 'SOURCE_READ_SEQUENTIAL_BATCH' && payload.sourceBatchIndex === payload.sourceBatchCount && payload.completeCoverage?.originalChars < 50000) {
+            return {
+                evidence: completeEvidence({
+                    sourceRefs: ['chat:1','worldbook:test:1'],
+                    worldRules: [{ statement: '进入资料室必须登记', sourceRefs: ['worldbook:test:1'] }],
+                    chronology: [{ time: '夜晚', summary: '资料室发生重大事故并被永久封锁', sourceRefs: ['chat:1'] }],
+                    timeline: [{ summary: '资料室发生重大事故并被永久封锁', sourceRefs: ['chat:1'] }],
+                    characters: [{ id: 'user', name: '测试用户', identity: '测试用户' }, { id: 'test-char', name: '测试角色', identity: '资料管理员', location: '资料室', situation: '正在整理资料' }],
+                    npcActivities: [{ characterId: '测试角色', action: '整理资料', sourceRefs: ['chat:1'] }],
+                    locations: [{ name: '资料室' }],
+                    currentScene: [{ time: '夜晚', location: '资料室', weather: '炎热', environment: '空调开启', presentCharacterIds: [] }],
                 }),
             };
         }
@@ -59,11 +72,12 @@ WorldStateMachine.Api = {
                 evidence: completeEvidence({
                     sourceRefs: payload.sourceRecords.map((item) => item.ref),
                     canon: ['请求 A 已逐项读取', '请求 B 已逐项读取'],
-                    chronology: [{ time: '测试时刻', summary: '全部资料时间线' }],
+                    worldRules: [{ statement: '进入测试地点必须持有通行许可', scope: ['测试地点'], conditions: ['进入时'], exceptions: [], sourceRefs: ['worldbook:test:1'] }],
+                    chronology: [],
                     timeline: [{ summary: '公司管理权完成正式交替', granularity: 'phase', sourceRefs: ['chat:80'] }],
-                    characters: [{ id: 'test-char', name: '测试角色', identity: '资料管理员', location: '资料室', situation: '核心角色正在处理资料' }],
+                    characters: [{ id: 'user', name: '测试用户', identity: '测试用户' }, { id: 'test-char', name: '测试角色', identity: '资料管理员', location: '资料室', situation: '核心角色正在处理资料' }],
                     npcActivities: [{ characterId: 'test-char', action: '继续在后台整理资料', location: '资料室', sourceRefs: ['chat:80'] }],
-                    relationships: [], knowledge: [], locations: [{ name: '测试地点' }], tasks: [], events: [],
+                    relationships: [], knowledge: [], locations: [{ name: '测试地点' }], tasks: [],
                     triggers: [{ title: '等待来电', conditions: ['对方完成核实'], status: 'armed', userVisible: true, sourceRefs: ['chat:80'] }],
                     threads: [{ title: '旧约仍未说开', status: 'open', stakes: '双方关系' }],
                     processes: [{ title: '公司权力调整', status: 'active', currentDirection: '管理权继续集中' }], causal: [],
@@ -72,12 +86,15 @@ WorldStateMachine.Api = {
             };
         }
         if (payload.task === 'SOURCE_READ_SEQUENTIAL_BATCH') {
-            return { evidence: { sourceRefs: payload.sourceRecords.map((item) => item.ref) } };
+            return { evidence: completeEvidence({ sourceRefs: payload.sourceRecords.map((item) => item.ref) }) };
         }
         throw new Error(`unexpected task ${payload.task}`);
     },
 };
 await import('../src/engine.js');
+
+const malformedFilledEvidence = completeEvidence({ tasks: ['把同一段剧情当任务摘要'] });
+assert.throws(() => WorldStateMachine.Engine._test.validateFilledEvidence(malformedFilledEvidence, '测试填表'), /未按模块表格填写/, '状态模块不得接受字符串摘要卡');
 
 const previousStorage = WorldStateMachine.Storage;
 WorldStateMachine.Storage = {
@@ -88,25 +105,86 @@ WorldStateMachine.Storage = {
 };
 const supplementedEvidence = WorldStateMachine.Engine._test.supplementMissingEvidenceFromArchive({
     anchors: ['本次锚点'], resourceConstraints: [], relationships: [], knowledge: [], threads: [],
+    moduleCoverage: [{ module: 'relationships', status: 'empty_confirmed', basis: '本次确认没有关系记录' }],
 });
 assert.deepEqual(supplementedEvidence.anchors, ['本次锚点'], '本次非空证据必须优先于档案');
-assert.deepEqual(supplementedEvidence.relationships, ['甲与乙：长期盟友。'], '本次漏报的持久栏目必须从同存档证据档案回填');
+assert.deepEqual(supplementedEvidence.relationships, [], '本次明确判空的栏目不得被旧档案重新填回');
+const failedSupplement = WorldStateMachine.Engine._test.supplementMissingEvidenceFromArchive({
+    relationships: [], moduleCoverage: [{ module: 'relationships', status: 'retrieval_failed', basis: '本次漏读' }],
+});
+assert.deepEqual(failedSupplement.relationships, ['甲与乙：长期盟友。'], '只有明确读取失败时才允许旧档案安全回填');
 WorldStateMachine.Storage = previousStorage;
 
 const malformedDirectState = WorldStateMachine.Engine._test.normalizeStateResult({
     state: {
         characters: { hero: { name: '单对象人物' }, ally: { summary: '对象表人物' } },
-        events: '已发生的重要事件',
+        timeline: '已发生的重要事件',
         tasks: '{"main":{"title":"对象字符串任务"}}',
         processes: { title: '单个世界进程', currentDirection: '持续演变' },
+        organizations: [
+            { id: 'truthStatus', name: 'truthStatus', kind: 'other', situation: 'truthStatus: confirmed' },
+            { id: 'basis', name: 'basis', kind: 'other', situation: 'basis: 测试依据' },
+        ],
     },
 }, WorldStateMachine.Defaults.createState()).state;
 assert.ok(Array.isArray(malformedDirectState.characters));
 assert.equal(malformedDirectState.characters.length, 2);
 assert.equal(malformedDirectState.characters[1].name, 'ally', 'object-map keys must be retained when an item omits its name');
-assert.equal(malformedDirectState.events[0].summary, '已发生的重要事件');
+assert.equal(malformedDirectState.timeline[0].summary, '已发生的重要事件');
 assert.equal(malformedDirectState.tasks[0].title, '对象字符串任务');
 assert.equal(malformedDirectState.processes[0].currentDirection, '持续演变');
+assert.deepEqual(malformedDirectState.organizations, [], '通用证据字段不得被拆成组织名称卡片');
+const metadataOnlyOrganization = WorldStateMachine.Engine._test.normalizeStateCollection({
+    truthStatus: 'confirmed', basis: ['测试依据'], sourceRefs: ['worldbook:test:12'], priority: 'L2', activity: 'HOT',
+}, 'organizations');
+assert.equal(metadataOnlyOrganization.length, 1, '通用证据单对象必须保持为一个对象，不能按键拆成五张卡');
+assert.equal(metadataOnlyOrganization[0].name, undefined, '缺少必填名称的组织不得由技术字段伪造名称');
+const repairedOrganizationEvidence = {
+    organizations: [{ truthStatus: 'confirmed', basis: ['露贵妃代为执掌六宫'], sourceRefs: ['worldbook:test:12'], priority: 'L2', activity: 'HOT' }],
+};
+WorldStateMachine.Engine._test.repairFinalFillFromSourceCompile(repairedOrganizationEvidence, {
+    organizations: [{ id: 'rear-palace', name: '昭国后宫', kind: 'political', leaderIds: ['露贵妃'], jurisdiction: '六宫', situation: '露贵妃代为执掌六宫', sourceRefs: ['worldbook:test:12'] }],
+});
+assert.equal(repairedOrganizationEvidence.organizations.length, 1);
+assert.equal(repairedOrganizationEvidence.organizations[0].name, '昭国后宫', '第二遍只回传证据元数据时必须按唯一来源补回第一遍的专属字段');
+assert.equal(repairedOrganizationEvidence.organizations[0].truthStatus, 'confirmed');
+const keptCompiledEvidence = WorldStateMachine.Engine._test.mergeAdjudicatedEvidence(
+    completeEvidence({
+        organizations: [{ id: 'court', name: '昭国朝廷', kind: 'government', sourceRefs: ['worldbook:test:court'] }],
+        timeline: [{ id: 'enthronement', summary: '新帝已经正式登基', sourceRefs: ['worldbook:test:history'] }],
+    }),
+    completeEvidence({
+        organizations: [], timeline: [],
+        moduleDecisions: auditedModules.map((module) => ({ module, operation: 'KEEP', reason: '本轮没有新变化' })),
+    }),
+);
+assert.equal(keptCompiledEvidence.organizations[0].name, '昭国朝廷', '请求B的KEEP空数组不得清空请求A读到的组织');
+assert.equal(keptCompiledEvidence.timeline[0].summary, '新帝已经正式登基', '请求B的KEEP空数组不得清空请求A读到的历史节点');
+const removedCompiledEvidence = WorldStateMachine.Engine._test.mergeAdjudicatedEvidence(
+    completeEvidence({ organizations: [{ id: 'defunct', name: '已解散组织' }] }),
+    completeEvidence({
+        organizations: [],
+        moduleDecisions: auditedModules.map((module) => ({ module, operation: module === 'organizations' ? 'ARCHIVE' : 'KEEP', reason: '原文明示该组织已经解散' })),
+    }),
+);
+assert.deepEqual(removedCompiledEvidence.organizations, [], '请求B明确ARCHIVE时仍可清空请求A的对应模块');
+const tolerantEvidence = completeEvidence({
+    organizations: { '昭国朝廷': { kind: 'government', situation: '仍在运行', sourceRefs: ['worldbook:test:government'] } },
+    timeline: [{ summary: '兴州发生了已经明确写出的重大变故。', sourceRefs: ['chat:810'] }],
+});
+WorldStateMachine.Engine._test.normalizeEvidenceFillShapes(tolerantEvidence);
+assert.equal(tolerantEvidence.organizations[0].name, '昭国朝廷', '以组织名为键的对象表必须安全转换为组织卡');
+assert.equal(tolerantEvidence.timeline[0].summary, '兴州发生了已经明确写出的重大变故。', '只有summary的历史节点必须保留');
+const partlyMalformed = completeEvidence({
+    organizations: [
+        { name: '有效组织', kind: 'government', sourceRefs: ['worldbook:test:valid'] },
+        { truthStatus: 'confirmed', sourceRefs: ['worldbook:test:broken'] },
+    ],
+});
+const partlyFilled = WorldStateMachine.Engine._test.validateFilledEvidence(partlyMalformed, '部分坏卡', { allowPartial: true });
+assert.equal(partlyFilled.complete, true, '一张坏卡不能把同栏目其他合格卡整体标成读取失败');
+assert.equal(partlyMalformed.organizations.length, 1);
+assert.equal(partlyMalformed.organizations[0].name, '有效组织');
 
 const localFallbackEvidence = WorldStateMachine.Engine._test.localEvidenceFromSource({
     identities: { user: '测试用户', char: '' }, character: { name: '测试角色', description: '角色卡背景' },
@@ -116,19 +194,58 @@ const localFallbackEvidence = WorldStateMachine.Engine._test.localEvidenceFromSo
 assert.ok(localFallbackEvidence.characters.some((item) => item.id === 'user' && item.name === '测试用户'), '用户必须始终按当前用户名以第三人称建档');
 assert.equal(localFallbackEvidence.characters.some((item) => item.name === '测试角色'), false, '角色卡标题不得自动当作人物姓名');
 assert.equal(localFallbackEvidence.worldRules.length, 2);
-assert.equal(localFallbackEvidence.events.length, 0, '普通进入房间和调查不得被本地解析成世界事件');
 assert.equal(localFallbackEvidence.timeline.length, 0, '普通逐轮行动不得被本地解析成阶段时间线');
 assert.equal(localFallbackEvidence.currentScene[0].location, '内城资料室');
 assert.equal(localFallbackEvidence.tasks[0].title, '核对登记簿');
 assert.equal(localFallbackEvidence.progression[0].direction, '整理证据');
+assert.ok(localFallbackEvidence.processes.some((item) => /开始调查/.test(item.currentDirection)), '近期 meow_FM 明确写出的进行中调查必须进入进程');
+assert.equal(localFallbackEvidence.moduleCoverage.find((item) => item.module === 'factAnchors')?.status, 'empty_confirmed', '本地完整扫描确认没有独立锚点时必须形成可验证的空栏审计');
+assert.equal(localFallbackEvidence.moduleCoverage.find((item) => item.module === 'npcActivities')?.status, 'empty_confirmed', '最近正文没有离场NPC活动时必须明确判空，不能永久保持读取失败');
+
+const emptyTodoEvidence = WorldStateMachine.Engine._test.localEvidenceFromSource({
+    chat: [{ id: 10, role: 'assistant', content: '<INDRS>\n待办事项:无。\n当前进度:暂无。\n</INDRS>' }],
+});
+assert.deepEqual(emptyTodoEvidence.tasks, [], '带中文句号的“无。”不得被误读成当前任务');
+
+const localKnowledgeEvidence = WorldStateMachine.Engine._test.localEvidenceFromSource({
+    identities: { user: '鹿鹿', char: '' }, character: { name: '陌生版皇兄夏以昼' },
+    chat: [{ id: 255, role: 'assistant', content: '<meow_FM><plot>鹿鹿向父母隐瞒了自己曾逃亡的真相。父母尚不知晓你已落入夏以昼手中。夏以昼向你揭示了过去两年一直秘密监视你的事实。夏以昼对鹿鹿母亲的真实身份产生了怀疑。</plot><seeds>夏以昼已经知道鹿鹿来自异世。</seeds></meow_FM>' }],
+});
+assert.ok(localKnowledgeEvidence.knowledge.some((item) => item.knownBy.includes('user') && item.unknownTo.includes('父母') && /逃亡的真相/.test(item.information)), '明确隐瞒必须保留隐瞒者与未知者');
+assert.ok(localKnowledgeEvidence.knowledge.some((item) => item.unknownTo.includes('父母') && /落入夏以昼手中/.test(item.information)), '明确不知情必须形成知识边界');
+assert.ok(localKnowledgeEvidence.knowledge.some((item) => item.knownBy.includes('user') && /秘密监视/.test(item.information)), '秘密被揭示后接收者必须进入确认知情名单');
+assert.ok(localKnowledgeEvidence.knowledge.some((item) => item.suspectedBy.includes('夏以昼') && /母亲的真实身份/.test(item.information)), '人物的怀疑必须作为已确认的认知状态保存，而不能把怀疑内容冒充事实');
+const diagnosticOnlyKnowledge = WorldStateMachine.Engine._test.stateFromEvidence(
+    completeEvidence({ uncertainties: [{ information: '两批资料读取存在未返回栏目', status: 'retrieval_failed' }] }),
+    completeEvidence(), WorldStateMachine.Defaults.createState(),
+).state.knowledge;
+assert.deepEqual(diagnosticOnlyKnowledge, [], '读取失败诊断绝不能再伪装成知识或秘密卡片');
+
+const crowdedRuleSource = WorldStateMachine.Engine._test.localEvidenceFromSource({
+    worldbooks: [{ name: '制度书', entries: [
+        { id: 1, content: Array.from({ length: 24 }, (_value, index) => `礼法规则${index + 1}：所有人在公开场合必须遵守第${index + 1}项礼制。`).join('\n') },
+        { id: 11, content: '<皇权礼法>\n帝王之束（若{{char}}为皇帝）：\n礼法规制：皇帝受礼部典章、言官清议、史官直笔监督。\n朝堂制衡：诏令需经中书草拟、门下审核、尚书执行。\n王侯之限（若{{char}}为藩王）：无诏不得离开封地。\n朝会议事：重大政事需经朝会辩论，最终由皇帝裁夺。\n</皇权礼法>' },
+    ] }],
+    chat: [],
+});
+assert.ok(crowdedRuleSource.worldRules.some((item) => item.sourceRefs?.includes('worldbook:制度书:11') && /皇帝|诏令/.test(item.statement)), '前一世界书条目再长也不能挤掉后续条目的皇权规则');
+assert.ok(crowdedRuleSource.resourceConstraints.some((item) => item.subjectId === 'role:皇帝' && /中书草拟/.test(item.condition)), '世界书明确写出的帝王制度限制必须形成可实例化资源约束');
+const roleResolvedState = { identities: { user: '测试用户' }, world: { location: { current: '' } }, sceneState: {}, characters: [
+    { id: 'user', name: '测试用户', identity: '贵妃' },
+    { id: 'char-emperor', name: '夏以昼', identity: '昭国皇帝' },
+], relationships: [], resourceConstraints: [{ subjectId: 'role:皇帝', condition: '诏令需经中书草拟、门下审核、尚书执行' }] };
+WorldStateMachine.Engine._test.reconcileEntityReferences(roleResolvedState);
+assert.equal(roleResolvedState.resourceConstraints[0].subjectId, 'char-emperor', '角色身份唯一匹配皇帝时必须把制度约束绑定到当前人物');
 
 const localMajorEvidence = WorldStateMachine.Engine._test.localEvidenceFromSource({
-    chat: [{ id: 820, role: 'assistant', content: '<meow_FM><time>昭国四年秋第十四日</time><scene>兴州行宫</scene><plot>最终，夏启行选择自裁以保全家人，并当场血溅宫殿。夏以昼随即宣告此案了结。</plot></meow_FM>' }],
+    chat: [{ id: 820, role: 'assistant', content: '<meow_FM><time>昭国四年秋第十四日</time><scene>兴州行宫</scene><plot>最终，夏启行选择自裁以保全家人，并当场血溅宫殿。夏以昼随即宣告此案了结。</plot><seeds>兴州权力核心完成交替，夏以昼势力得到巩固。<br>林曳将正式接管兴州防务，并开始清查王府余党。<br>王露笙的密信将很快送往昭宁，成为下一阶段查办朝中势力的关键证据。</seeds></meow_FM>' }],
 });
-assert.equal(localMajorEvidence.events.length, 1, '本地扫描必须从历史 plot 重建客观重大事件');
-assert.match(localMajorEvidence.events[0].summary, /夏启行选择自裁/);
-assert.ok(localMajorEvidence.anchors.some((item) => /夏启行选择自裁/.test(item.fact)), '死亡等不可逆重要事实必须同时进入事实锚点候选');
-assert.equal(localMajorEvidence.causal.length, 0, '只有事件先后而没有持续传播路径时不得硬造因果影响');
+assert.equal(localMajorEvidence.timeline.length, 1, '本地扫描必须从历史 plot 重建客观重大节点');
+assert.match(localMajorEvidence.timeline[0].summary, /夏启行选择自裁/);
+assert.ok(localMajorEvidence.anchors.some((item) => /夏启行已经死亡/.test(item.fact)), '不可逆死亡结果必须建立长期事实锚点，防止人物以后被当作存活状态继续行动');
+assert.ok(localMajorEvidence.processes.some((item) => /清查王府余党/.test(item.currentDirection)), 'seeds 中明确仍在进行的全局行动必须进入进程');
+assert.ok(localMajorEvidence.threads.some((item) => /密信/.test(item.stakes)), 'seeds 中明确跨阶段延续的线索必须进入未决事项');
+assert.ok(localMajorEvidence.causal.some((item) => /权力核心完成交替/.test(item.cause) && /势力得到巩固/.test(item.result)), '同一句明确陈述的状态变化与持续结果必须进入因果影响');
 
 const localConstraintEvidence = WorldStateMachine.Engine._test.localEvidenceFromSource({
     identities: { user: '鹿鹿', char: '' },
@@ -140,6 +257,7 @@ assert.ok(localConstraintEvidence.schedules.some((item) => /三天后.*江南/.t
 assert.ok(localConstraintEvidence.resourceConstraints.every((item) => !/[“”"']|\b(?:朕|我)\b/.test(item.condition)), '资源约束必须是客观状态摘要，不能复制角色原话');
 assert.ok(localConstraintEvidence.resourceConstraints.every((item) => item.sourceRefs?.includes('chat:900')), '本地约束必须绑定原文楼层');
 assert.ok(localConstraintEvidence.npcActivities.some((item) => item.characterId === '林曳' && /搜捕余党/.test(item.action)), '最近正文明确写出的NPC行动不得整栏遗漏');
+assert.equal(localConstraintEvidence.moduleCoverage.find((item) => item.module === 'npcActivities')?.status, 'has_records', '本地找到NPC活动时覆盖审计必须同步为有记录');
 assert.equal(localConstraintEvidence.characters.some((item) => /皇帝|贵妃/.test(item.identity || '')), false, '本地兜底不得把某个案例的称谓硬编码成人物身份');
 
 const normalizedIdentities = WorldStateMachine.Engine._test.normalizeGptIdentityAliases({
@@ -180,20 +298,25 @@ assert.equal(textEvidenceState.npcActivities.some((item) => item.action.includes
 assert.equal(textEvidenceState.resourceConstraints.length, 1, '纯文本资源约束证据不得被运行态筛选丢弃');
 assert.equal(textEvidenceState.relationships.length, 1, '纯文本关系证据必须识别双方人物');
 assert.equal(textEvidenceState.knowledge.length, 1, '纯文本知识证据不得被运行态筛选丢弃');
-assert.equal(textEvidenceState.threads.length, 1, '模型漏报线程时应从持续剧情推进线补建');
+assert.equal(textEvidenceState.threads.length, 0, '模型漏报线程时不得把剧情推进复制成长线');
 assert.equal(textEvidenceState.causalEffects[0].cause, '夏启行谋逆');
 assert.equal(textEvidenceState.causalEffects[0].result, '夏以昼逼其自裁。');
 
 const irreversibleEventFallback = WorldStateMachine.Engine._test.stateFromEvidence({
-    events: ['兴州王夏启行在漱玉殿自裁身亡。'],
+    timeline: ['兴州王夏启行在漱玉殿自裁身亡。'],
 }, {}, WorldStateMachine.Defaults.createState()).state;
-assert.match(irreversibleEventFallback.factAnchors[0]?.fact || '', /自裁.*身亡/, '模型漏报事实锚点时应从不可逆事件补建');
+assert.equal(irreversibleEventFallback.factAnchors.length, 0, '时间线不得被代码自动复制为事实锚点；是否需要锚点由唯一归属填表决定');
+
+const scheduleOnlyState = WorldStateMachine.Engine._test.stateFromEvidence(completeEvidence({
+    schedules: [{ id: 'trip', title: '三日后前往江南', participantIds: ['user','char'], expectedTime: '三日后', preconditions: ['兴州政务完成'], status: 'agreed' }],
+    progression: [], threads: [], tasks: [],
+}), {}, WorldStateMachine.Defaults.createState()).state;
+assert.equal(scheduleOnlyState.schedules.length, 1);
+assert.equal(scheduleOnlyState.tasks.length, 0);
+assert.equal(scheduleOnlyState.threads.length, 0);
+assert.equal(scheduleOnlyState.progression.direction, '', '安排不得被代码复制到任务、事件、线程或剧情推进');
 
 const gptAdmissionFixture = WorldStateMachine.Engine._test.sanitizeGptEvidence({
-    events: [
-        { summary: '夏寻樨对夏以昼的话表示不信，并在心里吐槽。夏以昼继续逗弄她，还安排了旁边的营帐。', sourceRefs: ['chat:826'] },
-        { summary: '兴州王夏启行自裁身亡，兴州权力完成交替。', sourceRefs: ['chat:810'] },
-    ],
     timeline: [
         { summary: '夏寻樨进帐后与夏以昼闲聊。', sourceRefs: ['chat:826'] },
         { summary: '兴州王夏启行自裁身亡，兴州权力完成交替。', sourceRefs: ['chat:810'] },
@@ -215,9 +338,7 @@ const gptAdmissionFixture = WorldStateMachine.Engine._test.sanitizeGptEvidence({
     gptRecentRefs: ['chat:826', 'chat:827'],
     gptScene: { location: '兴州行宫·漱玉园', currentConditions: ['三日后离开兴州前往江南。'], sourceRefs: ['chat:827'] },
 });
-assert.equal(gptAdmissionFixture.events.length, 1, '日常吐槽、逗弄和营帐安排不得进入 GPT 世界事件');
-assert.match(gptAdmissionFixture.events[0].summary, /自裁.*身亡/);
-assert.equal(gptAdmissionFixture.timeline.length, 1, '日常进帐闲聊不得进入阶段时间线');
+assert.equal(gptAdmissionFixture.timeline.length, 2, '成功的第二阶段时间线不得再被本地关键词表二次裁剪');
 assert.equal(gptAdmissionFixture.tasks.length, 1, '已完成的即时待办不得保留');
 assert.equal(gptAdmissionFixture.triggers.length, 0, '没有具体满足条件的猜测不得成为触发器');
 assert.equal(gptAdmissionFixture.knowledge.length, 0, '未来问题不得伪装成角色知识');
@@ -252,11 +373,17 @@ const payload = {
 };
 const settings = { model: '[按次]gpt-5.5', endpoint: 'https://example.test/v1', useTavernApi: false };
 const plannerPrompt = WorldStateMachine.Defaults.PLANNER_PROMPT;
+const gptCompactedSource = WorldStateMachine.Engine._test.compactGptSourceChronicle(source).source;
+assert.equal(gptCompactedSource.character.description, source.character.description, 'GPT读取不得截短char资料卡');
+assert.equal(gptCompactedSource.persona, source.persona, 'GPT读取不得截短user资料卡');
+assert.equal(gptCompactedSource.worldbooks[0].entries[0].content, source.worldbooks[0].entries[0].content, 'GPT读取不得截短世界书正文');
 const prepared = WorldStateMachine.Engine._test.prepareSourceForStateRequests(source, { plannerPrompt, payload });
 assert.equal(prepared.large, true);
 assert.ok(prepared.originalChars > 100000, `expected a genuinely large source, got ${prepared.originalChars}`);
 assert.ok(prepared.batches.length >= 2 && prepared.batches.every((batch) => batch.length > 0));
 assert.ok(prepared.batches.length <= 2, 'Gemini/default complete read must stay within two requests');
+assert.equal(prepared.batches[0].some((item) => ['chat-message','chat-chronicle-block'].includes(item.kind)), false, 'request A must contain only worldbook/cards/static sources');
+assert.equal(prepared.batches[1].some((item) => ['chat-message','chat-chronicle-block'].includes(item.kind)), true, 'request B must own the meow_FM chronology');
 assert.equal(prepared.deduplicatedRecords, 2);
 assert.deepEqual(prepared.deduplicatedRefs.sort(), ['currentUserAction', 'latestAssistantText']);
 assert.equal(prepared.batches.flat().length, prepared.sentRecords);
@@ -296,6 +423,8 @@ const representedHugeMessages = hugePrepared.batches.flat().reduce((sum, item) =
 assert.equal(representedHugeMessages, 823, 'every large-chat message must remain represented in the semantic chronicle blocks');
 
 const result = await WorldStateMachine.Engine._test.buildStateWithinLimit(plannerPrompt, { ...payload, source: null }, payload.currentState, settings, undefined, prepared);
+assert.ok(calls[0].payload.outputForm.modules.schedules.fields.includes('preconditions[]'), '实际API请求必须携带逐模块填空合同');
+assert.match(calls[0].payload.moduleOwnership.schedules, /明确承诺|约定/, '实际API请求必须携带模块唯一归属规则');
 assert.equal(result.state.world.location.current, '测试地点');
 assert.equal(result.state.map.rootLabel, '大地图', 'omitted default modules must be filled locally');
 const mergedTestCharacter = result.state.characters.find((item) => item.name === '测试角色');
@@ -307,7 +436,7 @@ assert.equal(mergedTestCharacter.situation, '核心角色正在处理资料', 'l
 assert.equal(mergedTestCharacter.notes, '', '人物姓名不得复制成连续性摘要');
 assert.equal(result.state.worldRules[0].statement, '进入测试地点必须持有通行许可', 'explicit worldRules evidence must populate the hard-rule module instead of a placeholder');
 assert.equal(result.state.npcActivities[0].action, '继续在后台整理资料');
-assert.ok(result.state.events.some((item) => item.summary === '公司管理权完成正式交替'), '重大时间线证据必须安全回填世界事件');
+assert.equal(result.state.events.length, 0, '时间线不得被代码自动复制为世界事件');
 assert.equal(result.state.triggers[0].title, '等待来电');
 assert.equal(result.state.threads[0].title, '旧约仍未说开');
 assert.equal(result.state.processes[0].title, '公司权力调整');
@@ -316,6 +445,12 @@ assert.equal(result.state.timeline.some((item) => item.summary === '全部资料
 assert.deepEqual(result.state.tasks, [], 'omitted arrays must be filled locally');
 assert.equal(calls.length, prepared.batches.length);
 assert.ok(calls.every((call) => call.payload.task === 'SOURCE_READ_SEQUENTIAL_BATCH'));
+assert.equal(calls[0].payload.semanticStage, 'SOURCE_COMPILE_EXACT');
+assert.equal(calls[1].payload.semanticStage, 'INDEPENDENT_REASONING_AND_SIMULATION');
+assert.equal(calls[0].payload.sourceRecords.some((item) => ['chat-message','chat-chronicle-block'].includes(item.kind)), true, '请求A必须一次拿到全部聊天与稳定资料');
+assert.equal(calls[1].payload.sourceRecords.length, 0, '请求B只基于请求A结果推演，不重读原文');
+assert.ok(calls[1].payload.sourceCompile?.worldRules?.length, 'Gemini/default request B must receive request A as a source compile table');
+assert.ok(calls[1].payload.currentState, 'Gemini/default request B must receive the pre-tick state');
 assert.equal(calls[0].options.jsonContract, 'evidence');
 assert.equal(calls[1].options.jsonContract, 'evidence');
 assert.equal(calls[1].options.maxTokens, 9000);
@@ -336,17 +471,19 @@ assert.equal(calls[0].options.stream, true, 'GPT request A must stream through t
 assert.equal(calls[1].options.stream, true, 'GPT request B must stream through timeout-prone reverse proxies');
 assert.equal(calls[1].options.maxTokens, 9000);
 assert.equal(calls[1].options.reasoningEffort, 'low');
-assert.ok(calls[1].payload.firstHalfEvidence?.canon?.includes('请求 A 已逐项读取'), 'GPT request B must receive request A evidence for an ordered overwrite merge');
+assert.ok(calls[1].payload.sourceCompile?.canon?.includes('请求 A 已逐项读取'), 'GPT request B must receive request A as a source compile table');
+assert.equal(calls[0].payload.semanticStage, 'SOURCE_COMPILE_EXACT');
+assert.equal(calls[1].payload.semanticStage, 'INDEPENDENT_REASONING_AND_SIMULATION');
 assert.equal(gptResult.state.world.location.current, '测试地点', 'latest GPT scene must override stale chronology');
 assert.match(gptResult.state.world.time.display, /第821日/, 'GPT current time must come from the latest assistant memory');
 assert.equal(gptResult.state.characters.some((item) => /^[{["']/.test(item.name)), false, 'malformed structured strings must not create pseudo-character names');
 assert.equal(calls[1].payload.stateSchema, undefined, 'request B must not resend the verbose state schema');
 assert.equal(calls[1].payload.stateShape, undefined, 'request B only returns merged evidence; state hydration is local');
-assert.equal(calls[1].payload.currentState, undefined, 'request B must not resend current state');
+assert.ok(calls[1].payload.currentState, 'request B must receive the pre-tick state for lifecycle adjudication');
 assert.ok(calls.every((call) => call.options.singleAttempt === true));
 assert.equal(calls.reduce((sum, call) => sum + call.payload.sourceRecords.length, 0), hugePreparedGpt.sentRecords);
 const progress = WorldStateMachine.Engine.getProgress();
-assert.match(progress.steps.map((step) => `${step.message} ${step.details}`).join('\n'), /批次 1\/\d+.*API 1 次/);
+assert.match(progress.steps.map((step) => `${step.message} ${step.details}`).join('\n'), /第一步：一次性提取全部资料栏目.*API 1 次/);
 assert.match(progress.steps.map((step) => `${step.message} ${step.details}`).join('\n'), /全部资料批次读取完成.*严格串行/);
 
 calls.length = 0;
@@ -368,13 +505,101 @@ const smallPayload = { ...payload, source: smallSource };
 const smallPrepared = WorldStateMachine.Engine._test.prepareSourceForStateRequests(smallSource, { plannerPrompt, payload: smallPayload });
 assert.equal(smallPrepared.large, false);
 const smallResult = await WorldStateMachine.Engine._test.buildStateWithinLimit(plannerPrompt, smallPayload, payload.currentState, settings, undefined, smallPrepared);
-assert.equal(calls.length, 1, 'a small source must use exactly one evidence request');
-assert.equal(calls[0].payload.task, 'SOURCE_READ_COMPLETE');
+assert.equal(calls.length, 2, 'a small source must also use compile + tick as exactly two semantic requests');
+assert.equal(calls[0].payload.semanticStage, 'SOURCE_COMPILE_EXACT');
+assert.equal(calls[1].payload.semanticStage, 'INDEPENDENT_REASONING_AND_SIMULATION');
 assert.equal(calls[0].options.jsonContract, 'evidence');
 assert.equal(smallResult.state.world.location.current, '资料室');
 assert.equal(smallResult.state.world.location.weather, '炎热');
 assert.equal(smallResult.state.worldRules[0].statement, '进入资料室必须登记');
-assert.ok(smallResult.state.events.some((item) => /资料室.*重大事故/.test(item.title)), 'Gemini/default 模式必须保留合格重大事件');
+assert.ok(smallResult.state.timeline.some((item) => /资料室.*重大事故/.test(item.summary)), 'Gemini/default 模式必须保留合格重大历史节点');
 assert.equal(smallResult.state.processes.length, 0, '个人整理动作不得从剧情推进线回填成世界进程');
+
+const normalComplete = WorldStateMachine.Api.complete;
+const recoveryCalls = [];
+WorldStateMachine.Api.complete = async (_prompt, request) => {
+    recoveryCalls.push(request);
+    if (request.sourceBatchIndex === 1) throw new Error('Planner API 后端转发失败 502');
+    return { evidence: completeEvidence({
+        sourceRefs: request.sourceRecords.map((item) => item.ref),
+        canon: ['恢复请求已读取第一批与第二批'],
+        characters: [{ id: 'recovered', name: '恢复人物', identity: '完整身份', sourceRefs: ['recover-a'] }],
+        currentScene: [{ location: '恢复地点', sourceRefs: ['recover-b'] }],
+    }) };
+};
+const recoveryPrepared = {
+    large: true, gptMode: true, localEvidence: completeEvidence(), originalChars: 64123, includedChars: 32123,
+    records: 2, sentRecords: 2, batches: [
+        [{ ref: 'recover-a', kind: 'test', serializedJson: '{"half":"A"}' }],
+        [{ ref: 'recover-b', kind: 'test', serializedJson: '{"half":"B"}' }],
+    ],
+    batchChars: [32, 32], progressFragments: [1, 1], gptRecentRefs: ['recover-a','recover-b'], gptLatestRefs: ['recover-b'],
+};
+await assert.rejects(() => WorldStateMachine.Engine._test.buildStateWithinLimit(
+    plannerPrompt, { ...payload, source: null }, payload.currentState,
+    { ...settings, gptMode: true }, undefined, recoveryPrepared,
+), /502/);
+assert.equal(recoveryCalls.length, 1, '第一次全量提取失败必须立即终止');
+assert.equal(recoveryPrepared.requestAttempts, 1);
+
+const geminiRecoveryCalls = [];
+WorldStateMachine.Api.complete = async (_prompt, request) => {
+    geminiRecoveryCalls.push(request);
+    if (request.sourceBatchIndex === 1) throw new Error('Planner API 后端转发失败 502');
+    return { evidence: completeEvidence({
+        sourceRefs: request.sourceRecords.map((item) => item.ref),
+        canon: ['Gemini 恢复请求已读取两批'],
+        characters: [{ id: 'gemini-recovered', name: 'Gemini恢复人物', identity: '完整身份', sourceRefs: ['gemini-a'] }],
+        currentScene: [{ location: 'Gemini恢复地点', sourceRefs: ['gemini-b'] }],
+    }) };
+};
+const geminiRecoveryPrepared = {
+    ...recoveryPrepared, gptMode: false, originalChars: 74123, includedChars: 42123,
+    batches: [
+        [{ ref: 'gemini-a', kind: 'test', serializedJson: '{"half":"A"}' }],
+        [{ ref: 'gemini-b', kind: 'test', serializedJson: '{"half":"B"}' }],
+    ],
+};
+await assert.rejects(() => WorldStateMachine.Engine._test.buildStateWithinLimit(
+    plannerPrompt, { ...payload, source: null }, payload.currentState,
+    { ...settings, gptMode: false }, undefined, geminiRecoveryPrepared,
+), /502/);
+assert.equal(geminiRecoveryCalls.length, 1, '第一次全量提取失败必须立即终止，不能让推演请求兼任补读');
+
+const partialCalls = [];
+WorldStateMachine.Api.complete = async (_prompt, request) => {
+    partialCalls.push(request);
+    if (request.sourceBatchIndex === 1) return { evidence: completeEvidence({
+        sourceRefs: ['partial-a'], canon: ['第一批完整'],
+        worldRules: [{ id: 'compiled-rule', statement: '进入内城必须持有通行许可', sourceRefs: ['partial-a'], truthStatus: 'confirmed' }],
+    }) };
+    return { evidence: { sourceRefs: ['partial-b'], currentScene: [{ location: '新场景', sourceRefs: ['partial-b'] }] } };
+};
+const partialBase = WorldStateMachine.Defaults.createState();
+partialBase.initialized = true;
+partialBase.tasks = [{ id: 'keep-task', title: '必须保留的旧任务', status: 'active' }];
+const storageBeforePartial = WorldStateMachine.Storage;
+WorldStateMachine.Storage = { ...(storageBeforePartial || {}), clone: (value) => JSON.parse(JSON.stringify(value)) };
+const partialPrepared = {
+    large: true, gptMode: true, localEvidence: completeEvidence({
+        tasks: [{ id: 'local-task', title: '原文可确定的新任务', description: '前往新场景核验线索', status: 'active', sourceRefs: ['partial-b'], truthStatus: 'confirmed' }],
+    }), originalChars: 65124, includedChars: 33124,
+    records: 2, sentRecords: 2, batches: [
+        [{ ref: 'partial-a', kind: 'test', serializedJson: '{"half":"A"}' }],
+        [{ ref: 'partial-b', kind: 'test', serializedJson: '{"half":"B"}' }],
+    ],
+    batchChars: [33, 33], progressFragments: [1, 1], gptRecentRefs: ['partial-a','partial-b'], gptLatestRefs: ['partial-b'],
+};
+const partialResult = await WorldStateMachine.Engine._test.buildStateWithinLimit(
+    plannerPrompt, { ...payload, source: null }, partialBase,
+    { ...settings, gptMode: true }, undefined, partialPrepared,
+);
+assert.equal(partialCalls.length, 2, '第二步漏栏也不得产生第三次调用');
+assert.ok(partialResult.state.tasks.some((item) => item.title === '必须保留的旧任务'), 'an unreturned final module must retain the previous state instead of becoming empty');
+assert.ok(partialResult.state.tasks.some((item) => item.title === '原文可确定的新任务'), 'an unreturned final module must also retain deterministic local evidence');
+assert.ok(partialResult.state.worldRules.some((item) => item.statement === '进入内城必须持有通行许可'), 'a field omitted by final request B must fall back to request A source compilation');
+assert.equal(partialPrepared.incompleteEvidenceKeys.includes('tasks'), true);
+WorldStateMachine.Storage = storageBeforePartial;
+WorldStateMachine.Api.complete = normalComplete;
 
 console.log('Two-pass large-source smoke tests passed');

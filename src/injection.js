@@ -162,7 +162,7 @@
         list(map.locations).filter((item) => relevantLocationIds.has(text(item?.id))).forEach((item) => {
             add(item?.accessRuleRefs); add(item?.secretRefs); add(item?.dependencyFactIds);
         });
-        ['worldRules','factAnchors','resourceConstraints','organizations','characters','npcActivities','relationships','knowledge','schedules','tasks','events','triggers','threads','processes','causalEffects'].forEach((module) => {
+        ['worldRules','factAnchors','resourceConstraints','organizations','characters','npcActivities','relationships','knowledge','schedules','tasks','triggers','threads','processes','causalEffects'].forEach((module) => {
             list(state?.[module]).forEach((item) => add(item?.dependencyFactIds));
         });
         refs.delete('');
@@ -186,7 +186,7 @@
         }, {})).flat();
         const activeConstraints = activeMemory(state.resourceConstraints, (item) => item.status === 'active').filter((item) => !['expired','satisfied'].includes(item.status));
         const requiredFactIds = referencedFactIds(state);
-        const activeKnowledge = list(state.knowledge).filter((item) => requiredFactIds.has(text(item?.factId || item?.id)) || activeMemory([item], (value) => value.priority === 'L3' && touchesRelevant([...list(value.holderIds), ...list(value.knownBy), ...list(value.believedBy), ...list(value.suspectedBy), ...list(value.misunderstoodBy), ...list(value.relatedRefs)])).length);
+        const activeKnowledge = list(state.knowledge).filter((item) => requiredFactIds.has(text(item?.factId || item?.id)) || activeMemory([item], (value) => value.priority === 'L3' && touchesRelevant([...list(value.holderIds), ...list(value.knownBy), ...list(value.believedBy), ...list(value.suspectedBy), ...list(value.misunderstoodBy), ...list(value.unknownTo), ...list(value.relatedRefs)])).length);
         const snapshotFacts = [world.time?.display, world.season, world.location?.current, world.location?.environment, world.location?.weather, ...list(world.currentConditions)].map(canonicalLine).filter(Boolean);
         const uniqueEventContent = (item) => [item.summary, item.outcome].filter(Boolean).filter((value) => {
             const canonical = canonicalLine(value);
@@ -275,7 +275,6 @@
                 list(item.completedConditions).length ? `已核验完成条件：${join(item.completedConditions)}` : '',
                 [...list(item.locationRefs), ...list(item.characterRefs), ...list(item.ruleRefs), ...list(item.knowledgeRefs), ...list(item.resourceConstraintRefs)].length ? `依赖引用：${join([...list(item.locationRefs), ...list(item.characterRefs), ...list(item.ruleRefs), ...list(item.knowledgeRefs), ...list(item.resourceConstraintRefs)])}` : '',
             ].filter(Boolean).join('｜'), item)).join('\n'),
-            events: activeMemory(state.events, (item) => item.status === 'ongoing' && (!item.location || item.location === world.location?.current)).filter((item) => uniqueEventContent(item).length).map((item) => truthLine(`${item.title}｜${item.status === 'occurred' ? '已发生' : '正在发生'}：${join(uniqueEventContent(item))}`, item)).join('\n'),
             triggers: activeMemory(state.triggers, (item) => item.status === 'eligible').filter((item) => !['triggered','expired'].includes(item.status)).map((item) => truthLine(`${item.title}：条件${join(item.conditions) || '未设定'}；当前${item.status || 'armed'}`, item)).join('\n'),
             threads: activeMemory(state.threads, (item) => item.priority === 'L3' && touchesRelevant(item.participantIds)).filter((item) => item.status !== 'resolved').map((item) => truthLine(`${item.title}：${item.nextNaturalStep || item.status || '延续中'}`, item)).join('\n'),
             progression: state.progression?.activity !== 'COLD' ? truthLine([
@@ -435,7 +434,7 @@
     }
     const moduleBudgetPriority = Object.freeze({
         worldRules: 100, world: 95, resourceConstraints: 95, factAnchors: 90, knowledge: 90,
-        organizations: 86, characters: 85, relationships: 85, schedules: 82, map: 80, tasks: 78, events: 72, causalEffects: 70,
+        organizations: 86, characters: 85, relationships: 85, schedules: 82, map: 80, tasks: 78, causalEffects: 70,
         npcActivities: 68, triggers: 62, threads: 60, processes: 58, progression: 55,
         pacing: 45, planner: 35, ambient: 20, worldbook: 10,
     });

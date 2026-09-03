@@ -2,7 +2,7 @@
     'use strict';
     const WSM = window.WorldStateMachine = window.WorldStateMachine || {};
     const KEY = 'worldStateMachine';
-    const RULES_VERSION = 26;
+    const RULES_VERSION = 28;
     const defaults = {
         rulesVersion: RULES_VERSION,
         enabled: true,
@@ -23,6 +23,7 @@
         temperature: 0.15,
         maxTokens: 5000,
         recentMessages: 12,
+        summaryTag: 'meow_FM',
         maxSourceChars: 60000,
         injectionDepth: 0,
         injectionMaxChars: 3500,
@@ -89,7 +90,6 @@
                 knowledge: WSM.Defaults.MODULE_PROMPTS.knowledge,
                 world: WSM.Defaults.MODULE_PROMPTS.world,
                 worldRules: WSM.Defaults.MODULE_PROMPTS.worldRules,
-                events: WSM.Defaults.MODULE_PROMPTS.events,
                 processes: WSM.Defaults.MODULE_PROMPTS.processes,
                 tasks: WSM.Defaults.MODULE_PROMPTS.tasks,
                 triggers: WSM.Defaults.MODULE_PROMPTS.triggers,
@@ -98,7 +98,7 @@
                 timeline: WSM.Defaults.MODULE_PROMPTS.timeline,
                 map: WSM.Defaults.MODULE_PROMPTS.map,
             });
-            ['causalLinks', 'causalSeeds', 'scenePressure', 'actorCausality', 'backgroundQueue', 'advanceScheduler'].forEach((id) => { delete root[KEY].modulePrompts[id]; });
+            ['events', 'causalLinks', 'causalSeeds', 'scenePressure', 'actorCausality', 'backgroundQueue', 'advanceScheduler'].forEach((id) => { delete root[KEY].modulePrompts[id]; });
             root[KEY].modulePrompts.causalEffects = WSM.Defaults.MODULE_PROMPTS.causalEffects;
             root[KEY].modulePrompts.planner = WSM.Defaults.MODULE_PROMPTS.planner;
             root[KEY].rulesVersion = RULES_VERSION;
@@ -107,13 +107,13 @@
         }
         const savedModules = root[KEY].injectionModules || {};
         root[KEY].injectionModules = Object.fromEntries(Object.entries(WSM.Defaults.INJECTION_MODULES).map(([id, value]) => [id, Object.assign({}, value, savedModules[id] || {})]));
-        if (needsRulesMigration) ['characters','organizations','npcActivities','relationships','knowledge','world','worldRules','schedules','events','processes','causalEffects','tasks','triggers','threads','progression','pacing','map'].forEach((id) => {
+        if (needsRulesMigration) ['characters','organizations','npcActivities','relationships','knowledge','world','worldRules','schedules','processes','causalEffects','tasks','triggers','threads','progression','pacing','map'].forEach((id) => {
             root[KEY].injectionModules[id].instruction = WSM.Defaults.INJECTION_MODULES[id].instruction;
         });
         if (needsRulesMigration && root[KEY].injectionModules.map) root[KEY].injectionModules.map.enabled = true;
         if (needsRulesMigration && root[KEY].injectionModules.knowledge) root[KEY].injectionModules.knowledge.enabled = true;
         root[KEY].modulePrompts = Object.assign({}, WSM.Defaults.MODULE_PROMPTS, root[KEY].modulePrompts || {});
-        ['causalLinks', 'causalSeeds', 'scenePressure', 'actorCausality', 'backgroundQueue', 'advanceScheduler'].forEach((id) => { delete root[KEY].modulePrompts[id]; });
+        ['events', 'causalLinks', 'causalSeeds', 'scenePressure', 'actorCausality', 'backgroundQueue', 'advanceScheduler'].forEach((id) => { delete root[KEY].modulePrompts[id]; });
         root[KEY].worldbookCompiler = Object.assign({}, defaults.worldbookCompiler, root[KEY].worldbookCompiler || {});
         root[KEY].storyPacing = Object.assign({}, defaults.storyPacing, root[KEY].storyPacing || {});
         if (!['off','verySlow','slow','medium','fast'].includes(root[KEY].storyPacing.mode)) root[KEY].storyPacing.mode = 'off';
@@ -134,6 +134,7 @@
         root[KEY].maxTokens = Math.max(256, Math.min(16384, Math.round(Number(root[KEY].maxTokens) || defaults.maxTokens)));
         const recentMessages = Number(root[KEY].recentMessages);
         root[KEY].recentMessages = Number.isFinite(recentMessages) ? Math.max(0, Math.min(200, Math.round(recentMessages))) : defaults.recentMessages;
+        root[KEY].summaryTag = typeof root[KEY].summaryTag === 'string' ? root[KEY].summaryTag.trim() : defaults.summaryTag;
         delete root[KEY].calibrationConcurrency;
         window.extension_settings[KEY] = root[KEY];
         return root[KEY];

@@ -83,6 +83,46 @@
     function latestAssistantMessage(ctx = context()) {
         return [...chat(ctx)].reverse().find((item) => item.role === 'assistant') || null;
     }
+    function normalizeSummaryTag(value) {
+        const raw = text(value);
+        if (!raw) return '';
+        const wrapped = raw.match(/^<\/?([^<>\s/]+)(?:\s[^<>]*)?\/?>(?:\s*)$/);
+        const tag = text(wrapped?.[1] || raw);
+        return /^[A-Za-z_][A-Za-z0-9_.:-]{0,63}$/.test(tag) ? tag : '';
+    }
+    function summaryContent(value, tag = 'meow_FM') {
+        const raw = String(value ?? '');
+        const normalizedTag = normalizeSummaryTag(tag);
+        if (!normalizedTag) return text(raw);
+        const blocks = [];
+        const escapedTag = normalizedTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const pattern = new RegExp(`<${escapedTag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${escapedTag}>`, 'gi');
+        let match;
+        while ((match = pattern.exec(raw)) !== null) {
+            const content = text(match[1]);
+            if (content) blocks.push(content);
+        }
+        return blocks.join('\n');
+    }
+    function meowFMContent(value) { return summaryContent(value, 'meow_FM'); }
+    function configuredSummaryTag() {
+        const settings = WSM.Settings?.get?.() || {};
+        return Object.prototype.hasOwnProperty.call(settings, 'summaryTag') ? normalizeSummaryTag(settings.summaryTag) : 'meow_FM';
+    }
+    function meowMessage(message, requestedTag = configuredSummaryTag()) {
+        if (!message) return null;
+        const raw = String(message.content ?? message.mes ?? '');
+        const tag = normalizeSummaryTag(requestedTag);
+        const content = summaryContent(raw, tag);
+        if (!content) return null;
+        return {
+            ...message,
+            content: tag ? `<meow_FM data-source-tag="${tag}">\n${content}\n</meow_FM>` : content,
+            memoryOnly: !!tag,
+            summaryTag: tag,
+            originalChars: raw.length,
+        };
+    }
     function messagesByIds(ids, ctx = context(), options = {}) {
         const wanted = new Set((Array.isArray(ids) ? ids : []).map((id) => text(id)).filter(Boolean));
         if (!wanted.size || !Array.isArray(ctx?.chat)) return [];
@@ -263,12 +303,17 @@
     async function buildSource(options = {}) {
         const ctx = context();
         const settings = WSM.Settings.get();
+        const summaryTag = configuredSummaryTag();
         const visibleChat = chat(ctx);
-        const allChat = options.includeHidden === true ? chat(ctx, { includeHidden: true }) : visibleChat;
+        // Full-text mode means the visible authored conversation, not hidden
+        // system/plugin floors. Tagged memories may still be indexed from
+        // hidden floors during an explicit archive calibration.
+        const allChat = options.includeHidden === true && summaryTag ? chat(ctx, { includeHidden: true }) : visibleChat;
         const configuredCount = Number(settings.recentMessages);
         const recentCount = Number.isFinite(configuredCount) ? Math.max(0, Math.min(200, Math.round(configuredCount))) : 12;
         const readAllVisible = options.fullChat === true || recentCount === 0;
-        const selectedChat = readAllVisible ? allChat : allChat.slice(-recentCount);
+        const selectedRawChat = readAllVisible ? allChat : allChat.slice(-recentCount);
+        const selectedChat = selectedRawChat.map((message) => meowMessage(message, summaryTag)).filter(Boolean);
         const rawChat = Array.isArray(ctx?.chat) ? ctx.chat : [];
         const hiddenMessages = rawChat.filter((message) => message?.is_system === true).length;
         const worldbookResult = await worldbooks(ctx);
@@ -317,10 +362,18 @@
             chat: selectedChat,
             tavernTextContext: {
                 source: 'SillyTavern.getContext().chat',
-                scope: readAllVisible ? 'full-visible' : 'recent-visible',
+                scope: summaryTag
+                    ? `${readAllVisible ? 'full' : 'recent'}-summary-tag-only:${summaryTag}`
+                    : `${readAllVisible ? 'full' : 'recent'}-message-text`,
+                readMode: summaryTag ? 'summary-tag' : 'full-text',
+                summaryTag,
                 totalMessages: allChat.length,
+                scannedMessages: selectedRawChat.length,
                 includedMessages: selectedChat.length,
-                truncated: selectedChat.length < allChat.length,
+                meowMessages: summaryTag === 'meow_FM' ? selectedChat.length : 0,
+                summaryMessages: selectedChat.length,
+                skippedWithoutMeow: selectedRawChat.length - selectedChat.length,
+                truncated: selectedRawChat.length < allChat.length,
                 hiddenMessages,
                 visibleMessages: visibleChat.length,
                 hiddenIncluded: options.includeHidden === true ? selectedChat.filter((message) => message.hidden).length : 0,
@@ -359,5 +412,5 @@
         for (let i = 0; i < raw.length; i += 1) hash = Math.imul(hash ^ raw.charCodeAt(i), 16777619);
         return (hash >>> 0).toString(16);
     }
-    WSM.Context = { context, chat, messagesByIds, latestUserMessage, latestAssistantMessage, identityNames, buildSource, sourceFingerprint, readWorldbook, listWorldbookEntries, listEnabledWorldNames, worldbookEntryKey, _test: { normalizeEntries, normalizeMessage } };
+    WSM.Context = { context, chat, messagesByIds, latestUserMessage, latestAssistantMessage, meowMessage, summaryContent, normalizeSummaryTag, identityNames, buildSource, sourceFingerprint, readWorldbook, listWorldbookEntries, listEnabledWorldNames, worldbookEntryKey, _test: { normalizeEntries, normalizeMessage, meowFMContent, summaryContent, normalizeSummaryTag } };
 })();

@@ -13,9 +13,8 @@
         relationships: ['人物关系', (s) => s.relationships],
         knowledge: ['知识 / 秘密', (s) => s.knowledge],
         schedules: ['已有安排', (s) => s.schedules],
-        tasks: ['当前任务', (s) => s.tasks],
-        events: ['世界事件', (s) => s.events],
-        triggers: ['可触发事件', (s) => s.triggers],
+        tasks: ['主角任务', (s) => s.tasks],
+        triggers: ['世界剧情扣子', (s) => s.triggers],
         threads: ['长期线程', (s) => s.threads],
         progression: ['剧情推进', (s) => s.progression],
         processes: ['世界进程', (s) => s.processes],
@@ -43,43 +42,47 @@
     const dynamicWorldbookSections = new Set();
     const categories = {
         map: { icon: 'map', label: '场景地图', sections: ['map'] },
-        world: { icon: 'home', label: '世界', sections: ['overview','worldRules','resourceConstraints','organizations','factAnchors','events','processes','causalEffects'] },
+        world: { icon: 'home', label: '世界', sections: ['overview','worldRules','resourceConstraints','organizations','factAnchors','processes','causalEffects'] },
         people: { icon: 'people', label: '人物', sections: ['characters','activities','relationships','knowledge'] },
         affairs: { icon: 'clipboard', label: '事务', sections: ['schedules','tasks','triggers','threads','progression','timeline'] },
         worldbook: { icon: 'note', label: '本轮规则命中', sections: [] },
         system: { icon: 'sliders', label: '系统', sections: ['sources','planner','injection'] },
     };
     const promptGroups = {
-        world: ['world','worldRules','resourceConstraints','organizations','factAnchors','ambient','map','events','processes','causalEffects'],
+        world: ['world','worldRules','resourceConstraints','organizations','factAnchors','ambient','map','processes','causalEffects'],
         people: ['characters','npcActivities','relationships','knowledge'],
         affairs: ['schedules','tasks','triggers','threads','progression','timeline'],
         system: ['pacing','planner'],
     };
     const promptLabels = {
         world: '世界状态', worldRules: '硬规则 / 世界秩序', factAnchors: '事实锚点', resourceConstraints: '资源 / 约束', organizations: '组织 / 势力', ambient: '环境与路人反应', map: '场景地图', characters: '人物概况', npcActivities: 'NPC活动轨迹', relationships: '人物关系', knowledge: '知识与秘密',
-        schedules: '已有安排', tasks: '当前任务', events: '世界事件', triggers: '可触发事件', threads: '长期线程', progression: '剧情推进', processes: '世界进程',
+        schedules: '已有安排', tasks: '主角任务', triggers: '世界剧情扣子', threads: '长期线程', progression: '剧情推进', processes: '世界进程',
         causalEffects: '因果影响', timeline: '时间线', pacing: '剧情节奏', planner: '本轮后台判断', injection: '最终注入',
     };
     const sectionHelp = {
-        overview: '只显示此刻的时间、季节、地点、天气、环境和当前正在生效的客观状态。',
-        worldRules: '保存世界底层规则、身份与权力秩序、权限、条件、例外和冲突优先级；其他模块只引用规则ID。',
-        factAnchors: '只保存正文已经永久确立、遗忘会造成逻辑错误的最终客观结果；与当前无关时不会常驻发送给正文 AI。',
-        resourceConstraints: '只显示当前真正会限制行动的资金、权限、人手、关键持有物与地点封锁；不是完整资产清单。',
-        organizations: '维护组织职责、负责人、管辖范围、可调用资源与当前处境，为政治世界提供合理分工。',
-        map: '空间索引按世界、城市、区域、建筑和内部空间逐层显示；地图与列表都只在本地展示，不向正文 AI 发送。',
-        activities: '每个核心人物或活跃NPC只保留一条当前活动快照；背景NPC不长期记录。',
-        schedules: '只显示已经明确约定但尚未发生的未来安排；改变、取消或完成后更新原条目。',
-        events: '显示正在发生或已经发生的重要节点；节点只回答“发生了什么”。',
-        progression: '显示当前这一段剧情正在向哪里移动；只保留最新版本，不预写结果，也不替玩家决定。',
-        processes: '显示仍在持续演变的世界级变化线，以及它为何推进、停滞或结束。',
-        causalEffects: '显示既存事件或事实留下、目前仍会影响后续世界的后果。',
-        timeline: '只记录已经真正发生的事，每件事只记一次。',
+        overview: '填写“此刻是什么样”：时间、季节、地点、天气、环境和当前客观状态。已经发生的节点放入时间线；仍在发展的世界级变化放入世界进程；永久规则放入硬规则。',
+        worldRules: '填写不随当前场景轻易改变的法律、礼法、身份秩序、权限与世界底层规则，并同时保留适用条件和例外。当前有没有钱、人手、物品或通行资格放入资源 / 约束。',
+        factAnchors: '只填写正文已经永久确立、遗忘会造成逻辑错误的最终结果。发生过程放入时间线；人物身份、关系、知识和世界书原始设定不要在这里重复。',
+        resourceConstraints: '填写当前真正会阻止或消耗行动的资金、权限、人手、关键持有物、通行资格与地点封锁。它是“当前是否做得到”，不是永久规则或完整资产清单。',
+        organizations: '填写组织长期负责什么、由谁负责、管辖哪里、能调用什么以及当前处境。个人身份放人物概况；组织正在经历的宏观变化放世界进程。',
+        map: '填写地点父子层级、当前位置、路线、耗时、开放状态与进入规则引用。完整地图留在本地；正文只在移动、问路或权限相关时收到最小路线切片。地点历史放时间线。',
+        characters: '填写人物当前卡片：身份、动机、目标、可用性、大致落点、重要处境、持续状态与重要物品。具体正在做什么、怎样移动放入 NPC 活动轨迹。',
+        activities: '填写核心人物或活跃 NPC 此刻实际在做什么、在哪里活动、怎样移动；每人只留一条最新快照。最终落点回写人物概况，未来约定放已有安排。',
+        relationships: '填写有方向的“主体如何看待对象”以及正式身份关系和形成依据；A→B 与 B→A 分开。具体知道什么放知识 / 秘密，禁止好感度或信任度评分。',
+        knowledge: '填写“谁以确认、相信、怀疑或误解的状态掌握什么”。人物知道、信息公开、玩家面板可见是三个不同维度；人物态度放人物关系。',
+        schedules: '填写已经明确承诺、预约、下令或确定日期、但尚未发生的未来事项。现在能够主动推进的事务放当前任务；仅仅可能发生的事不能建立安排。',
+        tasks: '填写主角的主线与支线目标。主线是贯穿核心方向的长期目标，支线是具体辅助或独立目标；NPC自己的目标不放入此栏。',
+        triggers: '填写世界已经向主角留下、但主角尚未回应或执行的剧情扣子，例如邀请、约见或明确请求；不是随机未来预测。',
+        threads: '填写围绕玩家经历、目标或未解决问题持续多轮的长期故事线。具体可执行事项放任务；一次条件节点放触发器；不依赖玩家也会演变的宏观变化放世界进程。',
+        progression: '只填写当前这一段剧情已经形成的移动方向、下一阶段仍缺什么，以及必须停下等待玩家的决策点。它不是剧情预案、任务、长期线程或已发生结果。',
+        processes: '填写即使玩家不参与也会持续演变的组织、政治、战争、经济、舆论或环境变化；可在当前方向中记录最近发生的关键节点。围绕玩家的长期未决故事放长期线程。',
+        causalEffects: '填写“既存起因→必要现实路径→仍在生效的具体后果”。尚未形成的后果标记为形成中；已经发生的节点放时间线，不在这里复述。',
+        timeline: '只填写已经确认发生的历史节点，每件事一次，仅供回顾、不注入正文。仍在继续发展的世界级变化放世界进程，永久结果同步到对应状态模块或事实锚点。',
         planner: '只显示本轮后台对“可以发生”与“不应发生”的判断。',
         injection: '显示当前真正会发送给正文模型的全部注入；设置中未勾选的模块不会出现。小铅笔修改会覆盖下一次正文生成，结算后恢复自动合成。',
         sources: '显示最近一次推演实际读到的角色卡、Persona、酒馆正文和世界书；未列出的世界书没有进入 Planner。',
         worldbookEmpty: '本轮没有可显示的规则命中。若来源应当存在但编译失败，将明确显示 RULE_COMPILE_FAILED。',
     };
-
     const worldbookSectionId = (key) => `worldbookEntry:${encodeURIComponent(String(key || ''))}`;
     const isWorldbookSection = (id) => String(id || '').startsWith('worldbookEntry:');
     function currentWorldbookReport(state) {
@@ -119,13 +122,12 @@
         relationships: { title: '关系', identity: 'identityRelation', fields: [['from','主体'],['to','对象'],['identityRelation','身份关系'],['currentPerception','当前关系认知'],['formationBasis','形成依据'],['boundaries','阶段边界'],['evidence','依据']] },
         knowledge: { title: '信息', identity: 'information', fields: [['information','内容'],['holderIds','持有人'],['cognitiveStatus','认知状态'],['disclosure','公开状态'],['userVisible','玩家可见'],['source','来源/渠道'],['reliability','可靠性'],['evidence','证据'],['discoveryPaths','发现路径'],['maturityConditions','成熟条件']] },
         schedules: { title: '安排', identity: 'title', fields: [['title','事项'],['participantIds','参与者'],['expectedTime','预计时间'],['preconditions','前置条件'],['status','状态'],['source','来源'],['completionResult','完成结果']] },
-        tasks: { title: '任务', identity: 'title', fields: [['title','名称'],['ownerIds','负责人'],['progress','当前进展'],['deadline','截止时间'],['dependencies','前置条件'],['consequences','影响']] },
-        events: { title: '事件', identity: 'title', fields: [['title','名称'],['status','节点状态'],['summary','发生了什么'],['outcome','直接结果'],['location','地点'],['participantIds','相关人物'],['relatedProcessIds','关联进程']] },
-        triggers: { title: '可触发事件', identity: 'title', fields: [['title','名称'],['conditions','触发条件'],['effectsIfTriggered','触发后'],['blockedReasons','尚未触发原因']] },
+        tasks: { title: '主角任务', identity: 'title', fields: [['title','名称'],['questType','主线 / 支线'],['objective','主角目标'],['progress','当前进展'],['deadline','截止时间'],['dependencies','前置条件'],['consequences','影响']] },
+        triggers: { title: '世界剧情扣子', identity: 'title', fields: [['title','名称'],['hook','剧情入口'],['conditions','回应条件'],['effectsIfTriggered','可能影响'],['blockedReasons','尚未回应原因']] },
         threads: { title: '长期事务', identity: 'title', fields: [['title','名称'],['stakes','重要性'],['participantIds','相关人物'],['nextNaturalStep','自然下一步'],['history','已有发展']] },
         processes: { title: '世界进程', identity: 'title', fields: [['title','名称'],['kind','世界级类型'],['drivers','为什么仍在继续'],['decayConditions','可能逐渐淡去'],['resolutionConditions','自然结束条件'],['progress','进度钟'],['currentDirection','目前趋势']] },
         causalEffects: { title: '因果影响', identity: 'result', fields: [['causeRef','起因引用'],['cause','已经发生的起因'],['steps','必要因果路径'],['result','仍在生效的后果'],['affectedIds','影响对象'],['status','影响状态'],['reachCondition','尚缺条件'],['decayConditions','减弱或消失条件']] },
-        timeline: { title: '记录', identity: 'summary', fields: [['summary','发生的事'],['granularity','记忆粒度'],['participants','相关人物'],['location','地点'],['actualChanges','实际变化']] },
+        timeline: { title: '记录', identity: 'summary', fields: [['time','具体时间'],['summary','发生的事'],['granularity','记忆粒度'],['participants','相关人物'],['location','地点'],['actualChanges','实际变化']] },
     };
 
     const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
@@ -454,7 +456,7 @@
         const normalized = key.toLowerCase();
         if (['user','<user>'].includes(normalized)) return WSM.Context?.identityNames?.()?.user || state.identities?.user || '<USER>';
         if (['char','character','<char>'].includes(normalized)) return '相关人物';
-        for (const group of ['characters','organizations','schedules','tasks','events','triggers','threads','processes','causalEffects','knowledge']) {
+        for (const group of ['characters','organizations','schedules','tasks','triggers','threads','processes','causalEffects','knowledge']) {
             const found = (state[group] || []).find((item) => String(item?.id) === key);
             if (found) return found.name || found.title || found.information || found.effect || found.potentialEffect || key;
         }
@@ -481,7 +483,15 @@
         const items = kind === 'task' ? (state.tasks || []) : (state.triggers || []);
         const inactive = kind === 'task' ? new Set(['done', 'failed']) : new Set(['triggered', 'expired']);
         return items.filter((item) => {
+            if (kind === 'task' && /^(?:无|暂无|没有|无待办(?:事项)?|暂无待办(?:事项)?|未明确|不适用|none|n\/?a)[。！!？?、；;\s]*$/i.test(String(item?.title || '').trim())) return false;
             if (inactive.has(item?.status) || item?.userVisible === false) return false;
+            if (kind === 'trigger') {
+                const hookText = [item?.title, item?.hook, ...(Array.isArray(item?.conditions) ? item.conditions : [])]
+                    .map((value) => String(value || '').replace(/<br\s*\/?>/gi, '；').trim()).filter(Boolean).join('；');
+                const establishedEntry = /(?:邀请|邀约|约见|召见|请(?:你|主角|前往|赴|参加)|请求|委托|拜托|要求(?:你|主角|答复|选择)|命令(?:你|主角)|询问(?:你|主角)|追问|等待(?:你|主角)?.{0,12}(?:来电|来信|回复|答复|决定|选择|回应)|需要(?:你|主角).{0,12}(?:决定|选择|回应))/.test(hookText);
+                const speculative = /(?:可能|也许|或许|猜测|大概|或将|产生探究欲|感到担忧|感到不安)/.test(hookText);
+                if (!establishedEntry || speculative) return false;
+            }
             if (item?.userVisible === true || kind === 'trigger') return true;
             const owners = Array.isArray(item?.ownerIds) ? item.ownerIds.map(String) : [];
             return !owners.length || owners.includes('user') || owners.includes(String(state.identities?.user || ''));
@@ -509,14 +519,51 @@
         const cognitiveStatus = String(item?.cognitiveStatus || ((item?.knownBy || []).length ? 'confirmed' : '')).toLowerCase();
         return cognitiveStatus === 'confirmed' && holders.some((id) => userNames.has(String(id || '').trim().toLowerCase()));
     }
-    function intentPanel(module, item, actions = ['focus','intervene','investigate'], level = 'strong') {
+    function dynamicIntentOptions(module, item) {
+        const provided = Array.isArray(item?.actionOptions) ? item.actionOptions : [];
+        const normalized = provided.map((option, index) => ({
+            id: String(option?.id || `option-${index + 1}`).trim(),
+            label: String(option?.label || '').trim().slice(0, 30),
+            intent: String(option?.intent || '').trim().slice(0, 500),
+            description: String(option?.description || '').trim().slice(0, 100),
+            requirements: Array.isArray(option?.requirements) ? option.requirements.filter(Boolean).slice(0, 4) : [],
+        })).filter((option) => option.id && option.label && option.intent).slice(0, 4);
+        if (normalized.length) return normalized;
+        const title = String(item?.title || '当前事项').trim().slice(0, 50);
+        if (module === 'tasks') {
+            const dependency = Array.isArray(item?.dependencies) ? item.dependencies.find(Boolean) : '';
+            return [
+                { id: 'advance', label: `推进「${title}」`, intent: `我准备为“${title}”采取当前条件下最直接可行的一步。`, description: item?.progress ? `从当前进展继续：${String(item.progress).slice(0, 60)}` : '从当前进度继续推进', requirements: [] },
+                ...(dependency ? [{ id: 'resolve-dependency', label: `先处理：${String(dependency).slice(0, 18)}`, intent: `我准备先处理“${title}”的前置条件：${dependency}。`, description: '先解除已知阻碍', requirements: [dependency] }] : []),
+            ];
+        }
+        const hook = String(item?.hook || (Array.isArray(item?.conditions) ? item.conditions[0] : '') || title).trim();
+        const place = String(hook.match(/(?:前往|赴|到|去往|进入|参加)([^，。；]{2,18})/)?.[1] || '').trim();
+        if (/(?:邀请|邀约|约见|召见|前往|赴约|参加)/.test(hook)) return [
+            { id: 'accept-invitation', label: place ? `准备前往${place}` : `接受「${title.slice(0, 18)}」`, intent: `我准备接受这一已知邀约并按现实条件行动：${hook}。`, description: place ? `规划并尝试前往${place}` : '接受邀约并开始准备', requirements: Array.isArray(item?.conditions) ? item.conditions.slice(0, 2) : [] },
+            { id: 'confirm-arrangement', label: '先确认时间与安排', intent: `我准备先向邀请方确认“${title}”的时间、地点和必要条件，再决定如何赴约。`, description: '先补足主角可知的行动条件', requirements: [] },
+        ];
+        if (/(?:请求|委托|拜托)/.test(hook)) return [
+            { id: 'take-request', label: `接下「${title.slice(0, 18)}」`, intent: `我准备接下这项明确请求，并从当前可行的第一步开始：${hook}。`, description: '接受请求并开始行动', requirements: [] },
+            { id: 'ask-request-details', label: '询问目标与限制', intent: `我准备先询问这项请求的目标、时限和限制条件：${hook}。`, description: '确认细节后再行动', requirements: [] },
+        ];
+        if (/(?:询问|追问|答复|回答)/.test(hook)) return [
+            { id: 'answer-directly', label: `直接答复「${title.slice(0, 16)}」`, intent: `我准备根据自己当前知道且愿意公开的信息直接答复：${hook}。`, description: '由主角决定实际说出的内容', requirements: [] },
+            { id: 'clarify-question', label: '先确认对方所问', intent: `我准备先请对方说明具体想知道什么，再决定答复范围：${hook}。`, description: '厘清问题与信息边界', requirements: [] },
+        ];
+        return [
+            { id: 'act-on-hook', label: `着手处理「${title.slice(0, 16)}」`, intent: `我准备针对这个已成立的剧情入口采取与其内容相符的第一步：${hook}。`, description: `从“${title.slice(0, 24)}”的现有条件开始`, requirements: [] },
+            { id: 'check-hook-conditions', label: '先确认现有条件', intent: `我准备先确认“${title}”当前已经成立的条件和可行路径。`, description: '核实现状，不预判结果', requirements: [] },
+        ];
+    }
+    function intentPanel(module, item, _actions, level = 'strong') {
         if (!['tasks', 'triggers'].includes(module) || item?.placeholder === true) return '';
         const id = interactionKey(module, item);
+        const actions = dynamicIntentOptions(module, item);
         if (!id || !actions.length) return '';
         const heading = level === 'strong' ? '玩家意图' : '查询型交互';
-        return `<section class="wsm-choice-panel wsm-intent-panel"><header><b>${icon('choice')}<span>${heading}</span></b><small>只发送尝试，不发送后台原文，不保证结果</small></header><div>${actions.map((action, index) => {
-            const [label, description] = intentActionLabels[action] || [action, '表达玩家意图'];
-            return `<button type="button" class="wsm-choice-button" data-wsm-intent-module="${escape(module)}" data-wsm-intent-item="${escape(id)}" data-wsm-intent-action="${escape(action)}" title="只向正文 AI 发送玩家意图"><span>${index + 1}</span><b>${escape(label)}</b><small>${escape(description)}</small></button>`;
+        return `<section class="wsm-choice-panel wsm-intent-panel"><header><b>${icon('choice')}<span>${heading}</span></b><small>由本轮推演按具体内容生成；只发送尝试，不保证结果</small></header><div>${actions.map((action, index) => {
+            return `<button type="button" class="wsm-choice-button" data-wsm-intent-module="${escape(module)}" data-wsm-intent-item="${escape(id)}" data-wsm-intent-action="${escape(action.id)}" title="只向正文 AI 发送玩家意图"><span>${index + 1}</span><b>${escape(action.label)}</b><small>${escape(action.description || action.intent)}</small></button>`;
         }).join('')}</div></section>`;
     }
     function mapForView(state) {
@@ -635,8 +682,8 @@
             const compiled = WSM.WorldbookCompiler?.getStaticCatalog?.()?.worldRules || [];
             const matched = new Set(state.reasoningAudit?.matchedRules || []);
             const allRules = WSM.Facts?.merge?.([...(state.worldRules || []), ...compiled]) || state.worldRules || [];
-            const rules = allRules.filter((item) => matched.has(item.id) || matched.has(item.factId));
-            return rules.map((item) => `<article class="wsm-rule-card">${escape(displayValue(item.statement || item.factId))}</article>`).join('') || empty('硬规则');
+            const rules = allRules.filter((item) => item?.statement || item?.factId);
+            return rules.map((item) => `<article class="wsm-rule-card${matched.has(item.id) || matched.has(item.factId) ? ' wsm-rule-card-matched' : ''}">${escape(displayValue(item.statement || item.factId))}</article>`).join('') || empty('硬规则');
         }
         if (active === 'resourceConstraints') return (state.resourceConstraints || []).filter((item) => item?.condition && !['expired','satisfied'].includes(item?.status)).map((item) => card(displayValue(item.condition), displayValue(item.scope) || '当前硬条件', `${labeled('约束对象', resolveRef(state, item.subjectId) || item.subjectId)}${labeled('类型', ({ funds: '资金', permission: '权限', capacity: '人手 / 能力', possession: '关键持有物', access: '通行许可', blockade: '地点封锁', mobility: '行动限制', other: '其他' }[item.kind] || item.kind))}${labeled('数量 / 额度', item.amount)}${labeled('不满足时', item.consequence)}`, { icon: 'lock', badge: '当前有效' })).join('') || empty('资源或硬约束');
         if (active === 'map') {
@@ -744,11 +791,10 @@
             }).join('') || empty('NPC活动轨迹');
         }
         if (active === 'relationships') return (state.relationships || []).filter((item) => item?.from && item?.to && (item?.identityRelation || item?.currentPerception || item?.status)).map((item) => card(`${resolveRef(state,item.from)} → ${resolveRef(state,item.to)}`, item.identityRelation || '人物关系', `${labeled('身份关系', item.identityRelation)}${labeled('当前关系认知', item.currentPerception)}${labeled('形成依据', item.formationBasis)}${labeled('阶段边界', item.boundaries)}`, { icon: 'heart', badge: item.truthStatus })).join('') || empty('人物关系');
-        if (active === 'knowledge') return (state.knowledge || []).filter((item) => item?.information).map((item) => card(displayValue(item.information), item.source ? `来源/渠道：${displayValue(item.source)}` : '', `${labeled('持有人', (item.holderIds || item.knownBy || []).map((id) => resolveRef(state,id)))}${labeled('认知状态', item.cognitiveStatus)}${labeled('公开状态', ({ confidential: '保密', restricted: '受限', public: '公开' }[item.disclosure] || item.disclosure))}${labeled('可靠性', item.reliability)}${labeled('玩家界面可见', item.userVisible === true ? '是' : '否')}${labeled('发现路径', item.discoveryPaths)}${labeled('成熟条件', item.maturityConditions)}${userKnowsKnowledge(state, item) ? '' : '<p class="wsm-muted">当前玩家角色未确认该信息；后台保留但不会泄露给正文。</p>'}`, { icon: 'lock', badge: item.cognitiveStatus || item.disclosure })).join('') || empty('知识记录');
+        if (active === 'knowledge') return (state.knowledge || []).filter((item) => item?.information).map((item) => card(displayValue(item.information), item.source ? `来源/渠道：${displayValue(item.source)}` : '', `${labeled('持有人', (item.holderIds || item.knownBy || []).map((id) => resolveRef(state,id)))}${labeled('未知者', (item.unknownTo || []).map((id) => resolveRef(state,id)))}${labeled('怀疑者', (item.suspectedBy || []).map((id) => resolveRef(state,id)))}${labeled('认知状态', item.cognitiveStatus)}${labeled('公开状态', ({ confidential: '保密', restricted: '受限', public: '公开' }[item.disclosure] || item.disclosure))}${labeled('可靠性', item.reliability)}${labeled('玩家界面可见', item.userVisible === true ? '是' : '否')}${labeled('发现路径', item.discoveryPaths)}${labeled('成熟条件', item.maturityConditions)}${userKnowsKnowledge(state, item) ? '' : '<p class="wsm-muted">当前玩家角色尚未确认该信息；系统只把它作为认知边界，禁止正文让玩家角色凭空知晓。</p>'}`, { icon: 'lock', badge: item.cognitiveStatus || item.disclosure })).join('') || empty('知识记录');
         if (active === 'schedules') return (state.schedules || []).filter((item) => item?.title && !['completed','cancelled'].includes(item.status)).map((item) => card(item.title, item.expectedTime ? `预计：${item.expectedTime}` : '时间未明确', `${labeled('参与者', (item.participantIds || []).map((id) => resolveRef(state,id)))}${labeled('前置条件', item.preconditions)}${labeled('状态', item.status)}${labeled('来源', item.source)}`, { icon: 'clock', badge: item.status })).join('') || empty('已有安排');
-        if (active === 'tasks') return userFacingItems(state, 'task').filter((item) => item?.title).map((item) => card(displayValue(item.title), item.deadline ? `截止：${displayValue(item.deadline)}` : '没有明确截止时间', `${labeled('为什么与你有关', item.userRelevance)}${labeled('负责人', (item.ownerIds || []).map((id) => resolveRef(state,id)))}${labeled('当前进展', item.progress)}${labeled('开始前需要', item.dependencies)}${labeled('完成条件（必须核验）', item.completionConditions)}${labeled('已核验完成条件', item.completedConditions)}${labeled('地点引用', item.locationRefs)}${labeled('人物引用', item.characterRefs)}${labeled('规则引用', item.ruleRefs)}${labeled('知识引用', item.knowledgeRefs)}${labeled('资源约束引用', item.resourceConstraintRefs)}${labeled('可能影响', item.consequences)}${intentPanel('tasks', item)}`, { icon: 'check', badge: item.status })).join('') || empty('已成立的主动任务');
-        if (active === 'events') return (state.events || []).map((item) => card(item.title, item.location || '地点未明确', `${labeled('发生了什么', item.summary)}${labeled('直接结果', item.outcome)}${labeled('相关人物', (item.participantIds || []).map((id) => resolveRef(state,id)))}${labeled('关联世界进程', (item.relatedProcessIds || []).map((id) => resolveRef(state,id)))}`, { icon: 'event', badge: item.status })).join('') || empty('世界事件');
-        if (active === 'triggers') return userFacingItems(state, 'trigger').map((item) => card(item.title, '来自当前世界的可互动机会', `${labeled('为什么你能注意到', item.userRelevance)}${labeled('需要满足', item.conditions)}${labeled('满足后可能', item.effectsIfTriggered)}${labeled('目前尚缺', item.blockedReasons)}${intentPanel('triggers', item)}`, { icon: 'flag', badge: item.status })).join('') || empty('当前可触发事件');
+        if (active === 'tasks') return userFacingItems(state, 'task').filter((item) => item?.title).map((item) => card(displayValue(item.title), item.deadline ? `截止：${displayValue(item.deadline)}` : '没有明确截止时间', `${labeled('任务类型', item.questType === 'main' ? '主线' : '支线')}${labeled('主角目标', item.objective)}${labeled('为什么与你有关', item.userRelevance)}${labeled('当前进展', item.progress)}${labeled('开始前需要', item.dependencies)}${labeled('完成条件（必须核验）', item.completionConditions)}${labeled('已核验完成条件', item.completedConditions)}${labeled('可能影响', item.consequences)}${intentPanel('tasks', item)}`, { icon: 'check', badge: item.questType === 'main' ? '主线' : '支线' })).join('') || empty('主角当前没有已成立的任务');
+        if (active === 'triggers') return userFacingItems(state, 'trigger').map((item) => card(item.title, '世界已经留下、等待你回应的剧情扣子', `${labeled('剧情入口', item.hook)}${labeled('为什么你能注意到', item.userRelevance)}${labeled('回应条件', item.conditions)}${labeled('目前尚缺', item.blockedReasons)}${intentPanel('triggers', item)}`, { icon: 'flag', badge: item.status })).join('') || empty('当前没有等待主角回应的剧情扣子');
         if (active === 'threads') return (state.threads || []).map((item) => card(item.title, item.stakes || '长期发展的事务', `${labeled('相关人物', (item.participantIds || []).map((id) => resolveRef(state,id)))}${labeled('自然下一步', item.nextNaturalStep)}${labeled('已有发展', item.history)}`, { icon: 'thread', badge: item.status })).join('') || empty('长期线程');
         if (active === 'progression') {
             const item = state.progression || {};
@@ -769,7 +815,7 @@
             }).join('') || empty('世界进程');
         }
         if (active === 'causalEffects') return (state.causalEffects || []).map((item) => card(item.result || '后果仍在形成', `起因：${item.cause || resolveRef(state,item.causeRef) || '未知'}`, `${labeled('必要因果路径', item.steps)}${labeled('影响对象', (item.affectedIds || []).map((id) => resolveRef(state,id)))}${labeled('尚缺条件', item.reachCondition)}${labeled('减弱或消失条件', item.decayConditions)}`, { icon: 'causal', badge: item.status })).join('') || empty('因果影响');
-        if (active === 'timeline') return `<div class="wsm-timeline">${(state.timeline || []).filter((item) => item?.summary).slice().reverse().map((item, index) => `<article><time>${(state.timeline || []).length - index}</time><div><b>${escape(displayValue(item.summary) || '无摘要')}</b><small>${escape([item.granularity, displayValue(item.location)].filter(Boolean).join(' · '))}</small>${chips((item.participants || []).map((id) => resolveRef(state,id)))}${chips(item.relatedFactIds || [])}</div></article>`).join('')}</div>` || empty('时间线');
+        if (active === 'timeline') return `<div class="wsm-timeline">${(state.timeline || []).filter((item) => item?.summary).slice().reverse().map((item) => `<article><time>${escape(displayValue(item.time || item.date || item.timestamp) || '时间未明确')}</time><div><b>${escape(displayValue(item.summary) || '无摘要')}</b><small>${escape([item.granularity, displayValue(item.location)].filter(Boolean).join(' · '))}</small>${chips((item.participants || []).map((id) => resolveRef(state,id)))}${chips(item.relatedFactIds || [])}</div></article>`).join('')}</div>` || empty('时间线');
         if (active === 'planner') {
             const plan = state.planner?.plan || {};
             const dice = plan.diceRound;
@@ -832,13 +878,13 @@
     }
     const interactionCollections = {
         characters: 'characters', activities: 'npcActivities', relationships: 'relationships', knowledge: 'knowledge',
-        tasks: 'tasks', events: 'events', triggers: 'triggers', threads: 'threads', processes: 'processes',
+        tasks: 'tasks', triggers: 'triggers', threads: 'threads', processes: 'processes',
         causalEffects: 'causalEffects', timeline: 'timeline',
     };
     const interactionActions = {
         characters: ['focus','intervene','investigate'], activities: ['focus','investigate'], relationships: ['focus','investigate'],
-        knowledge: ['focus','investigate'], tasks: ['focus','intervene','investigate'], events: ['focus','intervene','investigate'],
-        triggers: ['focus','intervene','investigate'], threads: ['focus','intervene','investigate'], processes: ['focus','intervene','investigate'],
+        knowledge: ['focus','investigate'], tasks: [],
+        triggers: [], threads: ['focus','intervene','investigate'], processes: ['focus','intervene','investigate'],
         causalEffects: ['focus','investigate'], timeline: ['focus','investigate'],
     };
     function findInteractionItem(state, module, id) {
@@ -860,6 +906,10 @@
         const subject = intentSubject(state, module, item);
         const quoted = `“${subject}”`;
         const guard = '这只表达我的行动意图，不代表行动成功，也不代表我已经知道状态栏中的后台信息。请根据我当前实际掌握的知识、距离、权限、手段、时间、人物能力与世界规则裁定；不要直接把后台记录告诉我，也不要替我作进一步决定。';
+        if (['tasks', 'triggers'].includes(module)) {
+            const option = dynamicIntentOptions(module, item).find((candidate) => candidate.id === action);
+            return `${option?.intent || `我准备回应${quoted}。`}\n\n${guard}`;
+        }
         const messages = {
             characters: {
                 focus: `接下来我想多留意与${quoted}有关的动向和自然互动机会。`,
@@ -882,11 +932,6 @@
                 focus: `接下来我想优先关注任务${quoted}的进展和可行动机会。`,
                 intervene: `我尝试围绕任务${quoted}采取一个当前可行的小步骤；不要直接判定任务完成。`,
                 investigate: `我先查看、询问或调查任务${quoted}的当前进展、阻碍与必要条件。`,
-            },
-            events: {
-                focus: `接下来我想关注事件${quoted}与当前处境的联系。`,
-                intervene: `如果我能够合理接触到事件${quoted}，我尝试以当前身份和能力介入，但不预设结果。`,
-                investigate: `我尝试通过可用渠道了解事件${quoted}目前公开或可调查的情况。`,
             },
             triggers: {
                 focus: `接下来我想留意与${quoted}有关、自己能够察觉的机会。`,
@@ -917,17 +962,13 @@
     async function sendInteractiveIntent(module, itemId, action) {
         if (choiceSending) return;
         const allowed = interactionActions[module] || [];
-        if (!allowed.includes(action)) { notify('这个模块不允许执行该操作', 'error'); return; }
         const state = WSM.Storage.load();
         const item = findInteractionItem(state, module, itemId);
         if (!item) { notify('这张卡片已经随状态更新，请重新选择', 'error'); render(); return; }
+        const dynamicOption = ['tasks', 'triggers'].includes(module) ? dynamicIntentOptions(module, item).find((candidate) => candidate.id === action) : null;
+        if (!allowed.includes(action) && !dynamicOption) { notify('这个模块不允许执行该操作', 'error'); return; }
         if (module === 'knowledge' && !userKnowsKnowledge(state, item)) {
             notify('当前玩家角色尚未确认这条知识，不能通过状态栏发送给正文 AI', 'error');
-            render();
-            return;
-        }
-        if (module === 'events' && item.status !== 'ongoing' && action === 'intervene') {
-            notify('已经发生的事件只能关注或调查，不能直接介入过去', 'error');
             render();
             return;
         }
@@ -955,7 +996,7 @@
             close();
             await new Promise((resolve) => window.setTimeout(resolve, 0));
             sendButton.click();
-            notify(`已发送玩家意图：${intentActionLabels[action]?.[0] || action}`, 'success');
+            notify(`已发送玩家意图：${dynamicOption?.label || intentActionLabels[action]?.[0] || action}`, 'success');
         } finally {
             window.setTimeout(() => { choiceSending = false; }, 800);
         }
@@ -1107,11 +1148,12 @@
             <div class="wsm-shell">
                 <button id="wsm-main-close" class="wsm-icon-button" data-action="close" aria-label="关闭">${icon('close')}</button>
                 <header class="wsm-header"><div class="wsm-actions">
-                    <div class="wsm-read-action"><button id="wsm-read-current" data-action="read-current">读取当前聊天</button><section id="wsm-operation-status" class="wsm-operation-status" role="status" aria-live="polite"><div class="wsm-operation-current"><b></b><small></small></div><div class="wsm-operation-steps" aria-label="读取步骤"></div></section></div><button id="wsm-clear-read" data-action="clear-read">清空读取</button><button data-action="gpt-local-fix">本地重建</button><button data-action="organize">整理状态</button><button data-action="settings">设置</button><button data-action="history">回滚上一轮</button>
+                    <div class="wsm-read-action"><button id="wsm-read-current" data-action="read-current">读取当前聊天</button><section id="wsm-operation-status" class="wsm-operation-status" role="status" aria-live="polite"><div class="wsm-operation-current"><b></b><small></small></div><div class="wsm-operation-steps" aria-label="读取步骤"></div></section></div><button id="wsm-compile-worldbook" data-action="compile-worldbook-main">拆解世界书</button><button id="wsm-clear-read" data-action="clear-read">清空读取</button><button data-action="organize">整理状态</button><button data-action="settings">设置</button><button data-action="history">回滚上一轮</button>
                 </div></header>
                 <nav class="wsm-category-bar">${categoryButtons}</nav>
                 <div class="wsm-body"><nav class="wsm-tabs">${tabs}</nav><main class="wsm-main">
                     <div class="wsm-section-heading"><div id="wsm-section-title"></div><div class="wsm-view-toolbar"><button class="wsm-icon-button wsm-pencil-only" data-action="toggle-edit" aria-label="编辑当前栏目" title="编辑当前栏目">${icon('edit')}</button></div></div>
+                    <p id="wsm-section-help" class="wsm-section-help"></p>
                     <div id="wsm-game-view"></div><textarea id="wsm-editor" spellcheck="false" hidden></textarea>
                     <div class="wsm-editor-actions" hidden><button data-action="save-section">保存修改</button><button data-action="reload">放弃修改</button></div>
                 </main></div>
@@ -1122,7 +1164,7 @@
                     <label class="wsm-check"><input id="wsm-use-tavern-api" type="checkbox">使用酒馆默认 API（当前连接与模型）</label>
                     <p class="wsm-settings-help">启用后无需另填地址、模型或 Key，状态机直接跟随酒馆主界面当前使用的 API；请求只包含状态机所需内容。</p>
                     <label class="wsm-check"><input id="wsm-gpt-mode" type="checkbox">GPT 模式（仅使用 GPT 时勾选）</label>
-                    <p class="wsm-settings-help">默认关闭，Gemini 保持原来的读取方式。勾选后，GPT 会在本地把旧聊天整理成分层时间块并精简世界书冗余元数据，再分成最多 2 批；读取采用流式返回和低推理强度，避免反代超时或隐藏推理耗尽 JSON 输出。完整读取不超过 2 次 API。</p>
+                    <p class="wsm-settings-help">默认关闭。勾选后，GPT 会先在本地整理旧聊天与世界书，再严格执行两次调用：第一次完整提取所有栏目，第二次基于提取结果独立推演；不再追加第三次补读。</p>
                     <div id="wsm-custom-api-fields">
                         <div class="wsm-api-profile-toolbar"><div id="wsm-api-profile-buttons"></div><button type="button" data-action="add-api-profile">＋ 新增 API</button><button type="button" data-action="delete-api-profile">删除当前</button></div>
                         <label>配置名称<input id="wsm-api-profile-name" type="text" placeholder="例如：主线路、备用线路"></label>
@@ -1140,15 +1182,17 @@
                     <div class="wsm-grid"><label>自定义字体<input id="wsm-custom-font-family" type="text" placeholder='例如："Microsoft YaHei", sans-serif'></label><label>字体大小（百分比）<input id="wsm-font-scale" type="number" min="60" max="140" step="5"></label></div>
                     <p class="wsm-settings-help">只调整状态机文字，不改变面板大小和按钮的可点击范围。建议使用 80%–100%。</p>
                     <div class="wsm-grid"><label>单次输出 Tokens<input id="wsm-max-tokens" type="number" min="256" max="16384"></label><label>注入最大字符<input id="wsm-injection-max" type="number" min="500"></label></div>
-                    <p class="wsm-settings-help">Tokens 是模型单次返回 JSON 的上限。普通正文生成前只做本地注入，正文完成后状态机最多 1 次；手动完整读取无论 Gemini 或 GPT 都最多 2 次串行 API，完成第一批即保存断点；世界书手动更新最多 1 次。</p>
+                    <p class="wsm-settings-help">Tokens 是模型单次返回 JSON 的上限。普通轮次由状态机生成前推演 1 次、正文后事实观察 1 次；中间的正文模型是酒馆本身的生成请求。手动读取严格 2 次：全量提取 1 次、独立推演 1 次，不补第三次。</p>
                     <label class="wsm-check"><input id="wsm-enabled" type="checkbox">启用自动状态机</label>
-                    <p class="wsm-settings-help">打开插件或切换聊天不会自动读取和初始化。只有点击“读取并初始化”或“重新读取 / 重建”才会读取完整资料。</p>
+                    <p class="wsm-settings-help">打开插件或切换聊天不会自动读取和初始化。点击“读取当前聊天”建立或刷新状态；世界书拆解必须使用顶部单独按钮。</p>
                     <label class="wsm-check"><input id="wsm-block-on-planner-error" type="checkbox">Planner失败时严格阻止正文生成</label>
                 </section>
                 <section class="wsm-settings-section" data-settings-section="source">
                     <p class="wsm-settings-help">“分解正文”页面只管理聊天正文的读取范围；它与“拆解世界书”的条目选择和缓存独立，不会把聊天楼层列成世界书条目。</p>
+                    <label>聊天总结标签（留空读取全文）<input id="wsm-summary-tag" type="text" maxlength="64" placeholder="meow_FM"></label>
+                    <p class="wsm-settings-help">填写标签名时只读取该标签内部，例如填写 meow_FM 对应 &lt;meow_FM&gt;…&lt;/meow_FM&gt;；留空时读取所选楼层的完整消息正文。</p>
                     <div class="wsm-grid"><label>普通轮次读取最近正文条数（0=全部可见正文）<input id="wsm-recent-messages" type="number" min="0" max="200"></label></div>
-                    <section class="wsm-rollback-panel"><b>${icon('clipboard')}<span>本地全量扫描，按模型选择压缩方式</span></b><p>只有点击“读取当前聊天”或“重新读取 / 重建”时才扫描完整聊天。插件本地遍历每个楼层并保留来源顺序；GPT 模式会把旧正文按时间块压缩、最近正文保留更高分辨率，然后仍只执行最多两批读取。普通生成每轮只在正文结束后结算一次。</p><small>角色卡、Persona、世界书和完整聊天原文不会被替换或删除，仍留在酒馆作为权威来源。运行状态只保留会影响连续性的 L3/L2 和当前 L1。</small></section>
+                    <section class="wsm-rollback-panel"><b>${icon('clipboard')}<span>可配置总结标签或读取全文</span></b><p>标签模式会跳过没有该标签的楼层；留空的全文模式会发送所选楼层的完整内容。世界书原文、角色卡和 Persona 仍作为资料读取，但不会顺带建立世界书拆解缓存。</p><small>需要分类和注入世界书时，请单独点击顶部“拆解世界书”。普通生成每轮只在正文结束后结算一次。</small></section>
                 </section>
                 <section class="wsm-settings-section" data-settings-section="pacing">
                     <p class="wsm-settings-help">控制正文模型每轮允许推进的最大幅度。关闭时保持正文模型原有节奏；该功能不会替模型规划剧情，也不会改变既定事实。</p>
@@ -1164,7 +1208,7 @@
                     <section class="wsm-rollback-panel"><b>${icon('check')}<span>什么时候检定</span></b><p>只有结果同时具备不确定性、现实阻力和有意义的成败后果时才消耗检定骰。日常必然行为、无压力过渡、显而易见的信息、普通对话和一般思考不检定。</p><small>1=大失败，2–10=失败，11–19=成功，20=大成功。</small></section>
                 </section>
                 <section class="wsm-settings-section" data-settings-section="worldbook">
-                    <p class="wsm-settings-help">这里只拆解世界书，不分解聊天正文。原文始终完整保留为唯一来源；勾中的条目会建立段落覆盖、统一事实目录与分类投影，运行时只抑制原生重复并由最终注入器按 factId 发送一次。其他条目继续保持酒馆原本的处理方式。</p>
+                    <p class="wsm-settings-help">这里只配置世界书拆解，不读取聊天。保存勾选后可点击顶部“拆解世界书”或下方立即拆解；该任务与聊天读取互不启动。原文始终完整保留为唯一来源。</p>
                     <label class="wsm-check"><input id="wsm-worldbook-compiler-enabled" type="checkbox">启用拆解世界书</label>
                     <div class="wsm-grid"><label>每轮精简字数<input id="wsm-worldbook-compiler-budget" type="number" min="120" max="2000"></label><label>用于匹配的正文条数<input id="wsm-worldbook-compiler-context" type="number" min="2" max="30"></label></div>
                     <label class="wsm-check"><input id="wsm-worldbook-compiler-fail-closed" type="checkbox" checked disabled>无法确认原文已安全处理时，固定阻止正文请求</label>
@@ -1172,7 +1216,7 @@
                     <div class="wsm-worldbook-compiler-tools"><button type="button" data-action="refresh-worldbook-entries">刷新当前世界书</button><button type="button" data-action="compile-worldbook-entries">立即拆解已勾选条目</button><button type="button" data-action="clear-worldbook-cache">清空拆解缓存</button><small id="wsm-worldbook-compiler-status">尚未运行</small></div>
                     <div id="wsm-worldbook-compiler-list"></div>
                 </section>
-                <section class="wsm-settings-section" data-settings-section="injection"><p class="wsm-settings-help">勾选需要发送给正文模型的状态模块。状态按重要性固定分配到深度 0–4；已拆解世界书沿用原条目的世界书深度。</p><div id="wsm-injection-module-list"></div></section>
+                <section class="wsm-settings-section" data-settings-section="injection"><p class="wsm-settings-help">勾选需要发送给正文模型的状态模块。深度 0–4 表示注入位置和作用时机，不等于 L1/L2/L3 重要等级；已拆解世界书沿用原条目的世界书深度。时间线和完整后台数据库始终不注入。</p><div id="wsm-injection-module-list"></div></section>
                 <section class="wsm-settings-section" data-settings-section="prompts">
                     <p class="wsm-settings-help">总规则控制整体流程；模块规则会发送给 Planner 和结算器。已勾选且非空的模块还会把自己的模块规则连同状态数据一起注入正文模型。</p>
                     <details class="wsm-prompt-group"><summary>${icon('brain')}<span>全局总规则</span></summary><div>
@@ -1197,6 +1241,11 @@
         const [title] = sectionMap[active] || sectionMap.worldbookEmpty;
         renderOperationStatus(WSM.Engine?.getProgress?.() || {}, state);
         $('#wsm-section-title').innerHTML = `<h3>${escape(title)}</h3>`;
+        const help = $('#wsm-section-help');
+        if (help) {
+            help.textContent = sectionHelp[active] || '';
+            help.hidden = !help.textContent;
+        }
         $('#wsm-game-view').innerHTML = renderGameView(state);
         $('#wsm-game-view').hidden = editMode;
         $('#wsm-editor').value = formatHuman(state);
@@ -1292,6 +1341,7 @@
         loadActiveApiProfile();
         $('#wsm-temperature').value = s.temperature ?? 0.15;
         $('#wsm-max-tokens').value = s.maxTokens || 5000;
+        $('#wsm-summary-tag').value = s.summaryTag ?? 'meow_FM';
         $('#wsm-recent-messages').value = s.recentMessages ?? 12;
         $('#wsm-injection-max').value = s.injectionMaxChars || 3500;
         $('#wsm-enabled').checked = s.enabled !== false;
@@ -1399,6 +1449,9 @@
     }
     async function saveSettings(closeAfter = true) {
         const current = WSM.Settings.get();
+        const rawSummaryTag = $('#wsm-summary-tag')?.value.trim() || '';
+        const summaryTag = WSM.Context?.normalizeSummaryTag?.(rawSummaryTag) ?? rawSummaryTag;
+        if (rawSummaryTag && !summaryTag) throw new Error('总结标签格式无效；请只填写标签名，例如 meow_FM，或留空读取全文');
         const injectionModules = WSM.Storage.clone(current.injectionModules || WSM.Defaults.INJECTION_MODULES);
         root.querySelectorAll('[data-module-enabled]').forEach((input) => { injectionModules[input.dataset.moduleEnabled].enabled = input.checked; });
         const modulePrompts = Object.assign({}, current.modulePrompts || WSM.Defaults.MODULE_PROMPTS);
@@ -1432,6 +1485,7 @@
                 allowSceneTransition: $('#wsm-pacing-scene-transition').checked,
                 allowTimeSkip: $('#wsm-pacing-time-skip').checked,
             },
+            summaryTag,
             recentMessages: Math.max(0, Math.min(200, Math.round(Number($('#wsm-recent-messages').value) || 0))),
             injectionMaxChars: Number($('#wsm-injection-max').value || 3500), injectionModules, modulePrompts,
             plannerPrompt: $('#wsm-planner-prompt').value, reconcilerPrompt: $('#wsm-reconciler-prompt').value, worldbookCompiler,
@@ -1450,17 +1504,44 @@
         $('#wsm-history-list').innerHTML = historyHtml();
         $('#wsm-history-modal').hidden = false;
     }
+    async function compileSelectedWorldbooks(button, status) {
+        const config = WSM.WorldbookCompiler.normalizeConfig(WSM.Settings.get().worldbookCompiler);
+        if (!config.enabled || !config.entryKeys.length) {
+            fillSettings('worldbook');
+            notify('请先在“拆解世界书”设置中启用功能并勾选条目', 'error');
+            return null;
+        }
+        const originalLabel = button?.textContent || '拆解世界书';
+        if (button) {
+            button.disabled = true;
+            button.textContent = '正在拆解…';
+        }
+        if (status) status.textContent = '正在一次性拆解已勾选世界书，请等待 API 返回…';
+        try {
+            const result = await WSM.WorldbookCompiler.compileConfig(config, { force: true });
+            // Publish the new cache through the local router. The dedicated
+            // decomposition job still consumes exactly one model request.
+            const source = await WSM.Context.buildSource({ preserveFull: true });
+            const routed = await WSM.WorldbookCompiler.processSource(source, { localOnly: true });
+            const state = WSM.Storage.load();
+            state.runtime ||= {};
+            state.planner ||= {};
+            state.runtime.worldbookInjection = routed?.report || state.runtime.worldbookInjection || null;
+            state.planner.injection = WSM.Injection.compose(state, state.planner?.plan || {}, state.planner?.moduleInjections || {});
+            await WSM.Storage.save(state, 'worldbook-compile', { snapshot: false });
+            await WSM.Engine?.syncRegisteredPrompt?.();
+            render();
+            return result;
+        } finally {
+            if (button) {
+                button.disabled = false;
+                button.textContent = originalLabel;
+            }
+        }
+    }
     async function handleAction(action) {
         if (action === 'close') close();
         if (action === 'organize') $('#wsm-organize-modal').hidden = false;
-        if (action === 'gpt-local-fix') {
-            try {
-                await WSM.Engine.refreshGptLocalState();
-                await WSM.Engine.syncRegisteredPrompt();
-                render();
-                notify('本地重建完成：未调用 API，已从原文恢复客观重大事件并清理主观臆测。', 'success');
-            } catch (error) { notify(`本地重建失败：${error.message}`, 'error'); }
-        }
         if (action === 'close-organize') $('#wsm-organize-modal').hidden = true;
         if (action === 'organize-smart' || action === 'organize-temporary') {
             const temporary = action === 'organize-temporary';
@@ -1535,6 +1616,13 @@
             if (planner?.error) WSM.Engine.reportProgress?.('读取当前聊天失败', 'error', planner.error);
             render();
         }
+        if (action === 'compile-worldbook-main') {
+            const button = root.querySelector('[data-action="compile-worldbook-main"]');
+            try {
+                const result = await compileSelectedWorldbooks(button, null);
+                if (result) notify(`已独立拆解 ${result.count} 条世界书`, 'success');
+            } catch (error) { notify(`拆解失败：${error.message}`, 'error'); }
+        }
         if (action === 'test-api') {
             await saveSettings(false);
             try { await WSM.Api.test(); notify('API 连接成功', 'success'); }
@@ -1595,18 +1683,13 @@
             await saveSettings(false);
             const status = $('#wsm-worldbook-compiler-status');
             const button = root.querySelector('[data-action="compile-worldbook-entries"]');
-            if (status) status.textContent = '正在一次性拆解已勾选世界书，请等待 API 返回…';
-            if (button) button.disabled = true;
             try {
-                const result = await WSM.WorldbookCompiler.compileConfig(WSM.Settings.get().worldbookCompiler, { force: true });
+                const result = await compileSelectedWorldbooks(button, status);
                 await renderWorldbookCompilerSettings(WSM.Settings.get());
-                notify(`已拆解 ${result.count} 条世界书`, 'success');
+                if (result) notify(`已拆解 ${result.count} 条世界书`, 'success');
             } catch (error) {
                 if (status) status.textContent = `拆解失败：${error.message}`;
                 notify(`拆解失败：${error.message}`, 'error');
-            } finally {
-                const currentButton = root.querySelector('[data-action="compile-worldbook-entries"]');
-                if (currentButton) currentButton.disabled = false;
             }
         }
         if (action === 'clear-worldbook-cache') {
@@ -1919,5 +2002,5 @@
         try { return renderGameView(state); }
         finally { active = previous; }
     }
-    WSM.UI = { mount, open, render, _test: { userKnowsKnowledge, buildIntentMessage, intentPanel, interactionActions, displayValue, renderMapForTest } };
+    WSM.UI = { mount, open, render, _test: { userKnowsKnowledge, buildIntentMessage, dynamicIntentOptions, intentPanel, interactionActions, displayValue, renderMapForTest } };
 })();

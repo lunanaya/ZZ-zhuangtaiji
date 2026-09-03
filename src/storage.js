@@ -10,12 +10,12 @@
     };
     const RETENTION_LIMITS = Object.freeze({
         currentConditions: 8, factAnchors: 16, worldRules: 64, resourceConstraints: 10, organizations: 24, locations: 256, routes: 256, characters: 24, npcActivities: 24,
-        relationships: 24, knowledge: 24, schedules: 12, tasks: 8, events: 8, triggers: 6,
+        relationships: 24, knowledge: 24, schedules: 12, tasks: 8, triggers: 6,
         threads: 8, processes: 8, causalEffects: 10, timeline: 24,
     });
-    const MEMORY_MODULES = ['worldRules','factAnchors','resourceConstraints','organizations','characters','npcActivities','relationships','knowledge','schedules','tasks','events','triggers','threads','processes','causalEffects','timeline'];
+    const MEMORY_MODULES = ['worldRules','factAnchors','resourceConstraints','organizations','characters','npcActivities','relationships','knowledge','schedules','tasks','triggers','threads','processes','causalEffects','timeline'];
     const PRIORITY_DEFAULTS = Object.freeze({
-        worldRules: 'L3', factAnchors: 'L3', resourceConstraints: 'L2', organizations: 'L2', characters: 'L2', npcActivities: 'L1', relationships: 'L2', knowledge: 'L2', schedules: 'L2', tasks: 'L2', events: 'L2',
+        worldRules: 'L3', factAnchors: 'L3', resourceConstraints: 'L2', organizations: 'L2', characters: 'L2', npcActivities: 'L1', relationships: 'L2', knowledge: 'L2', schedules: 'L2', tasks: 'L2',
         triggers: 'L1', threads: 'L2', processes: 'L2', causalEffects: 'L2', timeline: 'L1',
     });
     const TRUTH_STATUS_SET = new Set(Object.keys(WSM.Defaults?.TRUTH_STATUSES || {
@@ -123,7 +123,7 @@
     const COVERAGE_PATHS = Object.freeze({
         currentConditions: ['world','currentConditions'], worldRules: ['worldRules'], factAnchors: ['factAnchors'], resourceConstraints: ['resourceConstraints'], organizations: ['organizations'], locations: ['map','locations'],
         characters: ['characters'], npcActivities: ['npcActivities'], relationships: ['relationships'], knowledge: ['knowledge'], schedules: ['schedules'], tasks: ['tasks'],
-        events: ['events'], triggers: ['triggers'], threads: ['threads'], progression: ['progression'], processes: ['processes'], causalEffects: ['causalEffects'], timeline: ['timeline'],
+        triggers: ['triggers'], threads: ['threads'], progression: ['progression'], processes: ['processes'], causalEffects: ['causalEffects'], timeline: ['timeline'],
     });
     function refreshModuleCoverage(state) {
         const previous = state.moduleCoverage && typeof state.moduleCoverage === 'object' && !Array.isArray(state.moduleCoverage) ? state.moduleCoverage : {};
@@ -167,7 +167,6 @@
         if (module === 'characters') return item?.present === true ? 'HOT' : 'WARM';
         if (module === 'npcActivities') return 'HOT';
         if (module === 'tasks') return item?.status === 'active' ? 'HOT' : 'WARM';
-        if (module === 'events') return item?.status === 'ongoing' ? 'HOT' : 'WARM';
         if (module === 'triggers') return item?.status === 'eligible' ? 'HOT' : 'WARM';
         if (module === 'causalEffects') return item?.status === 'active' ? 'HOT' : 'WARM';
         if (module === 'timeline') return 'COLD';
@@ -231,6 +230,15 @@
         const parsed = parseJsonish(input);
         return parsed == null ? input : readableText(parsed);
     }
+    const TECHNICAL_CARD_NAMES = new Set(['truthstatus','basis','sourcerefs','priority','activity','admission','lifecycle','owner','delivery','consumers','updatedrevision']);
+    function isTechnicalOrganizationCard(item) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+        const name = String(item.name || '').replace(/[\s_-]+/g, '').toLowerCase();
+        if (!TECHNICAL_CARD_NAMES.has(name)) return false;
+        const id = String(item.id || '').replace(/[\s_-]+/g, '').toLowerCase();
+        const situation = String(item.situation || '').replace(/[\s_-]+/g, '').toLowerCase();
+        return !id || id === name || situation.startsWith(`${name}:`) || situation.startsWith(`${name}：`);
+    }
     function semanticRecent(values, limit, keyOf = itemKey) {
         const kept = [];
         (Array.isArray(values) ? values : []).slice().reverse().forEach((item, reverseIndex) => {
@@ -243,6 +251,9 @@
         return kept.slice(0, limit).reverse().map(({ item }) => item);
     }
     function hasText(value) { return String(value ?? '').trim().length > 0; }
+    function isNegativePlaceholder(value) {
+        return /^(?:无|暂无|没有|无待办(?:事项)?|暂无待办(?:事项)?|未明确|不适用|none|n\/?a)[。！!？?、；;\s]*$/i.test(String(value ?? '').trim());
+    }
     function validMemoryItem(module, item) {
         if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
         if (module === 'worldRules') return hasText(item.statement);
@@ -254,8 +265,7 @@
         if (module === 'relationships') return hasText(item.from) && hasText(item.to) && item.from !== item.to && hasText(item.identityRelation || item.currentPerception || item.status || item.type);
         if (module === 'knowledge') return hasText(item.information);
         if (module === 'schedules') return hasText(item.title) && !['cancelled','completed'].includes(String(item.status || '').toLowerCase());
-        if (module === 'tasks') return hasText(item.title);
-        if (module === 'events') return hasText(item.title) && hasText(item.summary || item.outcome);
+        if (module === 'tasks') return hasText(item.title) && !isNegativePlaceholder(item.title);
         if (module === 'triggers') return hasText(item.title) && (hasText(item.userRelevance) || (item.conditions || []).some(hasText));
         if (module === 'threads') return hasText(item.title) && hasText(item.stakes || item.nextNaturalStep || item.status);
         if (module === 'processes') return hasText(item.title) && hasText(item.currentDirection || item.status);
@@ -273,7 +283,7 @@
         if (module === 'relationships') return `${item?.from || ''}>${item?.to || ''}`;
         if (module === 'knowledge') return item?.information;
         if (module === 'schedules') return item?.id || item?.title;
-        if (module === 'tasks' || module === 'events' || module === 'triggers' || module === 'threads' || module === 'processes') return item?.title;
+        if (module === 'tasks' || module === 'triggers' || module === 'threads' || module === 'processes') return item?.title;
         if (module === 'causalEffects') return item?.causeRef || `${item?.cause || ''}>${item?.result || ''}`;
         if (module === 'timeline') return item?.summary;
         return itemKey(item, index);
@@ -322,9 +332,12 @@
             const first = group[0];
             const last = group.at(-1);
             const summary = group.map((item) => String(item?.summary || '').trim()).filter(Boolean).join('；').slice(0, 220);
+            const firstTime = String(first?.time || first?.at || first?.date || '').trim();
+            const lastTime = String(last?.time || last?.at || last?.date || '').trim();
             compressed.push({
                 id: `timeline-summary-${String(first?.id || index)}-${String(last?.id || index)}`,
                 summary: summary || '较早阶段的重要发展已合并',
+                time: firstTime && lastTime && firstTime !== lastTime ? `${firstTime}—${lastTime}` : (lastTime || firstTime),
                 priority: group.some((item) => String(item?.priority || '').toUpperCase() === 'L2') ? 'L2' : 'L1',
                 granularity: 'phase',
                 participants: trimArray(group.flatMap((item) => item?.participants || []), 10),
@@ -448,8 +461,6 @@
             .map((item) => trimFields(item, { participantIds: 8, preconditions: 8, basis: 4, sourceRefs: 6 }));
         state.tasks = activeFirst(removeExpiredL1(state.tasks.filter((item) => !['done','failed'].includes(item?.status)), revision, (item) => item?.status === 'active'), RETENTION_LIMITS.tasks, (item) => ['active','blocked'].includes(item?.status), (item) => String(item?.title || item?.id || ''))
             .map((item) => trimFields(item, { ownerIds: 6, dependencies: 8, locationRefs: 8, characterRefs: 8, ruleRefs: 8, knowledgeRefs: 8, resourceConstraintRefs: 8, completionConditions: 8, completedConditions: 8, consequences: 4, sourceRefs: 4 }));
-        state.events = activeFirst(removeExpiredL1(state.events, revision, (item) => item?.status === 'ongoing'), RETENTION_LIMITS.events, (item) => item?.status === 'ongoing', (item) => String(item?.title || item?.id || ''))
-            .map((item) => trimFields(item, { participantIds: 8, relatedProcessIds: 4, sourceRefs: 4 }));
         state.triggers = activeFirst(state.triggers.filter((item) => !['triggered','expired'].includes(item?.status)), RETENTION_LIMITS.triggers, (item) => item?.status === 'eligible', (item) => String(item?.title || item?.id || ''))
             .map((item) => trimFields(item, { conditions: 4, effectsIfTriggered: 4, blockedReasons: 3, sourceRefs: 4 }));
         state.threads = activeFirst(state.threads.filter((item) => item?.status !== 'resolved'), RETENTION_LIMITS.threads, (item) => item?.status === 'open', (item) => String(item?.title || item?.id || ''))
@@ -778,7 +789,7 @@
             location.parentId = parent.id;
         });
         // Older initialized revisions may already contain explicit location
-        // fields in timeline/events/character snapshots while their dedicated
+        // fields in timeline/character snapshots while their dedicated
         // map array only contains a country root. Rebuild the spatial index
         // locally on load; this must never require another API read.
         const countryRoots = state.map.locations.filter((item) => item.type === 'country' && !item.parentId);
@@ -804,7 +815,6 @@
         };
         const savedLocationRecords = [
             ...(Array.isArray(state.timeline) ? state.timeline.slice(-16) : []),
-            ...(Array.isArray(state.events) ? state.events : []),
             ...(Array.isArray(state.npcActivities) ? state.npcActivities : []),
             ...(Array.isArray(state.characters) ? state.characters : []),
         ];
@@ -842,6 +852,50 @@
         ['worldRules','factAnchors','resourceConstraints','organizations','characters','npcActivities','relationships','knowledge','schedules','tasks','events','triggers','threads','processes','causalEffects','timeline','lockedPaths'].forEach((key) => {
             state[key] = Array.isArray(state[key]) ? state[key] : [];
         });
+        // v24 removes the redundant world-events module. Preserve every old
+        // card locally: completed nodes become timeline history, while a card
+        // explicitly marked ongoing becomes a current world process.
+        const legacyEvents = state.events.map((item) => {
+            const next = Object.assign({}, item || {});
+            const developments = Array.isArray(next.developments) ? next.developments.filter(Boolean) : [];
+            next.title = readableText(next.title || next.name);
+            next.summary = readableText(next.summary || developments.at(-1) || next.description);
+            next.outcome = readableText(next.outcome);
+            next.status = String(next.status || '').toLowerCase();
+            next.sourceRefs = stringList(next.sourceRefs);
+            return next;
+        }).filter((item) => item.title || item.summary || item.outcome);
+        const semanticKey = (value) => String(value || '').replace(/[\s，。；：:、！？!?]/g, '').toLowerCase();
+        const processKeys = new Set(state.processes.map((item) => semanticKey(item?.title || item?.currentDirection)).filter(Boolean));
+        const timelineKeys = new Set(state.timeline.map((item) => semanticKey(item?.summary)).filter(Boolean));
+        legacyEvents.forEach((item, index) => {
+            const summary = [item.summary || item.title, item.outcome && item.outcome !== item.summary ? `结果：${item.outcome}` : ''].filter(Boolean).join('；');
+            if (item.status === 'ongoing') {
+                const key = semanticKey(item.title || summary);
+                if (!key || processKeys.has(key)) return;
+                state.processes.push({
+                    id: item.id || `legacy-event-process-${index + 1}`, title: item.title || item.summary,
+                    kind: item.kind || 'world_change', status: 'active', drivers: stringList(item.drivers),
+                    decayConditions: stringList(item.decayConditions), resolutionConditions: stringList(item.resolutionConditions),
+                    progress: item.progress || '', currentDirection: summary, participantIds: stringList(item.participantIds), location: readableText(item.location),
+                    priority: item.priority || 'L2', activity: item.activity || 'WARM', truthStatus: item.truthStatus || 'confirmed',
+                    basis: stringList(item.basis).length ? stringList(item.basis) : ['由旧版“世界事件”卡片无损迁移'], sourceRefs: item.sourceRefs,
+                });
+                processKeys.add(key);
+                return;
+            }
+            const key = semanticKey(summary);
+            if (!key || timelineKeys.has(key)) return;
+            state.timeline.push({
+                id: item.id ? `timeline-${item.id}` : `legacy-event-timeline-${index + 1}`, summary, granularity: 'event',
+                time: readableText(item.time || item.at || item.date), participants: stringList(item.participantIds), location: readableText(item.location),
+                priority: item.priority || 'L2', activity: 'COLD', truthStatus: item.truthStatus || 'confirmed',
+                basis: stringList(item.basis).length ? stringList(item.basis) : ['由旧版“世界事件”卡片无损迁移'],
+                sourceRefs: item.sourceRefs, evidence: item.sourceRefs,
+            });
+            timelineKeys.add(key);
+        });
+        state.events = [];
         const inferSeason = () => {
             const display = String(state.world.time.display || '');
             const named = display.match(/[春夏秋冬]季?/)?.[0];
@@ -1042,19 +1096,6 @@
             delete next.at;
             return next;
         });
-        state.events = state.events.map((item) => {
-            const next = Object.assign({}, item);
-            const legacyDevelopments = Array.isArray(next.developments) ? next.developments.filter(Boolean) : [];
-            next.status = ['ongoing','occurred'].includes(next.status) ? next.status : (next.status === 'resolved' ? 'occurred' : 'ongoing');
-            next.title = readableText(next.title || next.name);
-            next.summary = readableText(next.summary || legacyDevelopments.at(-1) || next.description);
-            next.outcome = readableText(next.outcome);
-            next.relatedProcessIds = Array.isArray(next.relatedProcessIds) ? next.relatedProcessIds : [];
-            next.sourceRefs = Array.isArray(next.sourceRefs) ? next.sourceRefs : [];
-            delete next.developments;
-            delete next.startedAt;
-            return next;
-        });
         state.causalEffects = state.causalEffects.map((item) => {
             const next = Object.assign({}, item);
             if (next.status === 'arrived' || next.status === 'reached') next.status = 'active';
@@ -1081,9 +1122,26 @@
         });
         state.triggers = state.triggers.map((item) => { const next = { ...item }; delete next.choices; return next; });
         state.processes = state.processes.map((item) => { const next = Object.assign({}, item); delete next.lastUpdatedAt; return next; });
-        state.timeline = state.timeline.map((item) => { const next = Object.assign({}, item); next.summary = readableText(next.summary); next.relatedFactIds = stringList(next.relatedFactIds); delete next.at; return next; });
+        state.timeline = state.timeline.map((item) => { const next = Object.assign({}, item); next.time = readableText(next.time || next.at || next.date || next.timestamp); next.summary = readableText(next.summary); next.relatedFactIds = stringList(next.relatedFactIds); delete next.at; return next; });
+        const chatByRef = new Map();
+        (Array.isArray(context()?.chat) ? context().chat : []).forEach((message, index) => {
+            [message?.id, message?.index, message?.send_date, message?.sendDate, index].filter((value) => value !== undefined && value !== null && String(value) !== '').forEach((value) => chatByRef.set(`chat:${String(value)}`, message));
+        });
+        const storyTimeFromMessage = (message) => {
+            const content = String(message?.content ?? message?.mes ?? '');
+            return readableText(
+                content.match(/<time>\s*([^<\r\n]+?)\s*<\/time>/i)?.[1]
+                || content.match(/(?:^|\n)\s*time\s*[：:]\s*([^<\r\n]+)/i)?.[1]
+                || content.match(/(?:^|\n)\s*(?:时间地点|时间)\s*[：:]\s*([^<\r\n，,]+)/i)?.[1],
+            );
+        };
+        state.timeline.forEach((item) => {
+            if (item.time) return;
+            const sourceMessage = stringList(item.sourceRefs || item.evidence).map((ref) => chatByRef.get(ref)).find(Boolean);
+            item.time = storyTimeFromMessage(sourceMessage);
+        });
         state.factAnchors = state.factAnchors.map((item) => ({ ...item, fact: readableText(item?.fact), scope: readableText(item?.scope) }));
-        state.organizations = state.organizations.map((item) => ({
+        state.organizations = state.organizations.filter((item) => !isTechnicalOrganizationCard(item)).map((item) => ({
             ...item, name: readableText(item?.name), kind: readableText(item?.kind || 'other'), leaderIds: stringList(item?.leaderIds),
             jurisdiction: readableText(item?.jurisdiction), goals: stringList(item?.goals), resources: stringList(item?.resources),
             situation: readableText(item?.situation), relationshipRefs: stringList(item?.relationshipRefs),
@@ -1140,7 +1198,6 @@
             knowledge: (item) => item.information,
             schedules: (item) => item.title,
             tasks: (item) => item.title,
-            events: (item) => item.summary || item.outcome || item.title,
             triggers: (item) => item.title,
             threads: (item) => item.title,
             processes: (item) => item.currentDirection || item.title,
@@ -1162,7 +1219,7 @@
             });
         });
         ensureRelationshipCoverage(state);
-        state.schemaVersion = 23;
+        state.schemaVersion = 24;
         return refreshModuleCoverage(compactState(state));
     }
     function load() {
@@ -1334,6 +1391,12 @@
         const snapshot = clone(state || {});
         delete snapshot.planner;
         delete snapshot.runtime;
+        const ledger = (Array.isArray(details.ledger) ? details.ledger : []).map((change, index) => ({
+            ...clone(change),
+            changeId: String(change?.changeId || `two-pass:${Date.now()}:${index}`),
+            sourceRefs: Array.isArray(change?.sourceRefs) ? change.sourceRefs.map(String).filter(Boolean) : [],
+            recordedAt: Number(change?.recordedAt || Date.now()),
+        }));
         const messages = Object.fromEntries((Array.isArray(details.messages) ? details.messages : []).map((message, index) => {
             const id = String(message?.id ?? index);
             return [id, {
@@ -1344,7 +1407,7 @@
                 contentHash: String(message?.contentHash || ''),
                 processed: true,
                 status: 'covered_by_two_pass',
-                changeIds: [],
+                changeIds: ledger.filter((change) => change.sourceRefs.includes(`chat:${id}`)).map((change) => change.changeId),
             }];
         }));
         box.historyMemory = {
@@ -1357,6 +1420,7 @@
             boundary: clone(details.boundary || null),
             baseline: { createdAt: Date.now(), boundary: clone(details.boundary || null), state: snapshot },
             messages,
+            ledger,
             audit: clone(details.audit || null),
         };
         await persist();
@@ -1570,7 +1634,6 @@
             const status = String(item?.status || '').toLowerCase();
             if (module === 'characters') return item?.present === true;
             if (module === 'tasks') return ['pending','active','blocked'].includes(status);
-            if (module === 'events') return status === 'ongoing';
             if (module === 'triggers') return ['armed','eligible'].includes(status);
             if (module === 'threads') return ['open','paused'].includes(status);
             if (module === 'processes') return ['active','decaying','paused'].includes(status);

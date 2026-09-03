@@ -69,8 +69,13 @@
             return objectKeyCount(value, STATE_ROOT_KEYS) >= 3 ? 50 : 0;
         }
         if (contract === 'evidence') {
-            if (value.evidence && typeof value.evidence === 'object') return 100;
-            if (value.digest && typeof value.digest === 'object') return 95;
+            if (value.evidence && typeof value.evidence === 'object') return 100 + Math.min(30, objectKeyCount(value.evidence, EVIDENCE_ROOT_KEYS));
+            if (value.digest && typeof value.digest === 'object') return 95 + Math.min(30, objectKeyCount(value.digest, EVIDENCE_ROOT_KEYS));
+            for (let index = 1; index < envelopes.length; index += 1) {
+                const nested = envelopes[index];
+                if (nested.evidence && typeof nested.evidence === 'object') return 90 + Math.min(30, objectKeyCount(nested.evidence, EVIDENCE_ROOT_KEYS));
+                if (nested.digest && typeof nested.digest === 'object') return 85 + Math.min(30, objectKeyCount(nested.digest, EVIDENCE_ROOT_KEYS));
+            }
             return objectKeyCount(value, EVIDENCE_ROOT_KEYS) >= 3 ? 50 : 0;
         }
         if (contract === 'digest') {
@@ -78,6 +83,21 @@
             return objectKeyCount(value, EVIDENCE_ROOT_KEYS) >= 3 ? 50 : 0;
         }
         return 1;
+    }
+    function contractRichness(value, contract) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return 0;
+        const root = contract === 'evidence'
+            ? (value.evidence || value.digest || value.result?.evidence || value.result?.digest || value.data?.evidence || value.data?.digest || value.output?.evidence || value.output?.digest || value)
+            : contract === 'state'
+                ? (value.state || value)
+                : value;
+        if (!root || typeof root !== 'object' || Array.isArray(root)) return 0;
+        const keys = contract === 'evidence' ? EVIDENCE_ROOT_KEYS : STATE_ROOT_KEYS;
+        const returnedKeys = keys.filter((key) => Object.prototype.hasOwnProperty.call(root, key)).length;
+        const populatedItems = keys.reduce((sum, key) => sum + (Array.isArray(root[key]) ? Math.min(32, root[key].length) : (root[key] && typeof root[key] === 'object' ? 1 : 0)), 0);
+        let serializedLength = 0;
+        try { serializedLength = JSON.stringify(root).length; } catch (_) { /* cyclic provider object */ }
+        return returnedKeys * 1000000 + populatedItems * 10000 + Math.min(9999, serializedLength);
     }
     function contractLabel(contract) {
         if (contract === 'state') return '包含 state 的世界状态结果';
@@ -140,15 +160,21 @@
             // precede the model's final answer.
             if (score >= bestScore && score > 0) { best = candidate; bestScore = score; }
         });
-        if (best) return best;
         // Providers sometimes return every inner card correctly but omit only
         // the final array/object closers. Recover complete module boundaries
-        // locally before reporting dozens of unrelated inner JSON objects.
+        // locally before reporting dozens of unrelated inner JSON objects. Do
+        // this even when an earlier, tiny evidence example was balanced: the
+        // previous early return selected that example and discarded the later
+        // real answer merely because its final closers were truncated.
         // This is deterministic and never spends another API call.
         if (cleaned && ['state','evidence'].includes(contract)) {
             const repaired = repairTruncatedJson(cleaned, contract);
-            if (repaired) return repaired;
+            if (repaired) {
+                const repairedScore = contractScore(repaired, contract);
+                if (!best || repairedScore > bestScore || (repairedScore === bestScore && contractRichness(repaired, contract) > contractRichness(best, contract))) return repaired;
+            }
         }
+        if (best) return best;
         const roots = [...new Set(candidates.flatMap((candidate) => Object.keys(candidate || {}).slice(0, 8)))].slice(0, 12);
         throw new Error(`Planner 返回了 ${candidates.length} 个 JSON，但没有找到${contractLabel(contract)}${roots.length ? `；检测到根字段：${roots.join('、')}` : ''}`);
     }
@@ -317,13 +343,33 @@
         }
         return error instanceof Error ? error : new Error(message);
     }
-    function structuredJsonSchema() {
+    function structuredJsonSchema(contract = '') {
+        const arrayProperty = { type: 'array', items: {} };
+        const evidenceKeys = [
+            'sourceRefs','canon','worldRules','chronology','timeline','anchors','resourceConstraints','organizations','characters',
+            'npcActivities','relationships','knowledge','schedules','locations','tasks','events','triggers','threads','processes',
+            'causal','progression','currentScene','uncertainties','matchedRules','derivedFacts','conflicts','staleStates',
+            'actorFeasibility','causalCandidates','moduleCoverage','moduleDecisions',
+        ];
+        const value = contract === 'evidence' ? {
+            type: 'object',
+            properties: {
+                evidence: {
+                    type: 'object',
+                    properties: Object.fromEntries(evidenceKeys.map((key) => [key, arrayProperty])),
+                    required: evidenceKeys,
+                    additionalProperties: true,
+                },
+            },
+            required: ['evidence'],
+            additionalProperties: true,
+        } : { type: 'object', additionalProperties: true };
         return {
             name: 'world_state_machine_result',
             description: 'World State Machine JSON result',
             strict: false,
             returnInvalid: true,
-            value: { type: 'object', additionalProperties: true },
+            value,
         };
     }
     function tuneTavernGptRequest(context, messages, settings = {}) {
@@ -371,7 +417,7 @@
         // a timeout before the first token is emitted.
         return Math.max(256, Math.min(16384, Number.isFinite(requested) ? Math.round(requested) : 5000));
     }
-    async function tavernAttempt(context, messages, settings, parentSignal, timeoutMs, structured = false) {
+    async function tavernAttempt(context, messages, settings, parentSignal, timeoutMs, structured = false, jsonContract = '') {
         const removeTuning = tuneTavernGptRequest(context, messages, settings);
         const attempt = attemptSignal(parentSignal, timeoutMs);
         try {
@@ -379,7 +425,7 @@
                 prompt: messages,
                 responseLength: Number(settings.maxTokens || 5000),
                 trimNames: false,
-                ...(structured ? { jsonSchema: structuredJsonSchema() } : {}),
+                ...(structured ? { jsonSchema: structuredJsonSchema(jsonContract) } : {}),
             }), attempt.signal);
         } catch (error) {
             if (error?.name === 'AbortError' && !parentSignal?.aborted) throw new Error(`Planner API 单次请求超时（${Math.round(timeoutMs / 1000)} 秒）`);
@@ -395,7 +441,7 @@
         for (let index = 0; index < budgets.length; index += 1) {
             const maxTokens = budgets[index];
             try {
-                const content = await tavernAttempt(context, messages, { ...settings, maxTokens }, parentSignal, timeoutMs, structured);
+                const content = await tavernAttempt(context, messages, { ...settings, maxTokens }, parentSignal, timeoutMs, structured, meta.jsonContract || '');
                 return { content, maxTokens };
             } catch (error) {
                 lastError = error;
@@ -417,12 +463,16 @@
         const startedAt = Date.now();
         let effectiveMaxTokens = Number(settings.maxTokens || 5000);
         try {
-            // State-machine calls always require JSON. Start with ST's native
-            // structured generation instead of spending the first attempt on a
-            // less reliable free-form JSON response.
+            // Source-reading calls deliberately receive the model's JSON text and
+            // validate it locally. Several SillyTavern/provider combinations reject
+            // the large evidence jsonSchema with HTTP 400 before the model is ever
+            // called. The reader has a strict two-call budget, so an incompatible
+            // structured attempt must not consume one of those calls. Smaller
+            // state-update calls can still use ST's native structured generation.
+            const useStructuredGeneration = jsonContract !== 'evidence';
             const firstAttempt = singleAttempt
-                ? { content: await tavernAttempt(context, messages, settings, signal, timeoutMs, true), maxTokens: effectiveMaxTokens }
-                : await tavernAttemptWithQuotaBackoff(context, messages, settings, signal, timeoutMs, true, meta);
+                ? { content: await tavernAttempt(context, messages, settings, signal, timeoutMs, useStructuredGeneration, jsonContract), maxTokens: effectiveMaxTokens }
+                : await tavernAttemptWithQuotaBackoff(context, messages, settings, signal, timeoutMs, useStructuredGeneration, { ...meta, jsonContract });
             effectiveMaxTokens = firstAttempt.maxTokens;
             const content = firstAttempt.content;
             if (!String(content || '').trim()) throw new Error('酒馆默认 API 返回了空内容');

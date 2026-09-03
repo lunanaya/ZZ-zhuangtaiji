@@ -53,6 +53,52 @@
             char: '',
         };
     }
+    function visibleMessageContent(message) {
+        const raw = String(message?.mes ?? message?.content ?? '');
+        if (!raw) return '';
+        let content = raw;
+
+        // If the model explicitly wrapped its final answer, that boundary is
+        // stronger than any heuristic. Accept the common wrappers used by
+        // reasoning presets and prompt templates.
+        const finalBlocks = [];
+        const finalPattern = /<(response|final|answer|正文)(?:\s[^>]*)?>([\s\S]*?)<\/\1>/gi;
+        let finalMatch;
+        while ((finalMatch = finalPattern.exec(content)) !== null) {
+            const value = text(finalMatch[2]);
+            if (value) finalBlocks.push(value);
+        }
+        if (finalBlocks.length) content = finalBlocks.join('\n');
+        else {
+            const markerMatches = [...content.matchAll(/(?:^|\n)\s*\[(?:response|final|answer|正文)\]\s*/gi)];
+            const marker = markerMatches.at(-1);
+            if (marker) content = content.slice((marker.index || 0) + marker[0].length);
+        }
+
+        // SillyTavern normally stores parsed reasoning separately in extra.
+        // Remove an exact residual copy even if its original XML tags were
+        // stripped by a preset or formatter before the plugin sees the chat.
+        const separateReasoning = [
+            message?.extra?.reasoning,
+            message?.extra?.reasoning_content,
+            message?.extra?.thinking,
+            message?.reasoning,
+            message?.reasoning_content,
+            message?.thinking,
+        ].map((value) => String(value ?? '')).filter((value) => value.trim());
+        separateReasoning.forEach((reasoning) => {
+            content = content.split(reasoning).join('\n');
+        });
+
+        // Cover both XML-like reasoning wrappers and the names most commonly
+        // used by reasoning-capable providers. The visible final response and
+        // story metadata tags are intentionally left intact.
+        ['thinking', 'think', 'analysis', 'reasoning', 'thought', 'chain_of_thought'].forEach((tag) => {
+            const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            content = content.replace(new RegExp(`<${escaped}(?:\\s[^>]*)?>[\\s\\S]*?<\\/${escaped}>`, 'gi'), '\n');
+        });
+        return text(content);
+    }
     function normalizeMessage(message, index, options = {}) {
         const hidden = message?.is_system === true;
         return {
@@ -64,7 +110,7 @@
                 ? (message?.is_user ? 'user' : 'assistant')
                 : (hidden ? 'system' : (message?.is_user ? 'user' : 'assistant')),
             name: text(message?.name),
-            content: text(message?.mes ?? message?.content),
+            content: visibleMessageContent(message),
             index,
             hidden,
             timestamp: text(message?.send_date ?? message?.extra?.gen_id ?? ''),
@@ -439,5 +485,5 @@
         for (let i = 0; i < raw.length; i += 1) hash = Math.imul(hash ^ raw.charCodeAt(i), 16777619);
         return (hash >>> 0).toString(16);
     }
-    WSM.Context = { context, chat, messagesByIds, latestUserMessage, latestAssistantMessage, meowMessage, recentFullTextMessage, summaryContent, normalizeSummaryTag, identityNames, buildSource, sourceFingerprint, readWorldbook, listWorldbookEntries, listEnabledWorldNames, worldbookEntryKey, _test: { normalizeEntries, normalizeMessage, meowFMContent, summaryContent, normalizeSummaryTag, recentFullTextMessage } };
+    WSM.Context = { context, chat, messagesByIds, latestUserMessage, latestAssistantMessage, meowMessage, recentFullTextMessage, summaryContent, normalizeSummaryTag, identityNames, buildSource, sourceFingerprint, readWorldbook, listWorldbookEntries, listEnabledWorldNames, worldbookEntryKey, _test: { normalizeEntries, normalizeMessage, visibleMessageContent, meowFMContent, summaryContent, normalizeSummaryTag, recentFullTextMessage } };
 })();

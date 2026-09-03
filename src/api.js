@@ -502,7 +502,14 @@
     async function complete(system, payload, options = {}) {
         const callBudget = consumeCallBudget(options);
         const settings = WSM.Settings.get();
-        const timeoutMs = Math.max(180000, Number(settings.timeoutMs || 0));
+        // Full initialization may legitimately need several minutes, while an
+        // ordinary one-turn delta must never leave a modal hanging that long.
+        // A task-level timeout is therefore allowed to be shorter than the
+        // legacy 180-second initialization floor.
+        const taskTimeout = Number(options.timeoutMs || 0);
+        const timeoutMs = taskTimeout > 0
+            ? Math.max(5000, taskTimeout)
+            : Math.max(180000, Number(settings.timeoutMs || 0));
         const maxTokens = outputTokens(settings, options);
         const requestSettings = Object.assign({}, settings, { maxTokens });
         const messages = [

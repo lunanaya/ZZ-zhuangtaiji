@@ -39,6 +39,7 @@
     let choiceSending = false;
     let activeMapMode = 'known';
     let activeMapSearch = '';
+    let turnReadPopupTimer = null;
     const dynamicWorldbookSections = new Set();
     const categories = {
         map: { icon: 'map', label: '场景地图', sections: ['map'] },
@@ -131,6 +132,54 @@
     };
 
     const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
+    function ensureTurnReadPopup() {
+        let popup = document.getElementById('wsm-turn-read-popup');
+        if (popup) return popup;
+        popup = document.createElement('div');
+        popup.id = 'wsm-turn-read-popup';
+        popup.className = 'wsm-turn-read-popup';
+        popup.hidden = true;
+        popup.setAttribute('role', 'dialog');
+        popup.setAttribute('aria-modal', 'true');
+        popup.setAttribute('aria-live', 'polite');
+        popup.innerHTML = `<div class="wsm-turn-read-card"><span class="wsm-turn-read-spinner" aria-hidden="true"></span><div><strong data-turn-read-title>正在读取上一轮正文</strong><p data-turn-read-details>正在准备状态增量…</p><small data-turn-read-status>读取状态：API 1/1</small></div></div>`;
+        document.body.appendChild(popup);
+        return popup;
+    }
+    function turnReadPopupView(progress = {}) {
+        const state = String(progress.state || 'running');
+        return {
+            state,
+            title: progress.message || (state === 'running' ? '正在读取上一轮正文' : '读取完成'),
+            details: progress.details || '正在推理并更新插件现有内容…',
+            status: state === 'running' ? '读取状态：进行中 · API 1/1'
+                : (state === 'success' ? '读取状态：已完成' : '读取状态：读取失败'),
+            closeDelay: state === 'running' ? null : (state === 'success' ? 450 : 1800),
+        };
+    }
+    function updateTurnReadPopup(progress = {}) {
+        const popup = ensureTurnReadPopup();
+        const view = turnReadPopupView(progress);
+        const state = view.state;
+        if (turnReadPopupTimer) {
+            window.clearTimeout(turnReadPopupTimer);
+            turnReadPopupTimer = null;
+        }
+        popup.dataset.state = state;
+        popup.hidden = false;
+        const title = popup.querySelector('[data-turn-read-title]');
+        const details = popup.querySelector('[data-turn-read-details]');
+        const status = popup.querySelector('[data-turn-read-status]');
+        if (title) title.textContent = view.title;
+        if (details) details.textContent = view.details;
+        if (status) status.textContent = view.status;
+        if (state !== 'running') {
+            turnReadPopupTimer = window.setTimeout(() => {
+                popup.hidden = true;
+                turnReadPopupTimer = null;
+            }, view.closeDelay);
+        }
+    }
     const formatDuration = (milliseconds) => {
         const seconds = Math.max(0, Number(milliseconds || 0)) / 1000;
         if (seconds < 60) return `${seconds.toFixed(1)} 秒`;
@@ -1024,8 +1073,6 @@
     function renderSettingsTabs() {
         root.querySelectorAll('[data-settings-tab]').forEach((button) => button.classList.toggle('active', button.dataset.settingsTab === activeSettingsTab));
         root.querySelectorAll('[data-settings-section]').forEach((section) => { section.hidden = section.dataset.settingsSection !== activeSettingsTab; });
-        const footer = $('#wsm-settings-modal footer');
-        if (footer) footer.hidden = activeSettingsTab === 'history';
         revealHorizontalItem(root.querySelector('.wsm-settings-tabs'), root.querySelector(`[data-settings-tab="${activeSettingsTab}"]`));
     }
     function revealHorizontalItem(container, item) {
@@ -1136,11 +1183,6 @@
             list.innerHTML = `<div class="wsm-board-item">读取失败：${escape(error.message)}</div>`;
         }
     }
-    function historyHtml() {
-        const items = WSM.Storage.history();
-        const latest = items[0];
-        return `<section class="wsm-rollback-panel"><b>${icon('history')}<span>回滚上一轮状态版本</span></b><p>恢复到上一轮正文生成或手动整理前的世界状态。后台最多保留最近 10 轮，发送给 AI 时只使用当前最新状态。</p>${latest ? `<small>可回滚：${new Date(latest.at).toLocaleString()} · 当前保留 ${items.length}/10 轮</small><button data-action="rollback-previous">回滚上一轮</button>` : '<small>还没有可回滚的状态版本。</small>'}</section>`;
-    }
     function modalHtml() {
         const tabs = Object.entries(sectionMap).map(([id, [label]]) => `<button class="wsm-tab" data-tab="${id}">${label}</button>`).join('');
         const categoryButtons = Object.entries(categories).map(([id, item]) => `<button class="wsm-category-button" data-category-select="${id}"><span>${icon(item.icon)}</span><b>${item.label}</b></button>`).join('');
@@ -1148,7 +1190,7 @@
             <div class="wsm-shell">
                 <button id="wsm-main-close" class="wsm-icon-button" data-action="close" aria-label="关闭">${icon('close')}</button>
                 <header class="wsm-header"><div class="wsm-actions">
-                    <div class="wsm-read-action"><button id="wsm-read-current" data-action="read-current">读取当前聊天</button><section id="wsm-operation-status" class="wsm-operation-status" role="status" aria-live="polite"><div class="wsm-operation-current"><b></b><small></small></div><div class="wsm-operation-steps" aria-label="读取步骤"></div></section></div><button id="wsm-compile-worldbook" data-action="compile-worldbook-main">拆解世界书</button><button id="wsm-clear-read" data-action="clear-read">清空读取</button><button data-action="organize">整理状态</button><button data-action="settings">设置</button><button data-action="history">回滚上一轮</button>
+                    <div class="wsm-read-action"><button id="wsm-read-current" data-action="read-current">读取当前聊天</button><section id="wsm-operation-status" class="wsm-operation-status" role="status" aria-live="polite"><div class="wsm-operation-current"><b></b><small></small></div><div class="wsm-operation-steps" aria-label="读取步骤"></div></section></div><button id="wsm-read-previous" data-action="read-previous">读取上一轮正文</button><button id="wsm-compile-worldbook" data-action="compile-worldbook-main">拆解世界书</button><button id="wsm-clear-read" data-action="clear-read">清空读取</button><button data-action="organize">整理状态</button><button data-action="settings">设置</button>
                 </div></header>
                 <nav class="wsm-category-bar">${categoryButtons}</nav>
                 <div class="wsm-body"><nav class="wsm-tabs">${tabs}</nav><main class="wsm-main">
@@ -1159,7 +1201,7 @@
                 </main></div>
             </div></div>
             <div id="wsm-settings-modal" class="wsm-submodal" hidden><div class="wsm-dialog"><header><b>世界状态机设置</b><button class="wsm-icon-button" data-action="close-settings" aria-label="关闭">${icon('close')}</button></header>
-                <nav class="wsm-settings-tabs"><button data-settings-tab="api">${icon('plug')}<span>API</span></button><button data-settings-tab="source">${icon('clipboard')}<span>分解正文</span></button><button data-settings-tab="pacing">${icon('process')}<span>剧情节奏</span></button><button data-settings-tab="dice">${icon('event')}<span>骰子</span></button><button data-settings-tab="worldbook">${icon('note')}<span>拆解世界书</span></button><button data-settings-tab="injection">${icon('send')}<span>注入模块</span></button><button data-settings-tab="prompts">${icon('brain')}<span>内置提示词</span></button><button data-settings-tab="history">${icon('history')}<span>上一轮回滚</span></button></nav>
+                <nav class="wsm-settings-tabs"><button data-settings-tab="api">${icon('plug')}<span>API</span></button><button data-settings-tab="source">${icon('clipboard')}<span>分解正文</span></button><button data-settings-tab="pacing">${icon('process')}<span>剧情节奏</span></button><button data-settings-tab="dice">${icon('event')}<span>骰子</span></button><button data-settings-tab="worldbook">${icon('note')}<span>拆解世界书</span></button><button data-settings-tab="injection">${icon('send')}<span>注入模块</span></button><button data-settings-tab="prompts">${icon('brain')}<span>内置提示词</span></button></nav>
                 <section class="wsm-settings-section" data-settings-section="api">
                     <label class="wsm-check"><input id="wsm-use-tavern-api" type="checkbox">使用酒馆默认 API（当前连接与模型）</label>
                     <p class="wsm-settings-help">启用后无需另填地址、模型或 Key，状态机直接跟随酒馆主界面当前使用的 API；请求只包含状态机所需内容。</p>
@@ -1225,15 +1267,13 @@
                     </div></details>
                     <div id="wsm-module-prompt-list"></div>
                 </section>
-                <section class="wsm-settings-section" data-settings-section="history"><div id="wsm-settings-history-list"></div></section>
                 <footer><button data-action="reset-prompts">恢复新版默认规则</button><button data-action="test-api">测试连接</button><button data-action="save-settings">保存</button></footer>
             </div></div>
             <div id="wsm-organize-modal" class="wsm-submodal" hidden><div class="wsm-dialog"><header><b>整理状态</b><button class="wsm-icon-button" data-action="close-organize" aria-label="关闭">${icon('close')}</button></header><div class="wsm-settings-scroll">
                 <section class="wsm-rollback-panel"><b>${icon('brain')}<span>智能整理</span></b><p>重新整理当前结构化状态：合并重复与旧版本、删除失效的临时信息，并压缩较早时间线。核心事实、重要秘密和仍在推进的事项会保留。</p><small>本地执行，不调用 AI，不重新总结或修改原始世界书。</small><button data-action="organize-smart">智能整理</button></section>
                 <section class="wsm-rollback-panel"><b>${icon('check')}<span>清理临时信息</span></b><p>只移除已经失效且当前不再相关的临时信息；核心事实以及正在使用的任务、事件、线程和进程不会改变。</p><small>适合只想做保守清理时使用。</small><button data-action="organize-temporary">清理临时信息</button></section>
-                <section class="wsm-rollback-panel"><b>${icon('history')}<span>可以撤销</span></b><p>整理前会自动建立版本快照，完成后生成新的 REV。效果不合适时可使用顶部“回滚上一轮”。</p></section>
-            </div></div></div>
-            <div id="wsm-history-modal" class="wsm-submodal" hidden><div class="wsm-dialog wsm-history"><header><b>版本快照</b><button class="wsm-icon-button" data-action="close-history" aria-label="关闭">${icon('close')}</button></header><div id="wsm-history-list"></div></div></div>`;
+                <section class="wsm-rollback-panel"><b>${icon('history')}<span>自动保留快照</span></b><p>整理前仍会自动建立版本快照，供删除楼层时自动恢复对应状态。</p></section>
+            </div></div></div>`;
     }
     function render() {
         const state = WSM.Storage.load();
@@ -1356,7 +1396,6 @@
         renderInjectionModuleSettings(s);
         renderModulePromptSettings(s);
         void renderWorldbookCompilerSettings(s);
-        $('#wsm-settings-history-list').innerHTML = historyHtml();
         renderSettingsTabs();
         syncApiModeFields();
         syncPacingFields();
@@ -1502,10 +1541,6 @@
         if (closeAfter) $('#wsm-settings-modal').hidden = true;
         notify('设置已保存', 'success');
     }
-    function showHistory() {
-        $('#wsm-history-list').innerHTML = historyHtml();
-        $('#wsm-history-modal').hidden = false;
-    }
     async function compileSelectedWorldbooks(button, status) {
         const config = WSM.WorldbookCompiler.normalizeConfig(WSM.Settings.get().worldbookCompiler);
         if (!config.enabled || !config.entryKeys.length) {
@@ -1567,15 +1602,6 @@
             root.querySelectorAll('[data-module-prompt]').forEach((input) => { input.value = WSM.Defaults.MODULE_PROMPTS[input.dataset.modulePrompt] || ''; });
             notify('已载入新版生态叙事与因果规则，点击保存后生效');
         }
-        if (action === 'history') fillSettings('history');
-        if (action === 'rollback-previous') {
-            if (!window.confirm('确定回滚上一轮状态版本？这不会删除 SillyTavern 中的聊天消息或修改原始世界书。')) return;
-            await WSM.Storage.rollbackPreviousGeneration();
-            render();
-            fillSettings('history');
-            notify('已回滚上一轮状态版本', 'success');
-        }
-        if (action === 'close-history') $('#wsm-history-modal').hidden = true;
         if (action === 'toggle-edit') { editMode = true; render(); }
         if (action === 'reload') { editMode = false; render(); }
         if (action === 'save-section') await saveSection();
@@ -1620,6 +1646,21 @@
                 WSM.Engine.reportProgress?.('读取当前聊天未完成', 'error', '读取任务已经结束，但没有产生完成状态；本次不会把旧档位结果当成新档位结果。');
             }
             render();
+        }
+        if (action === 'read-previous') {
+            const button = root.querySelector('[data-action="read-previous"]');
+            if (button) button.disabled = true;
+            try {
+                const result = await WSM.Engine.readPreviousBody();
+                await WSM.Engine?.syncRegisteredPrompt?.();
+                render();
+                notify(result?.status === 'already-read' ? '上一轮正文已经读取，无需重复调用 API' : '上一轮正文已读取并更新插件状态', 'success');
+            } catch (error) {
+                WSM.Engine.reportProgress?.('上一轮正文读取失败', 'error', error.message);
+                notify(`读取失败：${error.message}`, 'error');
+            } finally {
+                if (button) button.disabled = false;
+            }
         }
         if (action === 'compile-worldbook-main') {
             const button = root.querySelector('[data-action="compile-worldbook-main"]');
@@ -2000,6 +2041,7 @@
         window.addEventListener('wsm-operation-progress', (event) => {
             if (!$('#wsm-modal')?.hidden) renderOperationStatus(event.detail || WSM.Engine?.getProgress?.() || {});
         });
+        window.addEventListener('wsm-turn-read-progress', (event) => updateTurnReadPopup(event.detail || {}));
     }
     function renderMapForTest(state) {
         const previous = active;
@@ -2007,5 +2049,5 @@
         try { return renderGameView(state); }
         finally { active = previous; }
     }
-    WSM.UI = { mount, open, render, _test: { userKnowsKnowledge, buildIntentMessage, dynamicIntentOptions, intentPanel, interactionActions, displayValue, renderMapForTest } };
+    WSM.UI = { mount, open, render, _test: { userKnowsKnowledge, buildIntentMessage, dynamicIntentOptions, intentPanel, interactionActions, displayValue, renderMapForTest, turnReadPopupView } };
 })();

@@ -37,6 +37,12 @@ await import('../src/injection.js');
 await import('../src/engine.js');
 await import('../src/ui.js');
 
+const runningTurnPopup = WorldStateMachine.UI._test.turnReadPopupView({ state: 'running', message: '正在读取上一轮正文' });
+assert.equal(runningTurnPopup.status, '读取状态：进行中 · API 1/1');
+assert.equal(runningTurnPopup.closeDelay, null, '读取进行中弹窗不得自动关闭');
+const completedTurnPopup = WorldStateMachine.UI._test.turnReadPopupView({ state: 'success', message: '读取完成' });
+assert.equal(completedTurnPopup.closeDelay, 450, '读取完成后弹窗必须自动关闭');
+
 const activeChatStore = () => {
     const root = testContext.chatMetadata.worldStateMachine;
     return root?.chatStores?.[WorldStateMachine.Storage._test.currentChatKey()] || root;

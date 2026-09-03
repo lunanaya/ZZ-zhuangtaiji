@@ -20,6 +20,29 @@ const compactedArchiveContext = { chat: [
 assert.equal(WorldStateMachine.Context.chat(compactedArchiveContext).length, 1, '普通读取不得重新展开用户已经压缩并隐藏的旧正文');
 assert.equal(WorldStateMachine.Context.chat(compactedArchiveContext, { includeHidden: true }).length, 3, '用户主动完整校准必须纳入隐藏归档楼层');
 
+const wrappedFinal = WorldStateMachine.Context._test.normalizeMessage({
+    is_user: false,
+    mes: '<thinking>这里是不能进入状态机的思考</thinking><response>这里只保留正文。<meow_FM>plot:正文发生的事实</meow_FM></response>',
+    extra: {},
+}, 0);
+assert.doesNotMatch(wrappedFinal.content, /不能进入状态机的思考/);
+assert.match(wrappedFinal.content, /这里只保留正文/);
+assert.match(wrappedFinal.content, /正文发生的事实/);
+
+const separatedReasoning = WorldStateMachine.Context._test.normalizeMessage({
+    is_user: false,
+    mes: '先推断人物会采取什么行动。\n[response]\n角色走进画廊。',
+    extra: { reasoning: '先推断人物会采取什么行动。' },
+}, 1);
+assert.equal(separatedReasoning.content, '角色走进画廊。', '即使思考标签被剥离，也必须利用酒馆独立reasoning字段只保留正文');
+
+const alternateThinkingTag = WorldStateMachine.Context._test.normalizeMessage({
+    is_user: false,
+    mes: '<analysis>内部分析</analysis><final>最终正文</final>',
+    extra: {},
+}, 2);
+assert.equal(alternateThinkingTag.content, '最终正文', '常见analysis/final包装也必须只提取最终正文');
+
 const calls = [];
 WorldStateMachine.Api = {
     async complete(_prompt, payload, options) {

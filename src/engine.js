@@ -11,11 +11,21 @@
     let activeReadController = null;
     let bound = false;
     let settingsBound = false;
+    let knownChatMirror = [];
+    let deletionRollbackPromise = Promise.resolve();
     let operationProgress = { state: 'idle', message: '', details: '', at: 0, startedAt: 0, elapsedMs: 0, steps: [] };
     const ORDINARY_TURN_CALL_BUDGET = 1;
     const AUTO_POST_GENERATION_CALLS = 0;
     function ordinaryTurnCallPolicy() {
         return { apiCallsPerUserMessage: ORDINARY_TURN_CALL_BUDGET, postGenerationApiCalls: AUTO_POST_GENERATION_CALLS };
+    }
+    function reportTurnReadProgress(message, state = 'running', details = '') {
+        try {
+            window.dispatchEvent(new CustomEvent('wsm-turn-read-progress', { detail: {
+                message: safeText(message), state: safeText(state) || 'running', details: safeText(details), at: Date.now(),
+                chatKey: WSM.Storage?.currentChatKey?.() || '',
+            } }));
+        } catch (_error) { /* The popup must never interrupt generation. */ }
     }
 
     const safeText = (value) => String(value ?? '').trim();
@@ -27,7 +37,7 @@
         // A new initialization begins a fresh, visible progress trail. Keep
         // previous stages of the active run so the user can see exactly where
         // source reading reached before it completed or failed.
-        const startsRead = /正在读取酒馆资料/.test(nextMessage);
+        const startsRead = /正在读取酒馆资料|正在推理并增量更新本轮状态/.test(nextMessage);
         const previous = startsRead ? [] : (operationProgress.steps || []);
         const startedAt = startsRead || !Number(operationProgress.startedAt)
             ? Date.now()
@@ -140,6 +150,62 @@
         let result = 0;
         for (let i = 0; i < input.length; i += 1) result = ((result << 5) - result + input.charCodeAt(i)) | 0;
         return (result >>> 0).toString(36);
+    }
+    function pendingTurnReads(value) {
+        const rows = Array.isArray(value) ? value : [];
+        const seen = new Set();
+        return rows.filter((item) => {
+            if (!item || typeof item !== 'object') return false;
+            const identity = safeText(item.turnKey) || hash(JSON.stringify(item));
+            if (seen.has(identity)) return false;
+            seen.add(identity);
+            return !!(item.previousAssistantMessage || item.currentUserAction);
+        }).slice(-6);
+    }
+    function shouldReuseTurnPlan(type) {
+        return ['regenerate', 'swipe'].includes(safeText(type).toLowerCase());
+    }
+    function compactTurnState(state) {
+        const clone = plannerState(state);
+        delete clone.moduleCoverage;
+        delete clone.reasoningAudit;
+        delete clone.lockedPaths;
+        const technicalKeys = new Set([
+            'basis', 'sourceRefs', 'consumers', 'delivery', 'dependencyFactIds',
+            'updatedRevision', 'checkedRevision', 'auditOrigin', 'originRef',
+        ]);
+        const compact = (value) => {
+            if (Array.isArray(value)) return value.map(compact).filter((item) => item !== undefined);
+            if (!value || typeof value !== 'object') return value;
+            const output = {};
+            Object.entries(value).forEach(([key, item]) => {
+                if (technicalKeys.has(key)) return;
+                const next = compact(item);
+                if (next === undefined || next === '' || next === null) return;
+                if (Array.isArray(next) && !next.length) return;
+                if (next && typeof next === 'object' && !Array.isArray(next) && !Object.keys(next).length) return;
+                output[key] = next;
+            });
+            return output;
+        };
+        return compact(clone);
+    }
+    function captureChatMirror() {
+        return (WSM.Context?.chat?.(WSM.Context?.context?.(), { includeHidden: true }) || []).map((message) => ({
+            signature: `${safeText(message?.role)}|${safeText(message?.id)}|${hash(message?.content)}`,
+            role: safeText(message?.role),
+        }));
+    }
+    function deletedAssistantCount(before = [], after = []) {
+        const remaining = new Map();
+        (after || []).forEach((item) => remaining.set(item.signature, Number(remaining.get(item.signature) || 0) + 1));
+        let count = 0;
+        (before || []).forEach((item) => {
+            const available = Number(remaining.get(item.signature) || 0);
+            if (available > 0) remaining.set(item.signature, available - 1);
+            else if (item.role === 'assistant') count += 1;
+        });
+        return count;
     }
     function normalizeInjection(value) {
         let output = safeText(value);
@@ -3113,21 +3179,55 @@
             const previousAssistantMemory = previousAssistant?.content && current.runtime?.lastSettledMessageId !== previousAssistantId
                 ? (WSM.Context.recentFullTextMessage?.(previousAssistant) || WSM.Context.meowMessage(previousAssistant))
                 : null;
+            const currentUserAction = source?.currentUserAction || WSM.Context.latestUserMessage();
+            const recoveryQueue = pendingTurnReads(current.runtime?.pendingTurnReads);
             reportProgress('正在推理并增量更新本轮状态', 'running', `结算上一段已发生正文 + 读取本轮用户输入 + 规划下一段 · 插件 API 严格 1 次`);
-            const result = await WSM.Api.complete(
-                `${settings.plannerPrompt}\n\n这是普通轮次唯一一次状态机调用，必须在同一个JSON响应内完成 RECONCILE_PREVIOUS→APPLY_USER_FACTS→REASON_NEXT。先读取previousAssistantMessage：若非空，结算其中已经实际发生的事实；再读取currentUserAction，只写入用户本轮明确提供、声明或已经完成的事实，行动尝试和期望结果不得预判成功；最后根据更新后的状态推演本轮正文最合理的下一步。返回stateDelta、plan、moduleInjections、timelineEntry、actualChanges、npcUpdates与worldbookEntries；没有事实变化时stateDelta允许为空对象。不要续写正文。事务面板以用户角色为主角：主线/支线是主角目标；可触发事件是世界已经留下、尚未回应的剧情扣子。若返回affairsSuggestions，其中每项actionOptions必须针对具体内容生成，禁止固定模板。只输出JSON。`,
-                {
-                    phase: 'TURN_RECONCILE_AND_PRE_GENERATION_REASONING',
-                    currentState: plannerState(current),
-                    currentUserAction: source?.currentUserAction || WSM.Context.latestUserMessage(),
+            reportTurnReadProgress('正在读取上一轮正文', 'running', previousAssistantMemory
+                ? '正在结算上一轮正文并更新现有状态 · API 1/1 · 最长等待 75 秒'
+                : '上一轮没有待结算正文；正在读取本轮消息并更新现有状态 · API 1/1 · 最长等待 75 秒');
+            let result;
+            try {
+                result = await WSM.Api.complete(
+                    `${settings.plannerPrompt}\n\n这是普通轮次唯一一次状态机调用，必须在同一个JSON响应内完成 RECONCILE_BACKLOG→RECONCILE_PREVIOUS→APPLY_USER_FACTS→REASON_NEXT。pendingTurnReads 是此前因超时或连接失败而尚未写入状态的原文，必须按 queuedAt 从旧到新逐项结算并去重；然后读取 previousAssistantMessage：若非空，结算其中已经实际发生的事实；再读取 currentUserAction，只写入用户本轮明确提供、声明或已经完成的事实，行动尝试和期望结果不得预判成功；最后根据更新后的状态推演本轮正文最合理的下一步。返回stateDelta、plan、moduleInjections、timelineEntry、actualChanges、npcUpdates与worldbookEntries；没有事实变化时stateDelta允许为空对象。不要续写正文。事务面板以用户角色为主角：主线/支线是主角目标；可触发事件是世界已经留下、尚未回应的剧情扣子。若返回affairsSuggestions，其中每项actionOptions必须针对具体内容生成，禁止固定模板。只输出JSON。`,
+                    {
+                        phase: 'TURN_RECONCILE_AND_PRE_GENERATION_REASONING',
+                        // Ordinary turns receive the complete semantic state,
+                        // without provenance/audit bookkeeping. Initialization
+                        // keeps using its original full source pipeline.
+                        currentState: compactTurnState(current),
+                        pendingTurnReads: recoveryQueue,
+                        currentUserAction,
+                        previousAssistantMessage: previousAssistantMemory,
+                        historyRecall: historyRecall.text || '',
+                        ...(diceRound ? { diceRound } : {}),
+                    },
+                    // Keep the complete state/input payload, but ask only for a
+                    // compact delta. Large output reservations were the main cause
+                    // of multi-minute provider stalls on ordinary turns.
+                    { singleAttempt: true, maxTokens: 1800, timeoutMs: 75000 },
+                );
+            } catch (error) {
+                const reason = safeText(error?.message || error);
+                const queued = pendingTurnReads([...recoveryQueue, {
+                    turnKey: key,
+                    queuedAt: Date.now(),
                     previousAssistantMessage: previousAssistantMemory,
-                    recentChat: source?.chat || [],
-                    worldbookRules: WSM.WorldbookCompiler?.getReport?.(current.runtime?.worldbookInjection)?.entries || [],
-                    historyRecall: historyRecall.text || '',
-                    ...(diceRound ? { diceRound } : {}),
-                },
-                { singleAttempt: true },
-            );
+                    currentUserAction,
+                }]);
+                current.runtime = Object.assign({}, current.runtime, { pendingTurnReads: queued });
+                const fallbackPlan = Object.assign({}, current.planner?.plan || {}, diceRound ? { diceRound } : {});
+                current.planner = {
+                    lastRunAt: Date.now(), turnKey: key, plan: fallbackPlan,
+                    moduleInjections: current.planner?.moduleInjections || {}, injection: '', error: reason, localOnly: true,
+                };
+                current.planner.injection = WSM.Injection.compose(current, fallbackPlan, current.planner.moduleInjections);
+                current = await WSM.Storage.save(current, 'turn-read-queued-for-recovery', { snapshot: false });
+                await setStatePrompts(current, fallbackPlan, current.planner.moduleInjections);
+                reportProgress('本轮读取超时，已加入待补账队列', 'error', `正文可沿用现有状态继续 · 待补 ${queued.length} 轮 · 下一次 API 将先补旧账 · ${reason}`);
+                reportTurnReadProgress('读取超时，已排队补账', 'error', `本轮原文未丢失；下一条消息的一次 API 会先补齐 · ${reason}`);
+                console.error('[WorldStateMachine] 普通轮次读取失败，已排队等待下一轮补账', error);
+                return current.planner;
+            }
             const delta = result?.stateDelta || result?.delta;
             const legacyState = result?.state;
             if ((delta && typeof delta === 'object') || (legacyState && typeof legacyState === 'object')) {
@@ -3140,6 +3240,7 @@
                 const worldbookUpdate = WSM.WorldbookCompiler?.ingestReadResult?.(source, result);
                 updated.runtime = Object.assign({}, current.runtime, updated.runtime, {
                     ...(previousAssistantMemory ? { lastSettledMessageId: previousAssistantId } : {}),
+                    pendingTurnReads: [],
                     worldbookInjection: worldbookUpdate?.report || current.runtime?.worldbookInjection || null,
                     npcLastUpdatedElapsedMinutes: updateNpcClock(current, updated, { npcUpdates: result?.npcUpdates || [] }),
                 });
@@ -3151,7 +3252,7 @@
                         updated.timeline.push(entry);
                     }
                 }
-                const userMessage = source?.currentUserAction || WSM.Context.latestUserMessage();
+                const userMessage = currentUserAction;
                 const sourceRefs = [previousAssistantMemory ? previousAssistant?.id : null, userMessage?.id]
                     .filter((id) => id !== undefined && id !== null && String(id) !== '')
                     .map((id) => `chat:${id}`);
@@ -3168,7 +3269,9 @@
             } else if (previousAssistantMemory) {
                 // A valid no-change response still counts as observing the
                 // previous assistant message and must not be re-sent forever.
-                current.runtime = Object.assign({}, current.runtime, { lastSettledMessageId: previousAssistantId });
+                current.runtime = Object.assign({}, current.runtime, { lastSettledMessageId: previousAssistantId, pendingTurnReads: [] });
+            } else {
+                current.runtime = Object.assign({}, current.runtime, { pendingTurnReads: [] });
             }
             const localPlan = Object.assign({}, result?.plan || {}, {
                 ...(diceRound ? { diceRound } : {}),
@@ -3180,10 +3283,11 @@
             };
             current.planner.injection = WSM.Injection.compose(current, localPlan, current.planner.moduleInjections);
             current = await WSM.Storage.save(current, 'turn-reconcile-and-reason', {
-                snapshot: true, snapshotKind: 'generation',
+                snapshot: true, snapshotKind: 'generation', snapshotTurnKey: key,
             });
             await setStatePrompts(current, localPlan, current.planner.moduleInjections);
             reportProgress('本轮推理与状态增量已完成', 'success', `状态已更新至 REV ${current.revision} · 本轮插件 API 1 次 · 正文生成后不再追加调用`);
+            reportTurnReadProgress('读取完成', 'success', `状态已更新至 REV ${current.revision} · API 1/1`);
             return current.planner;
         }
         if (!plannerAvailable(settings)) {
@@ -3426,6 +3530,7 @@
             });
             await WSM.Storage.save(current, 'planner-error', { snapshot: false });
             await setStatePrompts(current, current.planner?.plan || {}, current.planner?.moduleInjections || {});
+            if (!explicitRead) reportTurnReadProgress('读取失败', 'error', safeText(error?.message || error));
             if (initializing || refreshWorld) reportProgress('读取或初始化失败', 'error', safeText(error?.message || error));
             console.error('[WorldStateMachine] Planner 失败，使用当前状态降级', error);
             return current.planner;
@@ -3477,6 +3582,13 @@
         }
         if (!WSM.Storage.load().initialized) {
             await setPrompt('');
+            return;
+        }
+        if (shouldReuseTurnPlan(type)) {
+            // A swipe/regenerate replaces the assistant answer for the same
+            // user turn. The state call belongs to that user turn and must not
+            // be charged or repeated for each candidate answer.
+            await syncRegisteredPrompt();
             return;
         }
         try {
@@ -3537,35 +3649,45 @@
         if (!assistantMemory) return null;
         const settings = WSM.Settings.get();
         if (!plannerAvailable(settings)) return null;
-        const settleSource = await WSM.Context.buildSource();
+        const latestOnly = options.latestOnly === true;
+        const settleSource = latestOnly ? null : await WSM.Context.buildSource();
         if (WSM.Storage.currentChatKey() !== operationChatKey) return null;
-        const recent = settleSource.chat;
-        reportProgress('正在自动读取最新正文', 'running', `最近 ${settleSource.tavernTextContext?.recentFullTextMessages || 5} 层读取正文，更早楼层读取<${settleSource.tavernTextContext?.summaryTag || 'meow_FM'}>总结 · 本轮事实观察 API 1 次`);
-        const worldbookReport = WSM.WorldbookCompiler?.getReport?.(current.runtime?.worldbookInjection) || null;
+        const recent = settleSource?.chat || [];
+        const progressDetails = latestOnly
+            ? `只发送上一条助手正文与当前结构化状态 · 不附带最近聊天、thinking 或世界书 · API 1/1`
+            : `最近 ${settleSource?.tavernTextContext?.recentFullTextMessages || 5} 层读取正文，更早楼层读取<${settleSource?.tavernTextContext?.summaryTag || 'meow_FM'}>总结 · 本轮事实观察 API 1 次`;
+        reportProgress(latestOnly ? '正在读取上一轮正文' : '正在自动读取最新正文', 'running', progressDetails);
+        if (latestOnly) reportTurnReadProgress('正在读取上一轮正文', 'running', `${progressDetails} · 最长等待 75 秒`);
+        const worldbookReport = latestOnly ? null : (WSM.WorldbookCompiler?.getReport?.(current.runtime?.worldbookInjection) || null);
         const payload = {
             phase: 'POST_GENERATION_RECONCILE',
-            preState: plannerState(current),
-            plannerResult: current.planner,
+            preState: latestOnly ? compactTurnState(current) : plannerState(current),
+            ...(latestOnly ? {} : { plannerResult: current.planner }),
             actualAssistantMessage: assistantMemory,
-            recentChat: recent,
+            ...(latestOnly ? {} : { recentChat: recent }),
             simulationClock: { elapsedMinutes: Number(current.world?.time?.elapsedMinutes || 0), display: current.world?.time?.display || '' },
-            npcSchedule: buildNpcSchedule(current),
-            simulationRules: {
+            ...(latestOnly ? {} : { npcSchedule: buildNpcSchedule(current) }),
+            ...(latestOnly ? {} : { simulationRules: {
                 offscreenUpdateIntervalMinutes: 60,
                 updateVisibleCharactersEveryTick: true,
                 carryOffscreenCharactersBetweenDueTicks: true,
                 requirePreexistingCauseForRipple: true,
                 allowNoSignificantChange: true,
                 forbidUnscheduledOffscreenInvention: true,
-            },
-            worldbookRules: worldbookReport?.entries || [],
+            } }),
+            ...(latestOnly ? {} : { worldbookRules: worldbookReport?.entries || [] }),
             stateSchema: WSM.Defaults.STATE_SCHEMA,
             moduleOwnership: WSM.Defaults.MODULE_OWNERSHIP,
             modulePrompts: settings.modulePrompts || WSM.Defaults.MODULE_PROMPTS,
             lockedPaths: current.lockedPaths || [],
         };
         try {
-            const result = await WSM.Api.complete(`${settings.reconcilerPrompt}\n\n${TRUTH_POLICY_PROMPT}\n\n本次结算必须在同一个 JSON 响应内同时完成增量状态结算、到期的离屏生态推进与世界书浓缩缓存更新。先结算 user/assistant 正文；再严格按 npcSchedule 执行一个有界后台 tick：realtime 可结算正文行动，background 只能沿既存 motives、currentGoals、routine、npcActivities、tasks、processes 或已成立因果继续，carry 必须保持。允许完全无变化，禁止给离屏人物凭空安排新目标、巧合或重大事件。用 npcUpdates 报告本次真正检查结果。除 stateDelta、timelineEntry、actualChanges、npcUpdates 字段外，返回 worldbookEntries 数组；每项沿用输入 worldbookRules 的 key，并只依据本轮 user/assistant 实际正文修正 core、triggers、rules、background。没有变化的状态模块和世界书条目必须省略，禁止为了显得完整而复述。不得要求第二次调用。`, payload, { singleAttempt: true });
+            const taskPrompt = latestOnly
+                ? `${settings.reconcilerPrompt}\n\n${TRUTH_POLICY_PROMPT}\n\n这是手动“读取上一轮正文”的唯一一次调用。只读取 actualAssistantMessage 中已经实际发生的正文事实，并与 preState 对照后返回最小增量。不要续写、不要规划下一轮、不要推进离屏世界、不要复述未变化模块。返回 stateDelta、timelineEntry、actualChanges；没有事实变化时 stateDelta 可以为空对象。不得要求第二次调用。只输出 JSON。`
+                : `${settings.reconcilerPrompt}\n\n${TRUTH_POLICY_PROMPT}\n\n本次结算必须在同一个 JSON 响应内同时完成增量状态结算、到期的离屏生态推进与世界书浓缩缓存更新。先结算 user/assistant 正文；再严格按 npcSchedule 执行一个有界后台 tick：realtime 可结算正文行动，background 只能沿既存 motives、currentGoals、routine、npcActivities、tasks、processes 或已成立因果继续，carry 必须保持。允许完全无变化，禁止给离屏人物凭空安排新目标、巧合或重大事件。用 npcUpdates 报告本次真正检查结果。除 stateDelta、timelineEntry、actualChanges、npcUpdates 字段外，返回 worldbookEntries 数组；每项沿用输入 worldbookRules 的 key，并只依据本轮 user/assistant 实际正文修正 core、triggers、rules、background。没有变化的状态模块和世界书条目必须省略，禁止为了显得完整而复述。不得要求第二次调用。`;
+            const result = await WSM.Api.complete(taskPrompt, payload, latestOnly
+                ? { singleAttempt: true, maxTokens: 1600, timeoutMs: 75000 }
+                : { singleAttempt: true });
             if (WSM.Storage.currentChatKey() !== operationChatKey) return null;
             const delta = result?.stateDelta || result?.delta;
             const legacyState = result?.state;
@@ -3577,7 +3699,7 @@
             next = rotateTriggersForNextTurn(current, next);
             next.initialized = true;
             next.planner = current.planner;
-            const worldbookUpdate = WSM.WorldbookCompiler?.ingestReadResult?.(settleSource, result);
+            const worldbookUpdate = latestOnly ? null : WSM.WorldbookCompiler?.ingestReadResult?.(settleSource, result);
             next.runtime = Object.assign({}, current.runtime, next.runtime, {
                 lastSettledMessageId: key,
                 worldbookInjection: worldbookUpdate?.report || current.runtime?.worldbookInjection || null,
@@ -3615,14 +3737,21 @@
                 contentHash: hash(message.content),
                 changeIds: sourceRefs.includes(`chat:${message.id}`) ? changeIds : [],
             })), { prefix: `turn:${key}` });
-            const saved = await WSM.Storage.save(next, 'reconcile', { snapshot: false });
-            reportProgress('最新正文已自动结算', 'success', `已读取最新助手正文并更新至 REV ${saved.revision} · 最近 ${settleSource.tavernTextContext?.recentFullTextMessages || 5} 层正文 + 更早总结 · 本轮 API 1 次`);
+            const saved = await WSM.Storage.save(next, latestOnly ? 'manual-read-previous-body' : 'reconcile', latestOnly
+                ? { snapshot: true, snapshotKind: 'generation', snapshotTurnKey: `manual:${key}` }
+                : { snapshot: false });
+            const successDetails = latestOnly
+                ? `上一条助手正文已写入 REV ${saved.revision} · 只读正文 · API 1/1`
+                : `已读取最新助手正文并更新至 REV ${saved.revision} · 最近 ${settleSource?.tavernTextContext?.recentFullTextMessages || 5} 层正文 + 更早总结 · 本轮 API 1 次`;
+            reportProgress(latestOnly ? '上一轮正文读取完成' : '最新正文已自动结算', 'success', successDetails);
+            if (latestOnly) reportTurnReadProgress('读取完成', 'success', successDetails);
             return saved;
         } catch (error) {
             const next = WSM.Storage.load();
             next.planner = Object.assign({}, next.planner, { error: `结算失败：${safeText(error?.message || error)}` });
             await WSM.Storage.save(next, 'reconcile-error', { snapshot: false });
-            reportProgress('最新正文自动结算失败', 'error', safeText(error?.message || error));
+            reportProgress(latestOnly ? '上一轮正文读取失败' : '最新正文自动结算失败', 'error', safeText(error?.message || error));
+            if (latestOnly) reportTurnReadProgress('读取失败', 'error', safeText(error?.message || error));
             console.error('[WorldStateMachine] 正文结算失败', error);
             return null;
         }
@@ -3633,6 +3762,17 @@
             .finally(() => { settlingPromise = null; });
         return settlingPromise;
     }
+    async function readPreviousBody() {
+        const current = WSM.Storage.load();
+        if (!current.initialized) throw new Error('请先读取当前聊天，建立初始状态');
+        const assistant = WSM.Context.latestAssistantMessage();
+        const key = assistantKey(assistant);
+        if (!assistant?.content) throw new Error('当前聊天还没有可读取的助手正文');
+        if (current.runtime?.lastSettledMessageId === key) return { status: 'already-read', state: current };
+        const saved = await ensureSettle({ latestOnly: true });
+        if (!saved) throw new Error(WSM.Storage.load().planner?.error || '上一轮正文没有完成读取');
+        return { status: 'read', state: saved };
+    }
     function bindEvents() {
         if (bound) return true;
         const ctx = WSM.Context.context();
@@ -3641,19 +3781,39 @@
         if (!events || !source?.on) return false;
         WSM.WorldbookCompiler?.installNativeWorldbookFilter?.();
         bound = true;
-        const before = events.GENERATION_AFTER_COMMANDS || 'generation_after_commands';
-        source.on(before, async (type) => {
-            if (isForeground(type) && WSM.Storage.load().initialized) await ensurePlan();
-        });
+        knownChatMirror = captureChatMirror();
+        // Do not also listen to GENERATION_AFTER_COMMANDS. SillyTavern emits
+        // that event for generateRaw/quiet/background work and often does not
+        // await extension listeners. It could therefore start a second, late
+        // state read after the visible正文 was already finished. The manifest
+        // generate_interceptor below is the single authoritative turn hook.
         if (events.CHAT_CHANGED) source.on(events.CHAT_CHANGED, () => {
             planningController?.abort();
             if (activeReadController && !activeReadController.signal.aborted) activeReadController.abort();
             void setPrompt('');
             void WSM.WorldbookCompiler?.setWorldbookPrompts?.({});
             window.setTimeout(async () => {
+                knownChatMirror = captureChatMirror();
                 await syncRegisteredPrompt();
                 window.dispatchEvent(new CustomEvent('wsm-state-changed', { detail: { reason: 'chat-changed' } }));
             }, 0);
+        });
+        const refreshMirror = () => { knownChatMirror = captureChatMirror(); };
+        [events.MESSAGE_SENT, events.MESSAGE_RECEIVED, events.MESSAGE_SWIPED, events.MESSAGE_EDITED, events.MESSAGE_UPDATED]
+            .filter(Boolean).forEach((event) => source.on(event, refreshMirror));
+        if (events.MESSAGE_DELETED) source.on(events.MESSAGE_DELETED, () => {
+            const before = knownChatMirror;
+            const after = captureChatMirror();
+            knownChatMirror = after;
+            const assistantReplies = deletedAssistantCount(before, after);
+            if (!assistantReplies) return;
+            deletionRollbackPromise = deletionRollbackPromise.then(async () => {
+                const result = await WSM.Storage.rollbackGenerations?.(assistantReplies);
+                const rolledBack = Number(result?.rolledBack || 0);
+                if (!rolledBack) return;
+                await syncRegisteredPrompt();
+                reportProgress('已撤回删除楼层对应的状态增量', 'success', `检测到删除 ${assistantReplies} 条助手回复 · 已回滚 ${rolledBack} 次插件生成结果 · 未调用 API`);
+            }).catch((error) => console.error('[WorldStateMachine] 删除楼层自动回滚失败', error));
         });
         return true;
     }
@@ -3675,5 +3835,5 @@
             }, 1000);
         }
     }
-    WSM.Engine = { init, plan: ensurePlan, settle: ensureSettle, interceptor, fallbackInjection, reportProgress, resetProgress, getProgress, cancelRead, isReading, syncRegisteredPrompt, refreshGptLocalState, clearRegisteredPrompts, _test: { ordinaryTurnCallPolicy, generationBlockReason, plannerAvailable, activeChatAvailable, setPrompt, setStatePrompts, syncIdentities, initializeInSlices, sourceForInitializeSlice, rotateTriggersForNextTurn, completeSourceRecords, compactSourceChronicle, compactGptSourceChronicle, splitCompleteRecords, splitGptCompleteRecords, removeMirroredChatRecords, prepareSourceForStateRequests, buildStateWithinLimit, normalizeStateResult, normalizeStateCollection, normalizeStateCollections, normalizeGptIdentityAliases, reconcileEntityReferences, auditStateLifecycle, mergeStatePatch, applyStateDelta, applyHistoryLedger, historyChangesFromDelta, mergeCompleteEvidence, mergeAdjudicatedEvidence, supplementMissingEvidenceFromArchive, localEvidenceFromSource, deterministicMeowLedger, ensureDeterministicMeowLedger, sanitizeGptEvidence, sanitizeGptHydratedState, applyGptSceneToState, stateFromEvidence, firstHalfCacheKey, validateEvidenceContract, validateFilledEvidence, normalizeEvidenceFillShapes, completeExplicitlyAuditedEvidence, synthesizeEvidenceAudit, repairFinalFillFromSourceCompile, markIncompleteEvidence, preserveUnreturnedStateModules } };
+    WSM.Engine = { init, plan: ensurePlan, settle: ensureSettle, readPreviousBody, interceptor, fallbackInjection, reportProgress, resetProgress, getProgress, cancelRead, isReading, syncRegisteredPrompt, refreshGptLocalState, clearRegisteredPrompts, _test: { ordinaryTurnCallPolicy, pendingTurnReads, shouldReuseTurnPlan, compactTurnState, deletedAssistantCount, generationBlockReason, plannerAvailable, activeChatAvailable, setPrompt, setStatePrompts, syncIdentities, initializeInSlices, sourceForInitializeSlice, rotateTriggersForNextTurn, completeSourceRecords, compactSourceChronicle, compactGptSourceChronicle, splitCompleteRecords, splitGptCompleteRecords, removeMirroredChatRecords, prepareSourceForStateRequests, buildStateWithinLimit, normalizeStateResult, normalizeStateCollection, normalizeStateCollections, normalizeGptIdentityAliases, reconcileEntityReferences, auditStateLifecycle, mergeStatePatch, applyStateDelta, applyHistoryLedger, historyChangesFromDelta, mergeCompleteEvidence, mergeAdjudicatedEvidence, supplementMissingEvidenceFromArchive, localEvidenceFromSource, deterministicMeowLedger, ensureDeterministicMeowLedger, sanitizeGptEvidence, sanitizeGptHydratedState, applyGptSceneToState, stateFromEvidence, firstHalfCacheKey, validateEvidenceContract, validateFilledEvidence, normalizeEvidenceFillShapes, completeExplicitlyAuditedEvidence, synthesizeEvidenceAudit, repairFinalFillFromSourceCompile, markIncompleteEvidence, preserveUnreturnedStateModules } };
 })();

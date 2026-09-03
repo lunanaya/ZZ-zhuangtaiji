@@ -98,6 +98,28 @@ assert.deepEqual(WorldStateMachine.Engine._test.ordinaryTurnCallPolicy(), {
     postGenerationApiCalls: 0,
 }, '普通轮次必须固定为每条用户消息一次状态机API，正文后不得追加第二次');
 
+const queuedTurns = WorldStateMachine.Engine._test.pendingTurnReads([
+    { turnKey: 'turn-1', previousAssistantMessage: { id: 1, content: '上一轮正文' }, currentUserAction: { id: 2, content: '用户行动' } },
+    { turnKey: 'turn-1', previousAssistantMessage: { id: 1, content: '重复正文' } },
+    { turnKey: 'turn-2', currentUserAction: { id: 3, content: '下一轮行动' } },
+]);
+assert.deepEqual(queuedTurns.map((item) => item.turnKey), ['turn-1', 'turn-2'], '超时补账队列必须按轮次去重，避免下一次API重复结算');
+assert.equal(WorldStateMachine.Engine._test.shouldReuseTurnPlan('regenerate'), true, '重新回复必须复用同一轮计划，不得再次调用状态API');
+assert.equal(WorldStateMachine.Engine._test.shouldReuseTurnPlan('swipe'), true, '切换回复候选必须复用同一轮计划');
+assert.equal(WorldStateMachine.Engine._test.shouldReuseTurnPlan('normal'), false);
+const compactTurn = WorldStateMachine.Engine._test.compactTurnState({
+    identities: { user: '用户' }, organizations: [{ id: 'org', name: '组织', situation: '仍在活动', basis: ['原文'], sourceRefs: ['chat:1'], truthStatus: 'confirmed' }],
+    reasoningAudit: { moduleDecisions: ['技术审计'] }, moduleCoverage: { organizations: { status: 'has_records' } },
+    runtime: { sourceSummary: '很大的技术缓存' }, planner: { injection: '重复注入' },
+});
+assert.equal(compactTurn.organizations[0].name, '组织');
+assert.equal(compactTurn.organizations[0].sourceRefs, undefined, '普通轮次不得重复发送来源索引');
+assert.equal(compactTurn.reasoningAudit, undefined, '普通轮次不得重复发送审计表');
+assert.equal(compactTurn.runtime, undefined);
+assert.equal(WorldStateMachine.Engine._test.deletedAssistantCount([
+    { signature: 'u1', role: 'user' }, { signature: 'a1', role: 'assistant' }, { signature: 'u2', role: 'user' }, { signature: 'a2', role: 'assistant' }, { signature: 'a3', role: 'assistant' },
+], [{ signature: 'u1', role: 'user' }, { signature: 'a1', role: 'assistant' }]), 2, '删除五层中的多条助手回复时必须按助手数量回滚');
+
 const malformedFilledEvidence = completeEvidence({ tasks: ['把同一段剧情当任务摘要'] });
 assert.throws(() => WorldStateMachine.Engine._test.validateFilledEvidence(malformedFilledEvidence, '测试填表'), /未按模块表格填写/, '状态模块不得接受字符串摘要卡');
 

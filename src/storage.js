@@ -1583,7 +1583,11 @@
         const box = envelope();
         if (options.clearHistory === true) box.history = [];
         if (options.snapshot === true && box.state) {
-            box.history.unshift({ at: Date.now(), reason, kind: options.snapshotKind || 'generation', state: clone(box.state) });
+            box.history.unshift({
+                at: Date.now(), reason, kind: options.snapshotKind || 'generation',
+                turnKey: String(options.snapshotTurnKey || ''),
+                state: clone(box.state),
+            });
             box.history = box.history.filter(isGenerationSnapshot).slice(0, HISTORY_LIMIT);
         }
         const state = normalizeState(next || WSM.Defaults.createState());
@@ -1606,6 +1610,25 @@
         if (index < 0) throw new Error('还没有可回滚的上一轮生成结果');
         const [snap] = box.history.splice(index, 1);
         return save(snap.state, 'rollback-generation', { snapshot: false });
+    }
+    async function rollbackGenerations(count = 1) {
+        const requested = Math.max(0, Math.floor(Number(count || 0)));
+        if (!requested) return { state: load(), rolledBack: 0 };
+        const box = envelope();
+        // Only ordinary-turn snapshots carry turnKey. Manual organization and
+        // initialization snapshots must never be consumed by chat deletion.
+        const indexes = [];
+        for (let index = 0; index < box.history.length && indexes.length < requested; index += 1) {
+            const item = box.history[index];
+            const ordinaryTurn = String(item?.turnKey || '') || item?.reason === 'turn-reconcile-and-reason';
+            if (item?.kind === 'generation' && ordinaryTurn) indexes.push(index);
+        }
+        if (!indexes.length) return { state: load(), rolledBack: 0 };
+        const target = box.history[indexes.at(-1)].state;
+        const removed = new Set(indexes);
+        box.history = box.history.filter((_item, index) => !removed.has(index));
+        const state = await save(target, 'rollback-deleted-chat-generations', { snapshot: false });
+        return { state, rolledBack: indexes.length };
     }
     async function clearAll() {
         const box = envelope();
@@ -1682,7 +1705,7 @@
         return result;
     }
     WSM.Storage = {
-        load, save, currentChatKey, history, rollbackPreviousGeneration, clearAll, organizeState, enforceLocks, enforceTruthTransition, clone, normalizeMapHierarchy,
+        load, save, currentChatKey, history, rollbackPreviousGeneration, rollbackGenerations, clearAll, organizeState, enforceLocks, enforceTruthTransition, clone, normalizeMapHierarchy,
         readSourceReadCache, readSourceReadArchive, writeSourceReadCache,
         loadHistoryMemory, beginHistoryCalibration, readHistoryCalibrationChunk, writeHistoryCalibrationChunk,
         completeHistoryCalibration, setHistoryBaseline, setTwoPassHistoryBaseline, appendHistoryChanges, retrieveHistory, historyAudit,

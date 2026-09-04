@@ -167,6 +167,14 @@
                 }
             }
         }
+        // Delta responses are often cut immediately after a complete
+        // stateDelta when the provider spends part of the output budget on
+        // hidden reasoning. Recover only complete object/array boundaries;
+        // never keep a half-written collection operation.
+        const repairedCandidate = cleaned && ['state','evidence','delta'].includes(contract)
+            ? repairTruncatedJson(cleaned, contract)
+            : null;
+        if (repairedCandidate) addCandidate(repairedCandidate);
         if (!candidates.length) throw new Error('Planner 返回的不是有效 JSON');
         if (!contract) return candidates[0];
         let best = null;
@@ -184,8 +192,8 @@
         // previous early return selected that example and discarded the later
         // real answer merely because its final closers were truncated.
         // This is deterministic and never spends another API call.
-        if (cleaned && ['state','evidence'].includes(contract)) {
-            const repaired = repairTruncatedJson(cleaned, contract);
+        if (repairedCandidate) {
+            const repaired = repairedCandidate;
             if (repaired) {
                 const repairedScore = contractScore(repaired, contract);
                 if (!best || repairedScore > bestScore || (repairedScore === bestScore && contractRichness(repaired, contract) > contractRichness(best, contract))) return repaired;

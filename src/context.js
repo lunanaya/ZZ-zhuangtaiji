@@ -116,20 +116,25 @@
             timestamp: text(message?.send_date ?? message?.extra?.gen_id ?? ''),
         };
     }
+    function normalizeMessages(messages, options = {}) {
+        const values = Array.isArray(messages) ? messages : [];
+        return values.map((message, fallbackIndex) => {
+            if (message?.is_system === true && options.includeHidden !== true) return null;
+            const suppliedIndex = Number(message?.index);
+            const index = Number.isInteger(suppliedIndex) && suppliedIndex >= 0 ? suppliedIndex : fallbackIndex;
+            return normalizeMessage(message, index, { preserveHiddenAuthor: options.includeHidden === true });
+        }).filter((item) => item?.content);
+    }
     function chat(ctx = context(), options = {}) {
         // SillyTavern uses is_system=true for messages hidden from the prompt.
         // They remain excluded from ordinary reads.  Only the explicit complete
         // calibration path asks for includeHidden so archived evidence can be
         // indexed once without being re-sent on every turn.
         const values = Array.isArray(ctx?.chat) ? ctx.chat : [];
-        return values
-            // Preserve the real index in SillyTavern's complete chat array.
-            // Filtering first renumbered a 399-floor chat's latest authored
-            // message as floor 31 when most intervening records were hidden.
-            .map((message, index) => (options.includeHidden === true || message?.is_system !== true)
-                ? normalizeMessage(message, index, { preserveHiddenAuthor: options.includeHidden === true })
-                : null)
-            .filter((item) => item?.content);
+        // Preserve the real index in SillyTavern's complete chat array.
+        // Filtering first renumbered a 399-floor chat's latest authored
+        // message as floor 31 when most intervening records were hidden.
+        return normalizeMessages(values, options);
     }
     function latestUserMessage(ctx = context()) {
         return [...chat(ctx)].reverse().find((item) => item.role === 'user') || null;
@@ -489,5 +494,5 @@
         for (let i = 0; i < raw.length; i += 1) hash = Math.imul(hash ^ raw.charCodeAt(i), 16777619);
         return (hash >>> 0).toString(16);
     }
-    WSM.Context = { context, chat, messagesByIds, latestUserMessage, latestAssistantMessage, meowMessage, recentFullTextMessage, summaryContent, normalizeSummaryTag, identityNames, buildSource, sourceFingerprint, readWorldbook, listWorldbookEntries, listEnabledWorldNames, worldbookEntryKey, _test: { normalizeEntries, normalizeMessage, visibleMessageContent, meowFMContent, summaryContent, normalizeSummaryTag, recentFullTextMessage } };
+    WSM.Context = { context, chat, normalizeMessage, normalizeMessages, messagesByIds, latestUserMessage, latestAssistantMessage, meowMessage, recentFullTextMessage, summaryContent, normalizeSummaryTag, identityNames, buildSource, sourceFingerprint, readWorldbook, listWorldbookEntries, listEnabledWorldNames, worldbookEntryKey, _test: { normalizeEntries, normalizeMessage, normalizeMessages, visibleMessageContent, meowFMContent, summaryContent, normalizeSummaryTag, recentFullTextMessage } };
 })();

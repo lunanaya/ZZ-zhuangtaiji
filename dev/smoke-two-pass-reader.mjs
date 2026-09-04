@@ -13,6 +13,7 @@ globalThis.localStorage = {
 };
 
 await import('../src/defaults.js');
+await import('../src/context.js');
 
 const calls = [];
 const auditedModules = ['world','worldRules','factAnchors','resourceConstraints','organizations','map','characters','npcActivities','relationships','knowledge','schedules','tasks','triggers','threads','progression','processes','causalEffects','timeline'];
@@ -112,6 +113,12 @@ assert.equal(alreadyReadQueue[0].previousAssistantMessage, null, '达到楼层�
 assert.equal(WorldStateMachine.Engine._test.shouldReuseTurnPlan('regenerate'), true, '重新回复必须复用同一轮计划，不得再次调用状态API');
 assert.equal(WorldStateMachine.Engine._test.shouldReuseTurnPlan('swipe'), true, '切换回复候选必须复用同一轮计划');
 assert.equal(WorldStateMachine.Engine._test.shouldReuseTurnPlan('normal'), false);
+const interceptedUser = WorldStateMachine.Engine._test.interceptorTurnUserMessage([
+    { is_user: false, mes: '上一轮助手正文', send_date: 'assistant-1', index: 8 },
+    { is_user: true, mes: '刚刚发送、尚未进入全局上下文的新消息', send_date: 'user-2', index: 9 },
+]);
+assert.equal(interceptedUser.id, 'user-2', '生成拦截器必须直接读取传入 chat 里的新用户消息');
+assert.equal(interceptedUser.content, '刚刚发送、尚未进入全局上下文的新消息', '自动读取不能依赖可能仍滞后的 getContext().chat');
 const previousBodyReceipt = WorldStateMachine.Engine._test.previousBodyReceipt({ id: 'assistant-9', index: 18, content: '上一轮正文' });
 assert.equal(previousBodyReceipt.floor, 19, '手动读取必须保存可见楼层的一基编号');
 assert.equal(previousBodyReceipt.messageId, 'assistant-9', '手动读取必须保存助手消息ID');
@@ -715,5 +722,16 @@ assert.equal(partialPrepared.incompleteEvidenceKeys.includes('tasks'), true);
 assert.equal(partialPrepared.reportedIncompleteEvidenceKeys.includes('processes'), false, 'request A explicitly audited an empty module, so request B may omit its empty array without a false retrieval-failed warning');
 WorldStateMachine.Storage = storageBeforePartial;
 WorldStateMachine.Api.complete = normalComplete;
+
+const oversizedPreviousBodyState = WorldStateMachine.Defaults.createState();
+oversizedPreviousBodyState.worldRules = Array.from({ length: 30 }, (_, index) => ({ id: `rule-${index}`, statement: `稳定规则${index}${'很长'.repeat(240)}` }));
+oversizedPreviousBodyState.characters = Array.from({ length: 30 }, (_, index) => ({ id: `person-${index}`, name: `人物${index}`, situation: `旧处境${'很长'.repeat(180)}`, activity: index < 2 ? 'HOT' : 'COLD' }));
+oversizedPreviousBodyState.map = { locations: Array.from({ length: 30 }, (_, index) => ({ id: `place-${index}`, name: `地点${index}` })), routes: Array.from({ length: 30 }, (_, index) => ({ from: `place-${index}`, to: `place-${index + 1}` })) };
+const compactPreviousBody = WorldStateMachine.Engine._test.compactPreviousBodyState(oversizedPreviousBodyState, { content: '人物1来到地点1。' });
+assert.equal(compactPreviousBody.worldRules, undefined, 'one-floor reads must not resend stable world rules');
+assert.equal(compactPreviousBody.map.routes, undefined, 'one-floor reads must not resend the complete route graph');
+assert.ok(compactPreviousBody.characters.length <= 12, 'one-floor reads must cap relevant character context');
+assert.ok(JSON.stringify(compactPreviousBody).length < JSON.stringify(oversizedPreviousBodyState).length / 3, 'one-floor read state should be substantially smaller than the stored state');
+assert.equal(oversizedPreviousBodyState.worldRules.length, 30, 'payload compaction must not mutate stored state');
 
 console.log('Two-pass large-source smoke tests passed');

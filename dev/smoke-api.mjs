@@ -199,6 +199,12 @@ const repairedEvidence = WorldStateMachine.Api._test.repairTruncatedJson('{"evid
 assert.equal(repairedEvidence.evidence.canon[0], '覆盖全部后半的核心摘要');
 assert.deepEqual(repairedEvidence.evidence.sourceRefs, ['chat:1', 'chat:2']);
 assert.equal(repairedEvidence.evidence.characters, undefined, 'an unfinished evidence module must be discarded as a whole');
+const repairedDelta = WorldStateMachine.Api._test.extractJson(
+    '{"stateDelta":{"statePatch":{"world":{"location":{"current":"揽月轩"}}},"collectionOps":[]},"timelineEntry":{"summary":"尚未写完',
+    { jsonContract: 'delta' },
+);
+assert.equal(repairedDelta.stateDelta.statePatch.world.location.current, '揽月轩', '上一轮正文的完整 stateDelta 不得因尾部审计字段截断而整份丢弃');
+assert.deepEqual(repairedDelta.stateDelta.collectionOps, []);
 const parsedStream = WorldStateMachine.Api._test.parseSseResponse('data: {"choices":[{"delta":{"content":"{\\"evidence\\":"}}]}\n\ndata: {"choices":[{"delta":{"content":"{\\"canon\\":[\\"摘要\\"]}}"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n');
 assert.equal(parsedStream.choices[0].message.content, '{"evidence":{"canon":["摘要"]}}');
 assert.equal(parsedStream.choices[0].finish_reason, 'stop');

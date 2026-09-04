@@ -142,7 +142,15 @@
         popup.setAttribute('role', 'dialog');
         popup.setAttribute('aria-modal', 'true');
         popup.setAttribute('aria-live', 'polite');
-        popup.innerHTML = `<div class="wsm-turn-read-card"><span class="wsm-turn-read-spinner" aria-hidden="true"></span><div><strong data-turn-read-title>正在读取上一轮正文</strong><p data-turn-read-details>正在准备状态增量…</p><small data-turn-read-status>读取状态：API 1/1</small></div></div>`;
+        popup.innerHTML = `<div class="wsm-turn-read-card"><span class="wsm-turn-read-spinner" aria-hidden="true"></span><div><strong data-turn-read-title>正在读取上一轮正文</strong><p data-turn-read-details>正在准备状态增量…</p><small data-turn-read-status>读取状态：API 1/1</small><div class="wsm-turn-read-actions" data-turn-read-actions hidden><button type="button" data-turn-read-dismiss>暂不读取</button><button type="button" data-turn-read-retry>再次读取</button></div></div></div>`;
+        popup.querySelector('[data-turn-read-dismiss]')?.addEventListener('click', () => { popup.hidden = true; });
+        popup.querySelector('[data-turn-read-retry]')?.addEventListener('click', async () => {
+            updateTurnReadPopup({ state: 'running', message: '正在再次读取上一轮正文', details: '按你的选择重新调用一次 API' });
+            try { await WSM.Engine?.readPreviousBody?.(); }
+            catch (error) {
+                updateTurnReadPopup({ state: 'error', retry: true, message: '再次读取仍然失败', details: String(error?.message || error) });
+            }
+        });
         document.body.appendChild(popup);
         return popup;
     }
@@ -154,7 +162,8 @@
             details: progress.details || '正在推理并更新插件现有内容…',
             status: state === 'running' ? '读取状态：进行中 · API 1/1'
                 : (state === 'success' ? '读取状态：已完成' : '读取状态：读取失败'),
-            closeDelay: state === 'running' ? null : (state === 'success' ? 450 : 1800),
+            retry: progress.retry === true,
+            closeDelay: state === 'running' || progress.retry === true ? null : (state === 'success' ? 450 : 1800),
         };
     }
     function updateTurnReadPopup(progress = {}) {
@@ -166,14 +175,17 @@
             turnReadPopupTimer = null;
         }
         popup.dataset.state = state;
+        popup.dataset.retry = view.retry ? 'true' : 'false';
         popup.hidden = false;
         const title = popup.querySelector('[data-turn-read-title]');
         const details = popup.querySelector('[data-turn-read-details]');
         const status = popup.querySelector('[data-turn-read-status]');
+        const actions = popup.querySelector('[data-turn-read-actions]');
         if (title) title.textContent = view.title;
         if (details) details.textContent = view.details;
         if (status) status.textContent = view.status;
-        if (state !== 'running') {
+        if (actions) actions.hidden = !view.retry;
+        if (state !== 'running' && view.closeDelay !== null) {
             turnReadPopupTimer = window.setTimeout(() => {
                 popup.hidden = true;
                 turnReadPopupTimer = null;

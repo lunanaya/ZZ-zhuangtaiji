@@ -3918,14 +3918,14 @@
         };
         try {
             const taskPrompt = latestOnly
-                ? `${settings.reconcilerPrompt}\n\n${TRUTH_POLICY_PROMPT}\n\n这是手动“读取上一轮正文”的唯一一次调用。preState 是“读取当前聊天”已经建立好的完整基础，不得重建整张状态表。先把 actualAssistantMessage 与现有面板逐项联系起来：正文明确改变了某个栏目，或能依据正文已成立事实可靠推导出新的当前值时，输出该项的最小增量。随后在同一次对账中执行生命周期清理：已完成、已失效、被新事实推翻的旧状态必须更新、归档或 remove；对当前场景、人物关系、未完事务、后续因果和长期记忆都已无作用的 L1 临时信息可以 remove。仍在生效、仍可能影响后续、正文未否定的信息必须保留；核心设定、长期事实、稳定人物背景和 L3 锚点不得因本轮未提及而删除。人物、事务、事件等列表中若旧描述已被本轮事实否定，优先用 update/replace 改成最新处境，不得同时残留矛盾旧描述；只有条目已经彻底失效或没有继续保留价值时才 remove。不要续写、不要规划下一轮、不要推进离屏世界、不要复述未变化模块。必须返回且只返回一个 JSON 对象，最外层必须是 {"stateDelta":{"statePatch":{},"collectionOps":[]},"timelineEntry":{},"actualChanges":[]}；严禁直接返回 time、season、location 等 world 内部字段。对象模块的变化写入 statePatch；列表条目只用 collectionOps，每项必须包含 module、op、id，create/update/replace 还必须包含合并后的完整 value。没有事实变化时仍返回 "stateDelta":{"statePatch":{},"collectionOps":[]}。不得要求第二次调用。`
+                ? `你是“上一轮正文”增量结算器，不是故事续写者。\n${TRUTH_POLICY_PROMPT}\npreState 是可靠基础，只读取 actualAssistantMessage 已经明确发生或能唯一推导的事实；未提及旧项由本地保留，严禁重建或复述整张状态表。更新被正文改变的当前值；已完成或被推翻的旧项用 update/replace，只有彻底失效时才 remove。不要规划下一轮、不要推进离屏世界。只输出闭合 JSON：{"stateDelta":{"statePatch":{},"collectionOps":[]},"timelineEntry":{},"actualChanges":[]}。对象模块变化写 statePatch；列表只写 collectionOps，每项含 module、op、id，create/update/replace 还含合并后的完整 value。没有变化也返回空 stateDelta。actualChanges 最多6条，禁止解释、Markdown、完整状态及第二次调用。`
                 : `${settings.reconcilerPrompt}\n\n${TRUTH_POLICY_PROMPT}\n\n本次结算必须在同一个 JSON 响应内同时完成增量状态结算、到期的离屏生态推进与世界书浓缩缓存更新。先结算 user/assistant 正文；再严格按 npcSchedule 执行一个有界后台 tick：realtime 可结算正文行动，background 只能沿既存 motives、currentGoals、routine、npcActivities、tasks、processes 或已成立因果继续，carry 必须保持。允许完全无变化，禁止给离屏人物凭空安排新目标、巧合或重大事件。用 npcUpdates 报告本次真正检查结果。除 stateDelta、timelineEntry、actualChanges、npcUpdates 字段外，返回 worldbookEntries 数组；每项沿用输入 worldbookRules 的 key，并只依据本轮 user/assistant 实际正文修正 core、triggers、rules、background。没有变化的状态模块和世界书条目必须省略，禁止为了显得完整而复述。不得要求第二次调用。`;
             const result = await WSM.Api.complete(taskPrompt, payload, latestOnly
                 // This operation only returns a delta. Reserving 4000 output
                 // tokens made reasoning providers spend most of the gateway
                 // window before emitting JSON. Streaming also keeps custom
                 // reverse proxies alive while the first token is prepared.
-                ? { singleAttempt: true, maxTokens: 2600, timeoutMs: 90000, jsonContract: 'delta', stream: true, reasoningEffort: 'low' }
+                ? { singleAttempt: true, maxTokens: 4000, timeoutMs: 90000, jsonContract: 'delta', stream: true, reasoningEffort: 'low', omitJailbreak: true }
                 : { singleAttempt: true });
             if (WSM.Storage.currentChatKey() !== operationChatKey) return null;
             const normalized = normalizeSettlementResult(result);

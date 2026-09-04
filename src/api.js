@@ -439,11 +439,15 @@
         const handler = (data) => {
             const ownsRequest = (Array.isArray(data?.messages) ? data.messages : []).some((message) => String(message?.content || '').includes(marker));
             const gptModeAlias = settings.gptMode === true && /gpt/i.test(String(data?.model || settings.model || ''));
-            if (!marker || !ownsRequest || (!isGptReasoningModel(data?.model) && !gptModeAlias)) return;
+            const taskReasoningEffort = String(settings.taskReasoningEffort || '').trim();
+            if (!marker || !ownsRequest || (!taskReasoningEffort && !isGptReasoningModel(data?.model) && !gptModeAlias)) return;
             // Internal state updates need reliable JSON, not lengthy hidden reasoning.
-            // Keeping reasoning low prevents GPT reasoning models from exhausting the
-            // reverse proxy timeout before they begin emitting the state object.
-            data.reasoning_effort = 'low';
+            // This hook also covers Gemini requests made through generateRaw.
+            // options.reasoningEffort used to be lost on that path, so the
+            // client's high/default thinking level consumed almost the entire
+            // output budget before the JSON body began.
+            data.reasoning_effort = taskReasoningEffort || 'low';
+            data.include_reasoning = false;
             data.verbosity = 'low';
         };
         eventSource.on(eventName, handler);
@@ -570,9 +574,12 @@
             ? Math.max(5000, taskTimeout)
             : Math.max(180000, Number(settings.timeoutMs || 0));
         const maxTokens = outputTokens(settings, options);
-        const requestSettings = Object.assign({}, settings, { maxTokens });
+        const requestSettings = Object.assign({}, settings, {
+            maxTokens,
+            taskReasoningEffort: options.reasoningEffort || '',
+        });
         const messages = [
-            { role: 'system', content: systemPrompt(system, settings.jailbreakPrompt) },
+            { role: 'system', content: systemPrompt(system, options.omitJailbreak === true ? '' : settings.jailbreakPrompt) },
             { role: 'user', content: JSON.stringify(payload) },
         ];
         const meta = {

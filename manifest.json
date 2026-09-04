@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "world_state_machine",
   "display_name": "芝芝状态机系统",
-    "version": "0.16.34",
+    "version": "0.16.36",
   "description": "持久化世界状态、NPC后台行为、事件触发与单次轮次结算",
   "author": "芝芝",
   "loading_order": 100,

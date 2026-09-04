@@ -85,6 +85,7 @@ SillyTavern.getContext = () => ({
         removeListener(_name, handler) { if (completionSettingsHandler === handler) completionSettingsHandler = null; },
     },
     async generateRaw(request) {
+        tavernRequest = request;
         tavernGenerationData = { model: 'gemini-3.1-pro-preview', messages: request.prompt };
         completionSettingsHandler?.(tavernGenerationData);
         return '{"ok":true}';
@@ -93,6 +94,11 @@ SillyTavern.getContext = () => ({
 assert.deepEqual(await complete('BASE-SYSTEM', { task: 'tavern-gemini-unchanged' }), { ok: true });
 assert.equal(tavernGenerationData.reasoning_effort, undefined, 'Gemini Tavern requests must remain unchanged');
 assert.equal(tavernGenerationData.verbosity, undefined);
+assert.deepEqual(await complete('BASE-SYSTEM', { task: 'tavern-gemini-state-read' }, { reasoningEffort: 'low', omitJailbreak: true }), { ok: true });
+assert.equal(tavernGenerationData.reasoning_effort, 'low', 'bounded Gemini state reads must override the client thinking level');
+assert.equal(tavernGenerationData.include_reasoning, false);
+assert.equal(tavernGenerationData.verbosity, 'low');
+assert.doesNotMatch(tavernRequest.prompt[0].content, /CUSTOM-JAILBREAK-MARKER/, 'focused state reads must not inherit the chat jailbreak prompt');
 settings.gptMode = false;
 
 SillyTavern.getContext = () => ({

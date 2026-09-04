@@ -340,11 +340,22 @@ const depthPrompts = WorldStateMachine.Injection.composeByDepth(state, { ambient
 assert.match(depthPrompts[0], /\[外置状态权威\]/);
 assert.match(depthPrompts[0], /\[环境与路人反应\]/);
 assert.match(depthPrompts[1], /\[世界状态\]/);
+const coreSnapshotWithoutAuditMeta = structuredClone(state);
+delete coreSnapshotWithoutAuditMeta.world.time.truthStatus;
+delete coreSnapshotWithoutAuditMeta.world.location.currentMeta;
+assert.match(WorldStateMachine.Injection.composeByDepth(coreSnapshotWithoutAuditMeta)[1], /时间：周二 14:30/);
+assert.match(WorldStateMachine.Injection.composeByDepth(coreSnapshotWithoutAuditMeta)[1], /地点：夏家·客厅/);
 assert.match(depthPrompts[1], /\[人物概况\]/);
+const coldUserState = structuredClone(state);
+coldUserState.characters.find((item) => item.id === 'user').activity = 'COLD';
+assert.match(WorldStateMachine.Injection.composeByDepth(coldUserState)[1], /林知夏｜核心人物/, '用户角色不得因记忆冷热状态从当前注入消失');
 assert.match(depthPrompts[2], /\[人物关系\]/);
 assert.doesNotMatch(Object.values(depthPrompts).join('\n'), /\[场景地图\]/, '所有注入深度都必须排除场景地图');
 assert.equal(depthPrompts[3], undefined, '没有对应内容时不应占用注入深度');
 assert.match(depthPrompts[4], /\[NPC活动轨迹\]/);
+assert.doesNotMatch(Object.values(depthPrompts).join('\n'), /模块提示词：/, '状态维护提示词不得注入正文模型');
+const historyOnlyForPlanning = WorldStateMachine.Injection.composeByDepth(state, { historyRecall: '不应出现在最终注入的历史原文' });
+assert.doesNotMatch(Object.values(historyOnlyForPlanning).join('\n'), /不应出现在最终注入的历史原文|定点历史召回/, '历史召回只用于后台核对，不得复制到正文注入');
 assert.doesNotMatch(result, /\[剧情节奏\]/, '剧情节奏默认关闭时不得注入');
 WorldStateMachine.Settings.update({ storyPacing: { mode: 'verySlow', allowSceneTransition: false, allowTimeSkip: false } });
 const verySlowPacing = WorldStateMachine.Injection.compose(state);
@@ -411,12 +422,14 @@ WorldStateMachine.Settings.update({ injectionModules: allModulesEnabled, injecti
 const crowdedBlocks = Object.fromEntries(Object.keys(WorldStateMachine.Defaults.INJECTION_MODULES)
     .map((id, index) => [id, `${id}-UNIQUE-${String(index).padStart(2, '0')}-` + '内容'.repeat(180)]));
 const crowdedInjection = WorldStateMachine.Injection.compose(state, {}, crowdedBlocks);
+const crowdedDepthInjection = Object.values(WorldStateMachine.Injection.composeByDepth(state, {}, crowdedBlocks)).join('\n\n');
 const generatedCrowded = WorldStateMachine.Injection.fallbackBlocks(state);
 Object.entries(WorldStateMachine.Defaults.INJECTION_MODULES).filter(([id]) => id !== 'map' && (generatedCrowded[id] || ['ambient','planner'].includes(id))).forEach(([, config]) => {
     assert.match(crowdedInjection, new RegExp(`\\[${config.label}\\]`));
 });
 assert.doesNotMatch(crowdedInjection, /knowledge-UNIQUE|tasks-UNIQUE|threads-UNIQUE|processes-UNIQUE/, '空状态模块不得被自由文本强行填满');
 assert.ok(crowdedInjection.length <= 3500 + '<WORLD_STATE>\n\n</WORLD_STATE>'.length);
+assert.ok(crowdedDepthInjection.length <= 3500, '分层注入必须共享同一个全局字符预算，不能按层倍增');
 WorldStateMachine.Settings.update({ injectionMaxChars: 500 });
 const tightState = structuredClone(state);
 tightState.worldRules = [{ id: 'rule-gate', factId: 'rule-gate', owner: 'worldRules', statement: '进入上层必须持有银色通行证', scope: ['黑塔上层'], conditions: ['准备进入黑塔上层'], exceptions: ['获得塔主明确许可'], delivery: 'resident', precedence: 90, truthStatus: 'confirmed', sourceRefs: ['worldbook:black-tower:p2'] }];

@@ -3925,7 +3925,10 @@
                 // tokens made reasoning providers spend most of the gateway
                 // window before emitting JSON. Streaming also keeps custom
                 // reverse proxies alive while the first token is prepared.
-                ? { singleAttempt: true, maxTokens: 4000, timeoutMs: 90000, jsonContract: 'delta', stream: true, reasoningEffort: 'low', omitJailbreak: true }
+                // A bounded delta normally uses far less than this, while 6000
+                // leaves enough room for Gemini's low-level thinking and a
+                // complete JSON close without inviting an oversized request.
+                ? { singleAttempt: true, maxTokens: 6000, timeoutMs: 90000, jsonContract: 'delta', stream: true, reasoningEffort: 'low', omitJailbreak: true }
                 : { singleAttempt: true });
             if (WSM.Storage.currentChatKey() !== operationChatKey) return null;
             const normalized = normalizeSettlementResult(result);

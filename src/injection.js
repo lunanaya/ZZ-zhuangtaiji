@@ -4,6 +4,7 @@
     const text = (value) => String(value ?? '').trim();
     const list = (value) => Array.isArray(value) ? value.filter(Boolean) : [];
     const join = (value) => list(value).join('、');
+    const PROTECTED_UNIT_SEPARATOR = '\uE000';
     const disclosureLabel = (value) => ({ confidential: '保密', restricted: '受限', public: '公开' }[value] || text(value));
     function truthLine(value, owner = {}) {
         const content = text(value);
@@ -14,6 +15,11 @@
         const status = text(owner?.truthStatus).toLowerCase();
         if (['suspected','assumed','unknown','not_established','failed'].includes(status)) return '';
         return content;
+    }
+    function snapshotLine(label, value) {
+        const content = text(value);
+        if (!content || /^(?:未明确|未知|unknown|not[_ -]?established)$/i.test(content)) return '';
+        return `${label}：${content}`;
     }
     function activeMemory(values, warmRelevant = () => false) {
         return list(values).filter((item) => {
@@ -171,10 +177,13 @@
 
     function fallbackBlocks(state, plan = {}) {
         const world = state.world || {};
+        const currentLocation = text(world.location?.current);
+        const isUserCharacter = (item) => text(item?.id).toLowerCase() === 'user' || (!!state.identities?.user && text(item?.name) === text(state.identities.user));
+        const isPresentHere = (item) => isUserCharacter(item) || (item?.present === true && (!currentLocation || !text(item?.location) || text(item.location) === currentLocation));
         const relevantNpcIds = new Set([
             ...(state.identities?.user ? ['user'] : []),
             ...(state.identities?.char ? ['char'] : []),
-            ...list(state.characters).filter((item) => item.present || item.location === world.location?.current).map((item) => item.id),
+            ...list(state.characters).filter((item) => isPresentHere(item) || item.location === currentLocation).map((item) => item.id),
             ...list(state.causalEffects).filter((item) => item.status === 'active').flatMap((item) => list(item.affectedIds)),
         ]);
         const touchesRelevant = (ids) => list(ids).some((id) => relevantNpcIds.has(id));
@@ -194,18 +203,25 @@
         });
         return {
             world: [
-                world.time?.display ? truthLine(`时间：${world.time.display}`, world.time) : '',
-                world.season ? truthLine(`季节：${world.season}`, world.seasonMeta) : '',
-                world.location?.current ? truthLine(`地点：${world.location.current}`, world.location.currentMeta) : '',
-                world.location?.environment ? truthLine(`环境：${world.location.environment}`, world.location.environmentMeta) : '',
-                world.location?.weather ? truthLine(`天气：${world.location.weather}`, world.location.weatherMeta) : '',
+                // These are the primary current-scene coordinates. If the
+                // state has a value, never let missing audit metadata erase it
+                // from the prose prompt; doing so leaves historical rules but
+                // removes the actual "where and when" the model needs most.
+                snapshotLine('时间', world.time?.display),
+                snapshotLine('季节', world.season),
+                snapshotLine('地点', world.location?.current),
+                snapshotLine('环境', world.location?.environment),
+                snapshotLine('天气', world.location?.weather),
                 ...list(world.currentConditions).map((value) => {
                     const detail = list(world.currentConditionDetails).find((item) => text(item?.value) === text(value));
                     return truthLine(`当前客观状态：${value}`, detail || { truthStatus: 'unknown', basis: ['该状态没有绑定来源'] });
                 }),
             ].filter(Boolean).join('\n'),
             factAnchors: activeMemory(state.factAnchors).map((item) => truthLine(`事实锚点：${item.fact}${item.scope ? `｜范围：${item.scope}` : ''}`, item)).join('\n'),
-            worldRules: list(state.worldRules).filter((item) => requiredFactIds.has(text(item?.factId || item?.id)) || item.delivery === 'resident' || (text(item.activity).toUpperCase() !== 'COLD' && WSM.Facts?.requiredByContext?.(item, `${text(WSM.Context?.latestUserMessage?.()?.content)}\n${text(plan?.advanceDecision?.direction)}`))).sort((a, b) => Number(b.precedence || 0) - Number(a.precedence || 0)).map((item) => truthLine(WSM.Facts?.render?.(item, state) || item.statement, item)).join('\n'),
+            worldRules: list(state.worldRules).filter((item) => requiredFactIds.has(text(item?.factId || item?.id)) || item.delivery === 'resident' || (text(item.activity).toUpperCase() !== 'COLD' && WSM.Facts?.requiredByContext?.(item, `${text(WSM.Context?.latestUserMessage?.()?.content)}\n${text(plan?.advanceDecision?.direction)}`))).sort((a, b) => {
+                const requiredDelta = Number(requiredFactIds.has(text(b?.factId || b?.id))) - Number(requiredFactIds.has(text(a?.factId || a?.id)));
+                return requiredDelta || Number(b.precedence || 0) - Number(a.precedence || 0);
+            }).map((item) => truthLine(WSM.Facts?.render?.(item, state) || item.statement, item)).filter(Boolean).join(PROTECTED_UNIT_SEPARATOR),
             resourceConstraints: activeConstraints.map((item) => truthLine([
                 `${item.subjectId ? `${entityName(state, item.subjectId, item.subjectId)}：` : ''}${item.condition}`,
                 item.amount ? `数量/额度：${item.amount}` : '',
@@ -226,7 +242,10 @@
                 return response ? `【系统生成/即时反应】${actor}：${response}` : '';
             }).filter(Boolean).join('\n'),
             map: mapSlice(state, plan),
-            characters: activeMemory(state.characters, (item) => item.present || relevantNpcIds.has(item.id)).map((item) => truthLine([
+            characters: list(state.characters).filter((item) => isUserCharacter(item) || isPresentHere(item) || (!!currentLocation && text(item.location) === currentLocation) || activeMemory([item], (value) => relevantNpcIds.has(value.id)).length).map((item) => {
+                const present = isPresentHere(item);
+                const location = isUserCharacter(item) ? (currentLocation || text(item.location)) : text(item.location);
+                return truthLine([
                 `${entityName(state, item.id, item.name)}｜${item.maintenanceLevel === 'active' ? '活跃NPC' : '核心人物'}`,
                 item.identity ? truthLine(`身份：${item.identity}`, item.identityMeta || item) : '',
                 list(item.affiliationRefs).length ? `所属引用：${join(item.affiliationRefs)}` : '',
@@ -235,11 +254,12 @@
                 list(item.currentGoals).length ? `当前目标：${join(item.currentGoals)}` : '',
                 item.routine ? `日常安排：${item.routine}` : '',
                 item.availability ? `当前可用性：${item.availability}` : '',
-                item.present ? `位置：${item.location || world.location?.current || '当前场景'}（在场）` : `位置：${item.location || '未知地点'}`,
+                present ? `位置：${location || '当前场景'}（在场）` : `位置：${location || '未知地点'}`,
                 item.situation ? `重要处境：${item.situation}` : '',
                 list(item.persistentConditions).length ? `持续状态：${join(list(item.persistentConditions).map((condition) => typeof condition === 'string' ? condition : truthLine([condition.name, condition.effect, condition.recovery].filter(Boolean).join('｜'), condition)))}` : '',
                 list(item.importantItems).length ? `重要物品：${join(list(item.importantItems).map((owned) => typeof owned === 'string' ? owned : truthLine([owned.name, owned.status, owned.significance].filter(Boolean).join('｜'), owned)))}` : '',
-            ].filter(Boolean).join('；'), item)).join('\n'),
+                ].filter(Boolean).join('；'), item);
+            }).join('\n'),
             npcActivities: recentNpcActivities.map((item) => truthLine(`${entityName(state, item.characterId)}：${item.movement ? `${item.movement}｜` : ''}${item.location ? `${item.location}｜` : ''}${item.action}${item.currentRole ? `｜当前作用：${item.currentRole}` : ''}`, item)).join('\n'),
             relationships: activeMemory(state.relationships, (item) => relevantNpcIds.has(item.from) || relevantNpcIds.has(item.to)).map((item) => truthLine([
                 `${entityName(state, item.from) || '?'} → ${entityName(state, item.to) || '?'}`,
@@ -260,7 +280,7 @@
                 join(list(item.suspectedBy).map((id) => entityName(state, id))) ? `怀疑：${join(list(item.suspectedBy).map((id) => entityName(state, id)))}` : '',
                 join(list(item.misunderstoodBy).map((id) => entityName(state, id))) ? `误解：${join(list(item.misunderstoodBy).map((id) => entityName(state, id)))}` : '',
                 join(list(item.unknownTo).map((id) => entityName(state, id))) ? `未知：${join(list(item.unknownTo).map((id) => entityName(state, id)))}` : '',
-            ].filter(Boolean).join('｜'), item)).join('\n'),
+            ].filter(Boolean).join('｜'), item)).filter(Boolean).join(PROTECTED_UNIT_SEPARATOR),
             schedules: activeMemory(state.schedules, (item) => list(item.participantIds).some((id) => relevantNpcIds.has(id))).filter((item) => ['agreed','scheduled','changed'].includes(item.status)).map((item) => truthLine([
                 item.title,
                 list(item.participantIds).length ? `参与者：${join(list(item.participantIds).map((id) => entityName(state, id)))}` : '',
@@ -287,7 +307,6 @@
             causalEffects: activeMemory(state.causalEffects, (item) => item.status === 'active' && touchesRelevant(item.affectedIds)).filter((item) => item.status === 'active').map((item) => truthLine([item.cause || item.causeRef, ...list(item.steps), item.result].filter(Boolean).join(' → '), item)).join('\n'),
             pacing: pacingBlock(),
             planner: [
-                plan.historyRecall ? `本轮定点历史召回（仅用于核对当前行动，不代表重读全部历史）：\n${text(plan.historyRecall)}` : '',
                 plan.advanceDecision?.direction ? `本轮方向：${plan.advanceDecision.direction}` : '',
                 plan.advanceDecision?.mode ? `推进方式：${plan.advanceDecision.mode}；强度：${plan.advanceDecision.intensity || 'none'}` : '',
                 ...list(plan.eligibleDevelopments).map((value) => `可以：${value}`),
@@ -314,14 +333,14 @@
     }
 
     function dedupeContent(content, seen) {
-        return text(content).split(/\n+/).map((line) => line.trim()).filter(Boolean).filter((line) => {
+        return text(content).split(PROTECTED_UNIT_SEPARATOR).map((unit) => unit.split(/\n+/).map((line) => line.trim()).filter(Boolean).filter((line) => {
             const canonical = canonicalLine(line);
             if (!canonical) return false;
             const duplicate = seen.some((previous) => previous === canonical || (canonical.length >= 12 && previous.length >= 12 && (previous.includes(canonical) || canonical.includes(previous))));
             if (duplicate) return false;
             seen.push(canonical);
             return true;
-        }).join('\n');
+        }).join('\n')).filter(Boolean).join(PROTECTED_UNIT_SEPARATOR);
     }
 
     function removeRatingNumbers(value) {
@@ -348,20 +367,40 @@
     function composeWithinBudget(diceBlock, candidates, configuredMax) {
         const entries = candidates.map((item) => ({
             header: `[${item.label}]\n`,
-            payload: `${item.content}${item.instruction ? `\n使用规则：${item.instruction}` : ''}`,
+            content: text(item.content),
+            payload: `${text(item.content).split(PROTECTED_UNIT_SEPARATOR).join('\n')}${item.instruction ? `\n使用规则：${item.instruction}` : ''}`,
             protected: item.protected === true,
             priority: Number(item.priority ?? 50),
         }));
-        const maxChars = Math.max(500, Number(configuredMax || 3500));
+        // `configuredMax` is a slice of the one global injection budget.  Do
+        // not silently turn every depth into another 500-character budget.
+        const maxChars = Math.max(0, Number(configuredMax || 0));
         const fullSections = [diceBlock, ...entries.map((item) => item.header + item.payload)].filter(Boolean);
         const fullBody = fullSections.join('\n\n');
         if (fullBody.length <= maxChars) return fullBody;
         const protectedEntries = entries.filter((item) => item.protected);
         const protectedBody = [diceBlock, ...protectedEntries.map((item) => item.header + item.payload)].filter(Boolean).join('\n\n');
         // Hard rules (including scope, conditions and exceptions) and secret
-        // knowledge boundaries are indivisible. If they alone exceed the user
-        // budget, correctness wins over a misleading truncation.
-        if (protectedBody.length >= maxChars) return protectedBody;
+        // boundaries are indivisible. If they exceed the budget, keep complete
+        // facts in priority order and omit whole facts instead of returning a
+        // partial rule or letting each depth multiply the configured limit.
+        if (protectedBody.length >= maxChars) {
+            const sections = diceBlock ? [diceBlock] : [];
+            let used = sections.join('\n\n').length;
+            protectedEntries.slice().sort((a, b) => b.priority - a.priority).forEach((item) => {
+                const lines = item.content.split(PROTECTED_UNIT_SEPARATOR).map((unit) => unit.trim()).filter(Boolean);
+                const kept = [];
+                lines.forEach((line) => {
+                    const candidate = `${kept.length ? '\n' : ''}${line}`;
+                    const sectionOverhead = kept.length ? 0 : (sections.length ? 2 : 0) + item.header.length;
+                    if (used + sectionOverhead + candidate.length > maxChars) return;
+                    kept.push(line);
+                    used += sectionOverhead + candidate.length;
+                });
+                if (kept.length) sections.push(item.header + kept.join('\n'));
+            });
+            return sections.join('\n\n');
+        }
         let remaining = maxChars - protectedBody.length - (protectedBody ? 2 : 0);
         const allocations = new Map();
         const regularEntries = entries.filter((item) => !item.protected);
@@ -425,12 +464,15 @@
             groups.get(key).facts.push(fact);
             includedFactIds.add(fact.factId);
         });
-        return [...groups.values()].map((group) => ({
-            ...group,
-            content: group.facts.map((fact) => WSM.Facts.render(fact, state)).filter(Boolean).join('\n'),
-            protected: group.facts.some((fact) => fact.owner === 'worldRules' || fact.owner === 'knowledge' || fact.type === 'rule'),
-            factIds: group.facts.map((fact) => fact.factId),
-        }));
+        return [...groups.values()].map((group) => {
+            const protectedGroup = group.facts.some((fact) => fact.owner === 'worldRules' || fact.owner === 'knowledge' || fact.type === 'rule');
+            return {
+                ...group,
+                content: group.facts.map((fact) => WSM.Facts.render(fact, state)).filter(Boolean).join(protectedGroup ? PROTECTED_UNIT_SEPARATOR : '\n'),
+                protected: protectedGroup,
+                factIds: group.facts.map((fact) => fact.factId),
+            };
+        });
     }
     const moduleBudgetPriority = Object.freeze({
         worldRules: 100, world: 95, resourceConstraints: 95, factAnchors: 90, knowledge: 90,
@@ -460,9 +502,7 @@
             const source = [(['ambient','planner'].includes(id) ? (supplied[id] || generated[id]) : generated[id]), projectedFacts].filter(Boolean).join('\n');
             const content = dedupeContent(removeRatingNumbers(replaceIdentityTokens(source, state)), seenFacts);
             if (!content) return;
-            const fixedInstruction = text(config.instruction);
-            const editablePrompt = text(settings.modulePrompts?.[id]);
-            const instruction = [fixedInstruction, editablePrompt && editablePrompt !== fixedInstruction ? `模块提示词：${editablePrompt}` : ''].filter(Boolean).join('\n');
+            const instruction = text(config.instruction);
             candidates.push({ label: config.label, content, instruction, protected: ['worldRules','knowledge'].includes(id) || factGroups.some((group) => group.owner === id && group.protected), priority: moduleBudgetPriority[id] || 50 });
         });
         factGroups.filter((group) => group.owner === 'worldbook').forEach((group) => {
@@ -494,9 +534,10 @@
             const source = [(['ambient','planner'].includes(id) ? (supplied[id] || generated[id]) : generated[id]), projectedFacts].filter(Boolean).join('\n');
             const content = dedupeContent(removeRatingNumbers(replaceIdentityTokens(source, state)), seenFacts);
             if (!content) return;
-            const fixedInstruction = text(config.instruction);
-            const editablePrompt = text(settings.modulePrompts?.[id]);
-            const instruction = [fixedInstruction, editablePrompt && editablePrompt !== fixedInstruction ? `模块提示词：${editablePrompt}` : ''].filter(Boolean).join('\n');
+            // modulePrompts guide the state-maintenance model. Sending them to
+            // the prose model repeats implementation instructions every turn
+            // and can crowd out the actual current state.
+            const instruction = text(config.instruction);
             const depth = Math.max(0, Math.min(4, Math.round(Number(config.depth ?? defaultModule.depth ?? 2))));
             if (!groups.has(depth)) groups.set(depth, []);
             groups.get(depth).push({ id, label: config.label, content, instruction, protected: ['worldRules','knowledge'].includes(id) || factGroups.some((group) => group.owner === id && group.protected), priority: moduleBudgetPriority[id] || 50 });
@@ -510,16 +551,40 @@
         const diceBlock = settings.diceEnabled ? WSM.Dice?.injectionBlock?.(plan.diceRound) : '';
         const authorityBlock = '[外置状态权威]\n以下按重要性分层注入的 WORLD_STATE 共同构成本轮唯一状态来源。只输出叙事正文及用户明确要求的附加格式；不得另行输出 <INDRS>、<abstract>、<note> 或 GM_STATE。';
         const configuredMax = Math.max(500, Number(settings.injectionMaxChars || 3500));
-        const totalWeight = [...groups.values()].reduce((sum, items) => sum + items.reduce((size, item) => size + item.content.length + item.instruction.length, 0), 0) || 1;
+        const activeDepths = [...new Set([0, ...groups.keys()])].sort((a, b) => a - b);
+        const wrapperCost = activeDepths.reduce((sum, depth) => sum + `<WORLD_STATE depth="${depth}">\n\n</WORLD_STATE>`.length + 2, 0);
+        const bodyBudget = Math.max(0, configuredMax - wrapperCost);
+        const weights = new Map(activeDepths.map((depth) => {
+            const items = groups.get(depth) || [];
+            const contentWeight = items.reduce((size, item) => size + item.content.length + item.instruction.length, 0);
+            const fixedWeight = depth === 0 ? [diceBlock, authorityBlock].filter(Boolean).join('\n\n').length : 0;
+            return [depth, Math.max(1, contentWeight + fixedWeight)];
+        }));
+        const totalWeight = [...weights.values()].reduce((sum, weight) => sum + weight, 0) || 1;
+        const budgets = new Map();
+        // Reserve a useful slice for every populated depth before distributing
+        // surplus. Otherwise a large resident rule block at depth 0 can consume
+        // almost everything and erase the current world/character snapshot.
+        const basePerDepth = Math.min(400, Math.floor(bodyBudget / activeDepths.length));
+        let allocated = basePerDepth * activeDepths.length;
+        activeDepths.forEach((depth) => budgets.set(depth, basePerDepth));
+        const surplusBudget = Math.max(0, bodyBudget - allocated);
+        activeDepths.forEach((depth) => {
+            const extra = Math.floor(surplusBudget * weights.get(depth) / totalWeight);
+            budgets.set(depth, budgets.get(depth) + extra);
+            allocated += extra;
+        });
+        for (let index = 0; allocated < bodyBudget; index += 1, allocated += 1) {
+            const depth = activeDepths[index % activeDepths.length];
+            budgets.set(depth, budgets.get(depth) + 1);
+        }
         const prompts = {};
-        [...groups.entries()].sort((a, b) => a[0] - b[0]).forEach(([depth, candidates]) => {
-            const weight = candidates.reduce((size, item) => size + item.content.length + item.instruction.length, 0);
-            const budget = Math.max(500, Math.round(configuredMax * weight / totalWeight));
+        activeDepths.forEach((depth) => {
+            const candidates = groups.get(depth) || [];
             const fixed = depth === 0 ? [diceBlock, authorityBlock].filter(Boolean).join('\n\n') : '';
-            const body = composeWithinBudget(fixed, candidates, budget);
+            const body = composeWithinBudget(fixed, candidates, budgets.get(depth));
             prompts[depth] = `<WORLD_STATE depth="${depth}">\n${body}\n</WORLD_STATE>`;
         });
-        if (!prompts[0]) prompts[0] = `<WORLD_STATE depth="0">\n${[diceBlock, authorityBlock].filter(Boolean).join('\n\n')}\n</WORLD_STATE>`;
         return prompts;
     }
 

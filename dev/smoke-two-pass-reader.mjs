@@ -730,10 +730,9 @@ oversizedPreviousBodyState.worldRules = Array.from({ length: 30 }, (_, index) =>
 oversizedPreviousBodyState.characters = Array.from({ length: 30 }, (_, index) => ({ id: `person-${index}`, name: `人物${index}`, situation: `旧处境${'很长'.repeat(180)}`, activity: index < 2 ? 'HOT' : 'COLD' }));
 oversizedPreviousBodyState.map = { locations: Array.from({ length: 30 }, (_, index) => ({ id: `place-${index}`, name: `地点${index}` })), routes: Array.from({ length: 30 }, (_, index) => ({ from: `place-${index}`, to: `place-${index + 1}` })) };
 const compactPreviousBody = WorldStateMachine.Engine._test.compactPreviousBodyState(oversizedPreviousBodyState, { content: '人物1来到地点1。' });
-assert.equal(compactPreviousBody.worldRules, undefined, 'one-floor reads must not resend stable world rules');
-assert.equal(compactPreviousBody.map.routes, undefined, 'one-floor reads must not resend the complete route graph');
-assert.ok(compactPreviousBody.characters.length <= 12, 'one-floor reads must cap relevant character context');
-assert.ok(JSON.stringify(compactPreviousBody).length < JSON.stringify(oversizedPreviousBodyState).length / 3, 'one-floor read state should be substantially smaller than the stored state');
+assert.deepEqual(compactPreviousBody.worldRules, oversizedPreviousBodyState.worldRules, 'all rule rows and long text must reach the model');
+assert.deepEqual(compactPreviousBody.map, oversizedPreviousBodyState.map, 'all map locations and routes must reach the model');
+assert.deepEqual(compactPreviousBody.characters, oversizedPreviousBodyState.characters, 'all characters including unmentioned cold rows must reach the model');
 assert.equal(oversizedPreviousBodyState.worldRules.length, 30, 'payload compaction must not mutate stored state');
 
 console.log('Two-pass large-source smoke tests passed');

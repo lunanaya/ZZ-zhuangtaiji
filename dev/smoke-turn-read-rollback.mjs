@@ -115,4 +115,27 @@ events.get('deleted')();
 release({ stateDelta: { statePatch: { world: { weather: 'stale-response' } } } });
 await pending;
 assert.notEqual(WSM.Storage.load().world.weather, 'stale-response');
+// Full-state input, partial-field output: preserve old rows and add new facts.
+let fullState = WSM.Storage.load();
+fullState.characters = Array.from({ length: 20 }, (_, i) => ({ id: `npc-${i}`, name: `Person ${i}`, location: 'old-place', situation: 'old-context', activity: 'COLD' }));
+await WSM.Storage.save(fullState, 'full-state-input');
+ctx.chat.push(raw('full-state-body', false, 'Person 0 goes to new-place. New Person arrives.'));
+const beforeManualCalls = calls.length;
+responder = () => {
+    const { payload } = calls.at(-1);
+    assert.equal(payload.preState.characters.length, 20, 'manual read must include every stored character');
+    assert.equal(payload.recentChat, undefined, 'manual read must not fetch older chat');
+    assert.equal(payload.actualAssistantMessage.content, 'Person 0 goes to new-place. New Person arrives.');
+    return { stateDelta: { statePatch: {}, collectionOps: [
+        { module: 'characters', op: 'update', id: 'npc-0', value: { location: 'new-place' } },
+        { module: 'characters', op: 'create', id: 'new-npc', value: { id: 'new-npc', name: 'New Person', location: 'new-place' } },
+    ] }, actualChanges: [] };
+};
+await WSM.Engine.readPreviousBody();
+const afterManual = WSM.Storage.load();
+assert.equal(calls.length - beforeManualCalls, 1);
+assert.equal(afterManual.characters.find(item => item.id === 'npc-0').location, 'new-place');
+assert.equal(afterManual.characters.find(item => item.id === 'npc-0').situation, 'old-context', 'unchanged fields survive a partial update');
+assert.ok(afterManual.characters.some(item => item.id === 'npc-19'), 'unmentioned rows survive');
+assert.ok(afterManual.characters.some(item => item.id === 'new-npc'), 'new body facts can create a row');
 console.log('Turn read, edits, deletion rollback, retry, and late-response regression tests passed');

@@ -442,7 +442,7 @@
                     additionalProperties: true,
                 },
                 timelineEntry: { type: 'object', additionalProperties: true },
-                actualChanges: { type: 'array', items: {} },
+                actualChanges: { type: 'array', maxItems: 6, items: {} },
             },
             required: ['stateDelta','actualChanges'],
             additionalProperties: true,
@@ -662,6 +662,7 @@
                     reverse_proxy: endpointBase(settings.endpoint),
                     proxy_password: settings.apiKey || '',
                 };
+                if (options.jsonContract === 'delta') proxyBody.json_schema = structuredJsonSchema('delta');
                 if (body.reasoning_effort) {
                     // ST's OpenAI branch drops reasoning_effort for aliases
                     // outside its official-model allowlist. Its supported

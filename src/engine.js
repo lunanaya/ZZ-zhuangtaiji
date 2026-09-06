@@ -208,54 +208,13 @@
         return compact(clone);
     }
     function compactPreviousBodyState(state, assistantMessage = null, userMessage = null) {
-        const next = compactTurnState(state);
-        const evidenceText = `${safeText(assistantMessage?.content || assistantMessage)}\n${safeText(userMessage?.content || userMessage)}`.toLowerCase();
-        // Stable rules and unmentioned cold records are preserved by the local
-        // delta merge. Re-sending all of them made a one-floor reconciliation
-        // carry 50k+ characters and encouraged providers to reproduce the state.
-        delete next.worldRules;
-        const descriptorKeys = ['id', 'name', 'title', 'identity', 'information', 'objective', 'summary', 'result'];
-        const score = (item) => {
-            if (!item || typeof item !== 'object') return 0;
-            let value = item.present === true ? 8 : 0;
-            if (/^(?:hot|warm)$/i.test(safeText(item.activity))) value += 5;
-            descriptorKeys.forEach((key) => {
-                const term = safeText(item[key]).toLowerCase();
-                if (term.length >= 2 && evidenceText.includes(term)) value += 12;
-            });
-            return value;
-        };
-        const limits = {
-            factAnchors: 8, resourceConstraints: 8, organizations: 8, characters: 12,
-            npcActivities: 8, relationships: 10, knowledge: 8, schedules: 8,
-            tasks: 8, triggers: 8, threads: 8, processes: 8, causalEffects: 8, timeline: 6,
-        };
-        Object.entries(limits).forEach(([module, limit]) => {
-            const rows = Array.isArray(next[module]) ? next[module] : [];
-            next[module] = rows.map((item, index) => ({ item, index, score: score(item) }))
-                .sort((a, b) => b.score - a.score || b.index - a.index)
-                .slice(0, limit)
-                .sort((a, b) => a.index - b.index)
-                .map((entry) => entry.item);
-        });
-        if (next.map && typeof next.map === 'object') {
-            const currentLocation = safeText(next.world?.location?.current).toLowerCase();
-            const locations = Array.isArray(next.map.locations) ? next.map.locations : [];
-            next.map.locations = locations.filter((location) => {
-                const terms = [location?.id, location?.name, ...(Array.isArray(location?.aliases) ? location.aliases : [])]
-                    .map((value) => safeText(value).toLowerCase()).filter((value) => value.length >= 2);
-                return terms.some((term) => term === currentLocation || evidenceText.includes(term));
-            }).slice(-12);
-            delete next.map.routes;
-        }
-        const trim = (value) => {
-            if (typeof value === 'string') return boundedText(value, 420);
-            if (Array.isArray(value)) return value.slice(0, 12).map(trim);
-            if (!value || typeof value !== 'object') return value;
-            Object.keys(value).forEach((key) => { value[key] = trim(value[key]); });
-            return value;
-        };
-        return trim(next);
+        // A previous-body reconciliation receives every semantic panel and
+        // every stored row. Runtime and cached planner output are omitted, but no
+        // state item is relevance-filtered or truncated. The model returns a
+        // delta; local merging preserves every unchanged row.
+        void assistantMessage;
+        void userMessage;
+        return plannerState(state);
     }
     function captureChatMirror() {
         return (WSM.Context?.chat?.(WSM.Context?.context?.(), { includeHidden: true }) || []).map((message) => ({
@@ -3349,12 +3308,6 @@
             // normal generation after this plugin update gains searchable
             // meow_FM history without forcing another expensive full API read.
             await ensureDeterministicMeowLedger(current);
-            const recallQuery = [
-                WSM.Context.latestUserMessage()?.content,
-                current.world?.location?.current,
-                ...(current.characters || []).filter((item) => item.present).map((item) => item.name),
-            ].filter(Boolean).join('\n');
-            const historyRecall = WSM.Storage.retrieveHistory?.(recallQuery, { maxChars: 1200, evidenceCount: 4, state: current }) || { text: '' };
             const source = { currentUserAction: turnUserMessage || WSM.Context.latestUserMessage() };
             const previousAssistant = WSM.Context.latestAssistantMessage();
             const previousReceipt = previousBodyReceipt(previousAssistant);
@@ -3373,7 +3326,7 @@
             let normalizedResult;
             try {
                 result = await WSM.Api.complete(
-                    `${settings.plannerPrompt}\n\n这是普通轮次唯一一次状态机调用，只处理本次提供的 previousAssistantMessage 与 currentUserAction，并在同一个JSON响应内完成 RECONCILE_PREVIOUS→APPLY_USER_FACTS→REASON_NEXT。禁止追补或推断任何未提供的旧轮次。previousAssistantMessage 若非空，只结算其中已经实际发生的事实；再读取 currentUserAction，只写入用户本轮明确提供、声明或已经完成的事实，行动尝试和期望结果不得预判成功；最后根据更新后的状态推演本轮正文最合理的下一步。currentState 仅包含与本轮相关的活动状态；未提供的旧项由本地代码原样保留，严禁为完整而复述。只返回stateDelta、plan、moduleInjections、timelineEntry、actualChanges；禁止返回完整状态、npcUpdates、worldbookEntries、解释或思维过程。stateDelta只列真正变化，plan与moduleInjections只保留生成下一段必需的短字段，actualChanges最多6条，整个JSON不超过1800个中文字符；没有事实变化时stateDelta允许为空对象。不要续写正文。事务面板以用户角色为主角：主线/支线是主角目标；可触发事件是世界已经留下、尚未回应的剧情扣子。若返回affairsSuggestions，其中每项actionOptions必须针对具体内容生成，禁止固定模板。只输出一个闭合JSON。`,
+                    `${settings.plannerPrompt}\n\n这是普通轮次唯一一次状态机调用，只处理本次提供的 previousAssistantMessage 与 currentUserAction，并在同一个JSON响应内完成 RECONCILE_PREVIOUS→APPLY_USER_FACTS→REASON_NEXT。禁止追补或推断任何未提供的旧轮次。previousAssistantMessage 若非空，只结算其中已经实际发生的事实；再读取 currentUserAction，只写入用户本轮明确提供、声明或已经完成的事实，行动尝试和期望结果不得预判成功；最后根据更新后的状态推演本轮正文最合理的下一步。currentState 包含所有栏目与完整旧状态。对照最新正文推理更新，正文出现旧状态没有且值得保存的新事实时补建对应条目；未变化的旧项由本地原样保留。collectionOps 中 update 的 value 只写变化字段，create/replace 才写该条目的完整字段，禁止为完整而复述未变化内容。只返回stateDelta、plan、moduleInjections、timelineEntry、actualChanges；禁止返回完整状态、npcUpdates、worldbookEntries、解释或思维过程。stateDelta只列真正变化，plan与moduleInjections只保留生成下一段必需的短字段，actualChanges最多6条；优先完整表达全部必要更新，解释保持简短；没有事实变化时stateDelta允许为空对象。不要续写正文。事务面板以用户角色为主角：主线/支线是主角目标；可触发事件是世界已经留下、尚未回应的剧情扣子。若返回affairsSuggestions，其中每项actionOptions必须针对具体内容生成，禁止固定模板。只输出一个闭合JSON。`,
                     {
                         phase: 'TURN_RECONCILE_AND_PRE_GENERATION_REASONING',
                         // Ordinary turns receive the complete semantic state,
@@ -3383,13 +3336,12 @@
                         previousAssistantMessage: previousAssistantMemory,
                         previousAssistantFloor: previousAssistantMemory ? previousReceipt.floor : 0,
                         currentUserAction,
-                        historyRecall: historyRecall.text || '',
                         ...(diceRound ? { diceRound } : {}),
                     },
                     // Keep the complete state/input payload, but ask only for a
-                    // compact delta. Large output reservations were the main cause
-                    // of multi-minute provider stalls on ordinary turns.
-                    { singleAttempt: true, maxTokens: 2500, timeoutMs: 90000, jsonContract: 'delta', stream: true, reasoningEffort: 'low' },
+                    // field delta. Reasoning and changed fields share the user's
+                    // output budget; do not impose the old 2500-token ceiling.
+                    { singleAttempt: true, maxTokens: 9000, timeoutMs: 180000, jsonContract: 'delta', stream: true, reasoningEffort: 'low', omitJailbreak: true },
                 );
                 normalizedResult = normalizeSettlementResult(result);
                 if (mutationRevision !== chatMutationRevision) return WSM.Storage.load().planner;
@@ -3462,7 +3414,6 @@
             }
             const localPlan = Object.assign({}, settledResult?.plan || {}, {
                 ...(diceRound ? { diceRound } : {}),
-                ...(historyRecall.text ? { historyRecall: historyRecall.text } : {}),
             });
             current.planner = {
                 lastRunAt: Date.now(), turnKey: key, plan: localPlan,
@@ -3907,7 +3858,7 @@
             ? `只发送上一条助手正文与当前结构化状态 · 不附带最近聊天、thinking 或世界书 · API 1/1`
             : `最近 ${settleSource?.tavernTextContext?.recentFullTextMessages || 5} 层读取正文，更早楼层读取<${settleSource?.tavernTextContext?.summaryTag || 'meow_FM'}>总结 · 本轮事实观察 API 1 次`;
         reportProgress(latestOnly ? '正在读取上一轮正文' : '正在自动读取最新正文', 'running', progressDetails);
-        if (latestOnly) reportTurnReadProgress('正在读取上一轮正文', 'running', `${progressDetails} · 最长等待 75 秒`);
+        if (latestOnly) reportTurnReadProgress('正在读取上一轮正文', 'running', `${progressDetails} · 最长等待 180 秒`);
         const worldbookReport = latestOnly ? null : (WSM.WorldbookCompiler?.getReport?.(current.runtime?.worldbookInjection) || null);
         const payload = {
             phase: 'POST_GENERATION_RECONCILE',
@@ -3949,17 +3900,12 @@
         };
         try {
             const taskPrompt = latestOnly
-                ? `你是“上一轮正文”增量结算器，不是故事续写者。\n${TRUTH_POLICY_PROMPT}\npreState 是可靠基础，只读取 actualAssistantMessage 已经明确发生或能唯一推导的事实；未提及旧项由本地保留，严禁重建或复述整张状态表。更新被正文改变的当前值；已完成或被推翻的旧项用 update/replace，只有彻底失效时才 remove。不要规划下一轮、不要推进离屏世界。只输出闭合 JSON：{"stateDelta":{"statePatch":{},"collectionOps":[]},"timelineEntry":{},"actualChanges":[]}。对象模块变化写 statePatch；列表只写 collectionOps，每项含 module、op、id，create/update/replace 还含合并后的完整 value。没有变化也返回空 stateDelta。actualChanges 最多6条，禁止解释、Markdown、完整状态及第二次调用。`
+                ? `你是“上一轮正文”增量结算器，不是故事续写者。\n${TRUTH_POLICY_PROMPT}\npreState 包含全部既有语义状态，actualAssistantMessage 只包含最新一层正文。逐项对照正文与旧状态，但只返回正文造成的变化：未提及旧项由本地原样保留，严禁重建、枚举或复述整张状态表。更新被正文改变的当前值；正文出现旧状态没有且值得持续保存的新事实时用 create 补建；已完成或被推翻的旧项用 update/replace，只有彻底失效时才 remove。不要规划下一轮、不要推进离屏世界。只输出闭合 JSON：{"stateDelta":{"statePatch":{},"collectionOps":[]},"timelineEntry":{},"actualChanges":[]}。对象模块变化写 statePatch；列表只写 collectionOps，每项含 module、op、id，update 的 value 只写变化字段，由本地合并保留该条目的其他字段；create/replace 的 value 写新条目的完整字段。完整表达全部必要更新，actualChanges 最多6条；没有变化返回空 stateDelta。禁止解释、Markdown、完整状态及第二次调用。`
                 : `${settings.reconcilerPrompt}\n\n${TRUTH_POLICY_PROMPT}\n\n本次结算必须在同一个 JSON 响应内同时完成增量状态结算、到期的离屏生态推进与世界书浓缩缓存更新。先结算 user/assistant 正文；再严格按 npcSchedule 执行一个有界后台 tick：realtime 可结算正文行动，background 只能沿既存 motives、currentGoals、routine、npcActivities、tasks、processes 或已成立因果继续，carry 必须保持。允许完全无变化，禁止给离屏人物凭空安排新目标、巧合或重大事件。用 npcUpdates 报告本次真正检查结果。除 stateDelta、timelineEntry、actualChanges、npcUpdates 字段外，返回 worldbookEntries 数组；每项沿用输入 worldbookRules 的 key，并只依据本轮 user/assistant 实际正文修正 core、triggers、rules、background。没有变化的状态模块和世界书条目必须省略，禁止为了显得完整而复述。不得要求第二次调用。`;
             const result = await WSM.Api.complete(taskPrompt, payload, latestOnly
-                // This operation only returns a delta. Reserving 4000 output
-                // tokens made reasoning providers spend most of the gateway
-                // window before emitting JSON. Streaming also keeps custom
-                // reverse proxies alive while the first token is prepared.
-                // A bounded delta normally uses far less than this, while 6000
-                // leaves enough room for Gemini's low-level thinking and a
-                // complete JSON close without inviting an oversized request.
-                ? { singleAttempt: true, maxTokens: 6000, timeoutMs: 90000, jsonContract: 'delta', stream: true, reasoningEffort: 'low', omitJailbreak: true }
+                // Full old state is input; only changed fields are output.
+                // Allow reasoning plus a complete delta within the user's budget.
+                ? { singleAttempt: true, maxTokens: 9000, timeoutMs: 180000, jsonContract: 'delta', stream: true, reasoningEffort: 'low', omitJailbreak: true }
                 : { singleAttempt: true });
             if (mutationRevision !== chatMutationRevision) return null;
             if (WSM.Storage.currentChatKey() !== operationChatKey) return null;

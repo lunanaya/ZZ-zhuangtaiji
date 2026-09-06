@@ -149,6 +149,24 @@
         return root[KEY];
     }
     function get() { return store(); }
+    function parseOutputTokens(value) {
+        const text = String(value ?? '').normalize('NFKC').trim();
+        const number = /^\d+$/.test(text) ? Number(text) : NaN;
+        if (!Number.isInteger(number) || number < 256 || number > 16384) {
+            throw new Error('单次输出 Tokens 请填写 256–16384 的整数；本次未保存，请检查输入框');
+        }
+        return number;
+    }
+    async function persist() {
+        const ctx = context();
+        let save = ctx?.saveSettingsDebounced || window.saveSettingsDebounced;
+        if (typeof save !== 'function') {
+            const module = await import('/script.js');
+            save = module.saveSettingsDebounced;
+        }
+        if (typeof save !== 'function') throw new Error('当前酒馆未提供设置保存方法；设置仅在本页生效');
+        save();
+    }
     function update(patch) {
         Object.assign(store(), patch || {});
         const ctx = context();
@@ -157,5 +175,5 @@
         window.dispatchEvent(new CustomEvent('wsm-settings-changed'));
         return get();
     }
-    WSM.Settings = { defaults, get, update };
+    WSM.Settings = { defaults, get, update, persist, parseOutputTokens };
 })();

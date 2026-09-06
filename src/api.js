@@ -492,7 +492,7 @@
         };
     }
     function outputTokens(settings, options = {}) {
-        const configured = Math.max(256, Number(settings.maxTokens ?? 5000) || 5000);
+        const configured = Math.max(256, Number(settings.maxTokens ?? 9000) || 9000);
         const taskLimit = Math.max(256, Number(options.maxTokens ?? configured) || configured);
         // A task-level value is a ceiling, never permission to override the
         // user's configured output budget. The previous implementation forced
@@ -613,6 +613,7 @@
             maxTokens,
         };
         const requestStartedAt = Date.now();
+        const requestIdentity = `运行 v${WSM.version || '未知'} · 请求 ${new Date(requestStartedAt).toISOString()} · 配置 ${settings.maxTokens ?? 9000} / 本次 ${maxTokens} Tokens`;
         const headers = { 'Content-Type': 'application/json' };
         if (settings.apiKey) headers.Authorization = `Bearer ${settings.apiKey}`;
         const body = {
@@ -700,7 +701,7 @@
             if (providerError) throw new Error(`Planner API 拒绝了任务 ${meta.task}：${providerError}；输入 ${meta.inputChars} 字，输出上限 ${maxTokens} Tokens，流式 ${options.stream === true ? '已开启' : '未开启'}`);
             if (streamInterrupted) throw new Error(`任务 ${meta.task} 流式连接中断或等待超时；已收到正文 ${visibleChars} 字，推理 ${data.reasoningChars || 0} 字。未确认完整结束，本批未写入；这不等同于输出 Tokens 耗尽`);
             if (meta.task === 'SOURCE_READ_SEQUENTIAL_BATCH' && /length|max[_\s-]*tokens/i.test(finishReason)) {
-                throw new Error(`任务 ${meta.task} 接口明确报告输出预算耗尽；上限 ${maxTokens} Tokens，正文 ${visibleChars} 字，推理 ${data.reasoningChars || 0} 字；本批未写入`);
+                throw new Error(`任务 ${meta.task} 接口明确报告输出预算耗尽；上限 ${maxTokens} Tokens，正文 ${visibleChars} 字，推理 ${data.reasoningChars || 0} 字；本批未写入。${requestIdentity}`);
             }
             try {
                 return extractJson(responseText(data) || raw, { jsonContract: options.jsonContract });

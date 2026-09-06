@@ -1174,7 +1174,8 @@
                     <label class="wsm-check"><input id="wsm-follow-tavern-font" type="checkbox">字体跟随酒馆</label>
                     <div class="wsm-grid"><label>自定义字体<input id="wsm-custom-font-family" type="text" placeholder='例如："Microsoft YaHei", sans-serif'></label><label>字体大小（百分比）<input id="wsm-font-scale" type="number" min="60" max="140" step="5"></label></div>
                     <p class="wsm-settings-help">只调整状态机文字，不改变面板大小和按钮的可点击范围。建议使用 80%–100%。</p>
-                    <div class="wsm-grid"><label>单次输出 Tokens<input id="wsm-max-tokens" type="number" min="256" max="16384"></label><label>注入最大字符<input id="wsm-injection-max" type="number" min="500"></label></div>
+                    <div class="wsm-grid"><label>单次输出 Tokens<input id="wsm-max-tokens" type="text" inputmode="numeric" pattern="[0-9０-９]+"></label><label>注入最大字符<input id="wsm-injection-max" type="number" min="500"></label></div>
+                    <p id="wsm-effective-settings" class="wsm-settings-help"></p>
                     <p class="wsm-settings-help">Tokens 是模型单次返回 JSON 的上限。普通轮次每条新消息只调用状态机 1 次：结算上一段正文、吸收本轮用户明确事实、更新状态并规划下一段；酒馆随后自行生成正文，正文后不再追加状态机调用。手动读取严格 2 次：全量提取 1 次、独立推演 1 次，不补第三次。</p>
                     <label class="wsm-check"><input id="wsm-enabled" type="checkbox">启用自动状态机</label>
                     <p class="wsm-settings-help">打开插件或切换聊天不会自动读取和初始化。点击“读取当前聊天”建立或刷新状态；世界书拆解必须使用顶部单独按钮。</p>
@@ -1343,7 +1344,8 @@
         $('#wsm-font-scale').value = Math.round(Number(s.fontScale || 0.9) * 100);
         loadActiveApiProfile();
         $('#wsm-temperature').value = s.temperature ?? 0.15;
-        $('#wsm-max-tokens').value = s.maxTokens || 5000;
+        $('#wsm-max-tokens').value = s.maxTokens ?? WSM.Settings.defaults.maxTokens;
+        $('#wsm-effective-settings').textContent = `本页运行 v${WSM.version || '未知'} · 当前已应用 ${s.maxTokens} Tokens · 修改输入框后需点击保存。不同酒馆账号的设置互不同步。`;
         $('#wsm-summary-tag').value = s.summaryTag ?? 'meow_FM';
         $('#wsm-recent-messages').value = s.recentMessages ?? 12;
         $('#wsm-recent-full-text-messages').value = s.recentFullTextMessages ?? 5;
@@ -1452,6 +1454,7 @@
     }
     async function saveSettings(closeAfter = true) {
         const current = WSM.Settings.get();
+        const outputBudget = WSM.Settings.parseOutputTokens($('#wsm-max-tokens').value);
         const rawSummaryTag = $('#wsm-summary-tag')?.value.trim() || '';
         const summaryTag = WSM.Context?.normalizeSummaryTag?.(rawSummaryTag) ?? rawSummaryTag;
         if (rawSummaryTag && !summaryTag) throw new Error('总结标签格式无效；请只填写标签名，例如 meow_FM，或留空读取全文');
@@ -1479,7 +1482,7 @@
             jailbreakPrompt: $('#wsm-jailbreak-prompt').value,
             ...typographyFromForm(),
             launcherVisible: $('#wsm-launcher-visible').checked,
-            temperature: Number($('#wsm-temperature').value), maxTokens: Math.max(256, Math.min(16384, Number($('#wsm-max-tokens').value) || 5000)), enabled: $('#wsm-enabled').checked,
+            temperature: Number($('#wsm-temperature').value), maxTokens: outputBudget, enabled: $('#wsm-enabled').checked,
             autoInitialize: false,
             blockOnPlannerError: $('#wsm-block-on-planner-error').checked,
             diceEnabled: $('#wsm-dice-enabled').checked,
@@ -1501,8 +1504,10 @@
         state.planner.injection = WSM.Injection.compose(state, state.planner?.plan || {}, state.planner?.moduleInjections || {});
         await WSM.Storage.save(state, 'injection-settings', { snapshot: false });
         await WSM.Engine?.syncRegisteredPrompt?.();
+        await WSM.Settings.persist();
+        $('#wsm-effective-settings').textContent = `本页运行 v${WSM.version || '未知'} · 当前已应用 ${WSM.Settings.get().maxTokens} Tokens · 已交由酒馆后台保存`;
         if (closeAfter) $('#wsm-settings-modal').hidden = true;
-        notify('设置已保存', 'success');
+        notify(`设置已应用：${WSM.Settings.get().maxTokens} Tokens；已交由酒馆后台保存，请留意酒馆的保存失败提示`, 'success');
     }
     async function compileSelectedWorldbooks(button, status) {
         const config = WSM.WorldbookCompiler.normalizeConfig(WSM.Settings.get().worldbookCompiler);

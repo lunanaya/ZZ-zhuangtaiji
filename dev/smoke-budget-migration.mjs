@@ -15,4 +15,18 @@ seed({ maxTokens: 3000 });
 assert.equal(settings.get().maxTokens, 3000);
 seed({ maxTokens: 12000 });
 assert.equal(settings.get().maxTokens, 12000);
+assert.equal(settings.parseOutputTokens('９０００'), 9000, 'mobile full-width digits must be accepted');
+for (const value of ['', 'abc', '9,000', '9000.5', '0']) {
+    assert.throws(() => settings.parseOutputTokens(value), /本次未保存/);
+}
+let scheduled = 0;
+globalThis.CustomEvent = class {};
+globalThis.dispatchEvent = () => {};
+const account = { worldStateMachine: { rulesVersion: 28, maxTokens: 5000 } };
+globalThis.SillyTavern = { getContext: () => ({ extensionSettings: account, saveSettingsDebounced: () => { scheduled += 1; } }) };
+settings.update({ maxTokens: settings.parseOutputTokens('9000') });
+await settings.persist();
+assert.equal(account.worldStateMachine.maxTokens, 9000);
+assert.equal(settings.get().maxTokens, 9000, 'effective request settings must match the saved form');
+assert.ok(scheduled > 0);
 console.log('Fresh installation and one-time output budget migration tests passed');

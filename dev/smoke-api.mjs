@@ -168,7 +168,7 @@ let externalRequest;
 let forwardedCalls = 0;
 globalThis.fetch = async (url, request) => {
     externalRequest = { url, request };
-    if (String(url).endsWith('/models')) return { ok: true, status: 200, text: async () => '{"data":[{"id":"model-b"},{"id":"model-a"}]}' };
+    if (String(url).endsWith('/status')) return { ok: true, status: 200, text: async () => '{"data":[{"id":"model-b"},{"id":"model-a"}]}' };
     forwardedCalls += 1;
     return { ok: true, status: 200, text: async () => '{"choices":[{"message":{"content":"{\\"ok\\":true}"}}]}' };
 };
@@ -226,6 +226,9 @@ await WorldStateMachine.Api.withCallBudget(2, 'two-call-hard-cap', async () => {
 });
 assert.equal(forwardedCalls - callsBeforeBudgetTest, 2);
 assert.deepEqual(await WorldStateMachine.Api.listModels(), ['model-a', 'model-b']);
-assert.equal(externalRequest.url, 'https://example.test/v1/models');
+assert.equal(externalRequest.url, '/api/backends/chat-completions/status');
+assert.equal(externalRequest.request.method, 'POST');
+assert.equal(JSON.parse(externalRequest.request.body).reverse_proxy, 'https://example.test/v1');
+assert.equal(JSON.parse(externalRequest.request.body).proxy_password, 'secret');
 
 console.log('API smoke tests passed');

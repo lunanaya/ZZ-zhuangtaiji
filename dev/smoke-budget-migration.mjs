@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+globalThis.window = globalThis;
+globalThis.WorldStateMachine = {};
+await import('../src/defaults.js');
+await import('../src/settings.js');
+const settings = WorldStateMachine.Settings;
+const seed = value => { globalThis.extension_settings = { worldStateMachine: { rulesVersion: 28, ...value } }; };
+seed({});
+assert.equal(settings.get().maxTokens, 9000);
+seed({ maxTokens: 5000 });
+assert.equal(settings.get().maxTokens, 9000);
+settings.get().maxTokens = 5000;
+assert.equal(settings.get().maxTokens, 5000, 'A later user choice must be respected');
+seed({ maxTokens: 3000 });
+assert.equal(settings.get().maxTokens, 3000);
+seed({ maxTokens: 12000 });
+assert.equal(settings.get().maxTokens, 12000);
+console.log('Fresh installation and one-time output budget migration tests passed');

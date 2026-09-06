@@ -21,7 +21,7 @@
         apiProfiles: [],
         activeApiProfileId: '',
         temperature: 0.15,
-        maxTokens: 5000,
+        maxTokens: 9000,
         recentMessages: 12,
         recentFullTextMessages: 5,
         summaryTag: 'meow_FM',
@@ -46,6 +46,12 @@
         const root = ctx?.extensionSettings || window.extension_settings;
         const saved = root[KEY] || {};
         root[KEY] = Object.assign({}, defaults, saved);
+        // Migrate the old shipped default once; preserve other user budgets
+        // and any later deliberate choice of 5000.
+        if (!saved.outputBudgetMigrationVersion) {
+            if (Number(saved.maxTokens) === 5000) root[KEY].maxTokens = 9000;
+            root[KEY].outputBudgetMigrationVersion = 1;
+        }
         const rawProfiles = Array.isArray(root[KEY].apiProfiles) ? root[KEY].apiProfiles : [];
         const profiles = rawProfiles.map((profile, index) => ({
             id: String(profile?.id || `api-${index + 1}`),

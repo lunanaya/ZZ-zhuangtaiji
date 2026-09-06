@@ -726,13 +726,22 @@
     }
     async function listModels(profile = {}) {
         const settings = Object.assign({}, WSM.Settings.get(), profile || {});
-        const headers = { Accept: 'application/json' };
-        if (settings.apiKey) headers.Authorization = `Bearer ${settings.apiKey}`;
-        const response = await fetch(modelsEndpoint(settings.endpoint), { method: 'GET', headers });
+        // Use the same local backend as generation: browser CORS permissions
+        // must not determine whether a working API can list its models.
+        const response = await fetch('/api/backends/chat-completions/status', {
+            method: 'POST', headers: await requestHeaders(),
+            body: JSON.stringify({
+                chat_completion_source: 'openai',
+                reverse_proxy: endpointBase(settings.endpoint),
+                proxy_password: settings.apiKey || '',
+            }),
+        });
         const raw = await response.text();
         if (!response.ok) throw new Error(`模型列表 ${response.status}: ${raw.slice(0, 500)}`);
         let data;
         try { data = JSON.parse(raw); } catch (_) { throw new Error('模型列表返回的不是有效 JSON'); }
+        const providerError = providerResponseError(data);
+        if (providerError) throw new Error(`模型列表接口失败：${providerError}`);
         // OpenAI-compatible providers unfortunately use several different
         // response envelopes. Collect every conventional list instead of
         // stopping at the first one, so a provider's nested `data.models` or

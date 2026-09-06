@@ -569,6 +569,8 @@ assert.ok(calls[1].payload.sourceCompile?.worldRules?.length, 'Gemini/default re
 assert.ok(calls[1].payload.currentState, 'Gemini/default request B must receive the pre-tick state');
 assert.equal(calls[0].options.jsonContract, 'evidence');
 assert.equal(calls[1].options.jsonContract, 'evidence');
+assert.equal(calls[0].options.stream, true, 'Gemini/default extraction must stream through reverse proxies');
+assert.equal(calls[1].options.stream, true, 'Gemini/default reasoning must also stream through reverse proxies');
 assert.equal(calls[1].options.maxTokens, 9000);
 assert.equal(calls[1].options.reasoningEffort, undefined);
 assert.equal(calls[1].payload.modulePrompts, undefined, 'request B must not resend local module prompt text');

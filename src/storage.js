@@ -1586,6 +1586,7 @@
             box.history.unshift({
                 at: Date.now(), reason, kind: options.snapshotKind || 'generation',
                 turnKey: String(options.snapshotTurnKey || ''),
+                readReceipt: options.snapshotReadReceipt ? clone(options.snapshotReadReceipt) : null,
                 state: clone(box.state),
             });
             box.history = box.history.filter(isGenerationSnapshot).slice(0, HISTORY_LIMIT);
@@ -1620,32 +1621,47 @@
         const [snap] = box.history.splice(index, 1);
         return save(snap.state, 'rollback-generation', { snapshot: false });
     }
-    async function rollbackGenerations(count = 1) {
+    async function rollbackGenerations(count = 1, options = {}) {
         const requested = Math.max(0, Math.floor(Number(count || 0)));
-        if (!requested) return { state: load(), rolledBack: 0 };
+        const remainingFloor = Number(options.remainingFloor);
+        const deleting = Number.isFinite(remainingFloor) && remainingFloor >= 0;
+        const remaining = new Map((options.remainingReceipts || []).map((receipt) => [receipt.messageKey, receipt]));
+        const deletedIds = Array.isArray(options.deletedMessageIds) ? new Set(options.deletedMessageIds) : null;
+        if (!requested && !deleting) return { state: load(), rolledBack: 0 };
         const box = envelope();
         // Prefer turnKey snapshots, while still recognizing chat nodes saved by
         // older plugin versions. Manual organization and initialization
         // snapshots must never be consumed by chat deletion.
         const indexes = [];
-        for (let index = 0; index < box.history.length && indexes.length < requested; index += 1) {
+        for (let index = 0; index < box.history.length; index += 1) {
             const item = box.history[index];
-            if (isChatGenerationSnapshot(item)) indexes.push(index);
+            if (!isChatGenerationSnapshot(item)) continue;
+            if (deleting && item.readReceipt?.messageKey) {
+                if (deletedIds ? deletedIds.has(item.readReceipt.messageId) : !remaining.has(item.readReceipt.messageKey)) indexes.push(index);
+            } else if (indexes.length < requested) {
+                // Legacy snapshots have no receipt. Only rewind when their
+                // saved position extends past the remaining chat boundary.
+                if (!deleting || Number(item.state?.runtime?.lastReadFloor || 0) >= remainingFloor) indexes.push(index);
+            }
         }
-        if (!indexes.length) return { state: load(), rolledBack: 0 };
-        const target = clone(box.history[indexes.at(-1)].state);
-        const currentRuntime = box.state?.runtime || {};
-        target.runtime = Object.assign({}, target.runtime, {
-            // A deletion restores world state, but it must not erase the
-            // independent read high-water mark. Otherwise sending after a
-            // delete/reroll would charge for the same assistant floor again.
-            lastReadFloor: Math.max(Number(target.runtime?.lastReadFloor || 0), Number(currentRuntime.lastReadFloor || 0)),
-            lastPreviousBodyMessageId: currentRuntime.lastPreviousBodyMessageId || target.runtime?.lastPreviousBodyMessageId || '',
-            lastPreviousBodyMessageKey: currentRuntime.lastPreviousBodyMessageKey || target.runtime?.lastPreviousBodyMessageKey || '',
-            lastPreviousBodyFloor: Math.max(Number(target.runtime?.lastPreviousBodyFloor || 0), Number(currentRuntime.lastPreviousBodyFloor || 0)),
-            lastPreviousBodyContentHash: currentRuntime.lastPreviousBodyContentHash || target.runtime?.lastPreviousBodyContentHash || '',
-            previousBodyReadAt: Math.max(Number(target.runtime?.previousBodyReadAt || 0), Number(currentRuntime.previousBodyReadAt || 0)),
-        });
+        if (!indexes.length && !deleting) return { state: load(), rolledBack: 0 };
+        const target = clone(indexes.length ? box.history[indexes.at(-1)].state : box.state);
+        target.runtime ||= {};
+        if (deleting) {
+            const receipt = remaining.get(target.runtime.lastPreviousBodyMessageKey);
+            target.runtime.lastReadFloor = Math.min(remainingFloor, Math.max(0, Number(WSM.Engine?.readFloor?.(target) ?? target.runtime.lastReadFloor ?? 0)));
+            target.runtime.readPositionVersion = 2;
+            target.runtime.lastPreviousBodyFloor = receipt?.floor || 0;
+            if (!receipt) {
+                target.runtime.lastPreviousBodyMessageId = '';
+                target.runtime.lastPreviousBodyMessageKey = '';
+                target.runtime.lastPreviousBodyContentHash = '';
+                target.runtime.lastSettledMessageId = '';
+                target.runtime.previousBodyReadAt = 0;
+            }
+            target.runtime.pendingTurnReads = [];
+            target.planner = { ...target.planner, turnKey: '', error: '' };
+        }
         const removed = new Set(indexes);
         box.history = box.history.filter((_item, index) => !removed.has(index));
         const state = await save(target, 'rollback-deleted-chat-generations', { snapshot: false });

@@ -463,3 +463,17 @@
 @media (max-width:620px) { .wsm-choice-panel>div { grid-template-columns:1fr; } .wsm-choice-panel>header { align-items:flex-start; flex-direction:column; } .wsm-choice-panel>header>small { text-align:left; } }
 #wsm-root button:disabled { cursor:wait; opacity:.55; }
 @keyframes wsm-pulse { to { transform:scale(1.45); opacity:.45; } }
+#wsm-turn-read-popup {
+    position: fixed;
+    left: 50%;
+    bottom: 110px;
+    transform: translateX(-50%);
+    z-index: 9998;
+    padding: 8px 18px;
+    border-radius: 10px;
+    background: rgba(30, 30, 35, 0.92);
+    color: #fff;
+    font-size: 14px;
+    box-shadow: 0 3px 14px rgba(0, 0, 0, 0.25);
+    pointer-events: none;
+}

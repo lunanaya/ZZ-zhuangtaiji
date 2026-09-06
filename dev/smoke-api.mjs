@@ -183,6 +183,10 @@ assert.deepEqual(await complete('BASE-SYSTEM', { task: 'external-alias-reasoning
 const aliasBody = JSON.parse(externalRequest.request.body);
 assert.equal(aliasBody.max_tokens, 3000);
 assert.equal(aliasBody.reasoning_effort, 'low');
+assert.equal(aliasBody.chat_completion_source, 'custom');
+assert.equal(aliasBody.custom_url, 'https://example.test/v1');
+assert.equal(JSON.parse(aliasBody.custom_include_body).reasoning_effort, 'low');
+assert.equal(JSON.parse(aliasBody.custom_include_headers).Authorization, 'Bearer secret');
 assert.equal(aliasBody.verbosity, 'low');
 assert.equal('temperature' in aliasBody, false);
 assert.deepEqual(await complete('BASE-SYSTEM', { task: 'external-alias-stream' }, { maxTokens: 2800, reasoningEffort: 'low', stream: true }), { ok: true });

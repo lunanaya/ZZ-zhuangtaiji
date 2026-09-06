@@ -755,7 +755,7 @@ legacyRollbackBox.history = [{ kind: 'generation', reason: 'pre-generation-reaso
 const legacyRollbackResult = await WorldStateMachine.Storage.rollbackGenerations(1);
 assert.equal(legacyRollbackResult.rolledBack, 1, '删除楼层必须实际消费旧版生成节点');
 assert.equal(WorldStateMachine.Storage.load().world.location.current, '删除前节点', '删除楼层必须恢复旧版快照中的上一节点');
-assert.equal(WorldStateMachine.Storage.load().runtime.lastReadFloor, 19, '删除楼层回退状态时不得清除正文读取楼层标记');
+assert.equal(WorldStateMachine.Storage.load().runtime.lastReadFloor, legacyRollbackTarget.runtime.lastReadFloor, '回滚必须恢复快照的读取位置，不能保留被删除楼层的高水位');
 
 testContext.generateRaw = async () => '{"ok":true}';
 testContext.chat = [

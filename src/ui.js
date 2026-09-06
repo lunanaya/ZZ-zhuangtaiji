@@ -1262,13 +1262,14 @@
         const readFloor = $('#wsm-read-floor');
         if (!operation || !readCurrent || !clearRead) return;
         if (readFloor) {
-            const floor = Math.max(0, Math.floor(Number(
-                state.runtime?.lastReadFloor
-                || state.runtime?.lastPreviousBodyFloor
-                || state.runtime?.sourceSummary?.sourceRead?.coveredChatMessages
-                || state.runtime?.sourceSummary?.chatMessages
-                || 0
-            )));
+            const floor = Math.min(WSM.Context.context()?.chat?.length ?? Infinity, Math.max(0, Math.floor(Number(
+                WSM.Engine.readFloor?.(state)
+                ?? state.runtime?.lastReadFloor
+                ?? state.runtime?.lastPreviousBodyFloor
+                ?? state.runtime?.sourceSummary?.sourceRead?.coveredChatMessages
+                ?? state.runtime?.sourceSummary?.chatMessages
+                ?? 0
+            ))));
             readFloor.textContent = floor ? `正文已读取至第 ${floor} 层` : '正文尚未建立读取位置';
         }
         if (status) {
@@ -1887,7 +1888,25 @@
         // this tiny idempotent check alive so our entry is restored if removed.
         window.setInterval(() => { mountWandMenuItem(); mountExternalWorldbookButton(); }, 1000);
     }
+    function renderTurnReadPopup(progress = {}) {
+        let popup = document.getElementById('wsm-turn-read-popup');
+        const activeChat = WSM.Storage?.currentChatKey?.() || '';
+        const visible = progress.state === 'running' && (!progress.chatKey || progress.chatKey === activeChat);
+        if (!visible) { popup?.remove(); return; }
+        if (!popup) {
+            popup = document.createElement('div');
+            popup.id = 'wsm-turn-read-popup';
+            popup.setAttribute('role', 'status');
+            popup.setAttribute('aria-live', 'polite');
+            popup.textContent = '正在读取';
+            document.body.appendChild(popup);
+        }
+    }
     function mount() {
+        window.addEventListener('wsm-turn-read-progress', event => renderTurnReadPopup(event.detail));
+        window.addEventListener('wsm-operation-progress', event => {
+            if (event.detail?.state !== 'running') renderTurnReadPopup();
+        });
         if (document.getElementById('wsm-root')) return;
         root = document.createElement('div');
         root.id = 'wsm-root';

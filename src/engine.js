@@ -13,6 +13,7 @@
     let settingsBound = false;
     let knownChatMirror = [];
     let deletionRollbackPromise = Promise.resolve();
+    let chatMutationRevision = 0;
     let operationProgress = { state: 'idle', message: '', details: '', at: 0, startedAt: 0, elapsedMs: 0, steps: [] };
     const ORDINARY_TURN_CALL_BUDGET = 1;
     const AUTO_POST_GENERATION_CALLS = 0;
@@ -100,7 +101,12 @@
                 return output;
             }
             if (Array.isArray(value)) return value.map(replaceUserMentions);
-            if (value && typeof value === 'object') Object.keys(value).forEach((key) => { value[key] = replaceUserMentions(value[key]); });
+            if (value && typeof value === 'object') Object.keys(value).forEach((key) => {
+                // Identity display substitutions must never rewrite receipt
+                // hashes, turn keys or entity references used for deduplication.
+                if (['runtime', 'id', 'turnKey', 'sourceRefs', 'from', 'to', 'characterId', 'entityId', 'messageId'].includes(key)) return;
+                value[key] = replaceUserMentions(value[key]);
+            });
             return value;
         };
         replaceUserMentions(next);
@@ -255,6 +261,7 @@
         return (WSM.Context?.chat?.(WSM.Context?.context?.(), { includeHidden: true }) || []).map((message) => ({
             signature: `${safeText(message?.role)}|${safeText(message?.id)}|${hash(message?.content)}`,
             role: safeText(message?.role),
+            messageId: safeText(message?.id),
         }));
     }
     function deletedAssistantCount(before = [], after = []) {
@@ -2988,9 +2995,12 @@
                     },
                     {
                         maxTokens: 9000,
+                        timeoutMs: 300000,
                         singleAttempt: true, signal, jsonContract: 'evidence',
-                        reasoningEffort: settings.gptMode === true && /gpt/i.test(String(settings.model || '')) ? 'low' : undefined,
-                        stream: settings.gptMode === true,
+                        reasoningEffort: /gemini/i.test(String(settings.model || '')) || (settings.gptMode === true && /gpt/i.test(String(settings.model || ''))) ? 'low' : undefined,
+                        // Long source reads need incremental delivery on every
+                        // provider, including Gemini behind reverse proxies.
+                        stream: true,
                     },
                 );
             } catch (error) {
@@ -3290,6 +3300,8 @@
         await setPrompt('');
     }
     async function plan(options = {}) {
+        await deletionRollbackPromise;
+        const mutationRevision = chatMutationRevision;
         const signal = options.signal;
         throwIfCancelled(signal);
         const settings = WSM.Settings.get();
@@ -3320,7 +3332,7 @@
             await setPrompt('');
             return null;
         }
-        if (!current.runtime?.needsWorldRefresh && !options.force && key && current.planner?.turnKey === key && current.planner?.injection && !current.planner?.error) {
+        if (!current.runtime?.needsWorldRefresh && !options.force && key && current.planner?.turnKey === key && current.planner?.injection && !current.planner?.error && !needsPreviousBodyRead(current, WSM.Context.latestAssistantMessage())) {
             current.planner.injection = WSM.Injection.compose(current, current.planner.plan || {}, current.planner.moduleInjections || {});
             await setStatePrompts(current, current.planner.plan || {}, current.planner.moduleInjections || {});
             return current.planner;
@@ -3343,26 +3355,17 @@
                 ...(current.characters || []).filter((item) => item.present).map((item) => item.name),
             ].filter(Boolean).join('\n');
             const historyRecall = WSM.Storage.retrieveHistory?.(recallQuery, { maxChars: 1200, evidenceCount: 4, state: current }) || { text: '' };
-            const source = await WSM.Context.buildSource();
+            const source = { currentUserAction: turnUserMessage || WSM.Context.latestUserMessage() };
             const previousAssistant = WSM.Context.latestAssistantMessage();
             const previousReceipt = previousBodyReceipt(previousAssistant);
             const readFloor = readFloorHighWater(current);
-            const previousAssistantMemory = previousAssistant?.content && previousReceipt.floor > readFloor
+            const previousAssistantMemory = needsPreviousBodyRead(current, previousAssistant)
                 ? (WSM.Context.recentFullTextMessage?.(previousAssistant) || WSM.Context.meowMessage(previousAssistant))
                 : null;
             const currentUserAction = turnUserMessage || source?.currentUserAction || WSM.Context.latestUserMessage();
-            // When a new user message arrives with an unread assistant floor,
-            // use the same focused one-floor reconciliation as the proven
-            // manual button. Combining reconciliation, user-fact parsing and
-            // next-turn planning caused the provider to keep generating until
-            // its output ceiling. The current user message remains in ST's
-            // normal prompt; this single plugin call is only for prior正文.
-            if (previousAssistantMemory) {
-                const saved = await settle({ latestOnly: true, force: true });
-                if (!saved) return WSM.Storage.load().planner;
-                await setStatePrompts(saved, saved.planner?.plan || {}, saved.planner?.moduleInjections || {});
-                return saved.planner;
-            }
+            if (previousAssistantMemory) reportTurnReadProgress('正在读取', 'running');
+            // One bounded delta request handles both the preceding body and
+            // the newly submitted user facts, then records this turn's key.
             reportProgress('正在推理并增量更新本轮状态', 'running', previousAssistantMemory
                 ? `自动读取第 ${previousReceipt.floor} 层助手正文 + 读取本轮用户输入 + 规划下一段 · 插件 API 严格 1 次`
                 : `正文已读取至第 ${readFloor || 0} 层，本轮不重复读取 + 读取用户输入 + 规划下一段 · 插件 API 严格 1 次`);
@@ -3389,7 +3392,9 @@
                     { singleAttempt: true, maxTokens: 2500, timeoutMs: 90000, jsonContract: 'delta', stream: true, reasoningEffort: 'low' },
                 );
                 normalizedResult = normalizeSettlementResult(result);
+                if (mutationRevision !== chatMutationRevision) return WSM.Storage.load().planner;
             } catch (error) {
+                if (mutationRevision !== chatMutationRevision) return WSM.Storage.load().planner;
                 const reason = safeText(error?.message || error);
                 // A failed one-shot read never becomes hidden debt. Keep the
                 // existing state unchanged and clear queues left by old builds.
@@ -3466,6 +3471,7 @@
             current.planner.injection = WSM.Injection.compose(current, localPlan, current.planner.moduleInjections);
             current = await WSM.Storage.save(current, 'turn-reconcile-and-reason', {
                 snapshot: true, snapshotKind: 'generation', snapshotTurnKey: key,
+                snapshotReadReceipt: previousAssistantMemory ? previousReceipt : null,
             });
             await setStatePrompts(current, localPlan, current.planner.moduleInjections);
             reportProgress('本轮推理与状态增量已完成', 'success', previousAssistantMemory
@@ -3558,15 +3564,12 @@
                     : '推进用户本轮行为后的世界后台，规划但不要假定正文将发生的事情。',
             source,
             currentState: plannerState(rebuildBase),
-            // Manual reconciliation already receives the populated preState and
-            // the reconciler's exact delta contract. Re-sending the full schema
-            // and every module prompt wastes the reasoning model's context and
-            // can leave its JSON unfinished before the output limit.
-            ...(latestOnly ? {} : {
-                stateSchema: WSM.Defaults.STATE_SCHEMA,
-                moduleOwnership: WSM.Defaults.MODULE_OWNERSHIP,
-                modulePrompts: settings.modulePrompts || WSM.Defaults.MODULE_PROMPTS,
-            }),
+            // Full planning and initialization need the complete state contract.
+            // `latestOnly` belongs exclusively to settle()'s previous-body path
+            // and must not be referenced while building a planner payload.
+            stateSchema: WSM.Defaults.STATE_SCHEMA,
+            moduleOwnership: WSM.Defaults.MODULE_OWNERSHIP,
+            modulePrompts: settings.modulePrompts || WSM.Defaults.MODULE_PROMPTS,
             simulationClock: rebuilding ? { elapsedMinutes: 0, display: '' } : { elapsedMinutes: Number(current.world?.time?.elapsedMinutes || 0), display: current.world?.time?.display || '' },
             npcSchedule: rebuilding ? [] : buildNpcSchedule(current),
             simulationRules: {
@@ -3633,7 +3636,8 @@
             next.initialized = true;
             next.runtime = Object.assign({}, rebuildBase.runtime, next.runtime, {
                 lastUserMessageId: source.currentUserAction?.id || '',
-                lastReadFloor: Number(sourceSummary.sourceRead?.coveredChatMessages || sourceSummary.chatMessages || 0),
+                ...readReceiptRuntime(rebuildBase, previousBodyReceipt(WSM.Context.latestAssistantMessage())),
+                lastReadFloor: Math.max(0, ...(completeSourceSnapshot?.chat || source?.chat || []).map((message) => Number(message.index ?? -1) + 1)),
                 sourceFingerprint: fingerprint,
                 sourceSummary,
                 worldbookInjection: compilerResult?.report || rebuildBase.runtime?.worldbookInjection || null,
@@ -3747,6 +3751,7 @@
             ...options, signal: controller?.signal || options.signal,
         }));
         const wrappedPromise = runPromise.finally(() => {
+            if (requestedIntent === 'turn-plan') reportTurnReadProgress('', 'idle');
             if (planningController === controller) planningController = null;
             if (planningChatKey === requestedChatKey) planningChatKey = '';
             if (planningIntent === requestedIntent) planningIntent = '';
@@ -3822,6 +3827,21 @@
         };
     }
     function readFloorHighWater(state) {
+        if (Number.isFinite(Number(state?.runtime?.lastReadFloor)) && state?.runtime?.lastReadFloor != null) {
+            const runtime = state.runtime;
+            let floor = Math.max(0, Math.floor(Number(runtime.lastReadFloor)));
+            if (runtime.readPositionVersion !== 2) {
+                const summary = runtime.sourceSummary || {};
+                // Old initialization stored the filtered message count as a
+                // physical floor. Its saved scan boundary permits local repair.
+                if (floor === Number(summary.chatMessages || summary.sourceRead?.coveredChatMessages || 0)) {
+                    floor = Math.max(floor, Number(summary.chatTotalMessages || 0));
+                }
+                floor = Math.max(floor, Number(runtime.lastPreviousBodyFloor || 0));
+            }
+            const liveChat = WSM.Context?.context?.()?.chat;
+            return Array.isArray(liveChat) ? Math.min(floor, liveChat.length) : floor;
+        }
         return Math.max(0,
             Math.floor(Number(state?.runtime?.lastReadFloor || 0)),
             Math.floor(Number(state?.runtime?.lastPreviousBodyFloor || 0)),
@@ -3829,8 +3849,17 @@
             Math.floor(Number(state?.runtime?.sourceSummary?.chatMessages || 0)),
         );
     }
+    function needsPreviousBodyRead(state, message) {
+        if (!message?.content) return false;
+        const receipt = previousBodyReceipt(message);
+        const runtime = state?.runtime || {};
+        if (runtime.lastPreviousBodyMessageKey === receipt.messageKey || runtime.lastSettledMessageId === receipt.messageKey) return false;
+        if (receipt.floor === Number(runtime.lastPreviousBodyFloor || 0)) return true;
+        return receipt.floor > readFloorHighWater(state);
+    }
     function readReceiptRuntime(state, receipt) {
         return {
+            readPositionVersion: 2,
             lastSettledMessageId: receipt.messageKey,
             lastPreviousBodyMessageId: receipt.messageId,
             lastPreviousBodyMessageKey: receipt.messageKey,
@@ -3855,9 +3884,11 @@
         return next;
     }
     async function settle(options = {}) {
+        await deletionRollbackPromise;
+        const mutationRevision = chatMutationRevision;
         const current = WSM.Storage.load();
         const operationChatKey = current.runtime?.storageChatKey || WSM.Storage.currentChatKey();
-        if (!current.initialized || !current.planner?.turnKey) return null;
+        if (!current.initialized) return null;
         const assistant = WSM.Context.latestAssistantMessage();
         const key = assistantKey(assistant);
         const receipt = previousBodyReceipt(assistant);
@@ -3930,6 +3961,7 @@
                 // complete JSON close without inviting an oversized request.
                 ? { singleAttempt: true, maxTokens: 6000, timeoutMs: 90000, jsonContract: 'delta', stream: true, reasoningEffort: 'low', omitJailbreak: true }
                 : { singleAttempt: true });
+            if (mutationRevision !== chatMutationRevision) return null;
             if (WSM.Storage.currentChatKey() !== operationChatKey) return null;
             const normalized = normalizeSettlementResult(result);
             const settledResult = normalized.result;
@@ -3984,7 +4016,7 @@
                 changeIds: sourceRefs.includes(`chat:${message.id}`) ? changeIds : [],
             })), { prefix: `turn:${key}` });
             const saved = await WSM.Storage.save(next, latestOnly ? 'manual-read-previous-body' : 'reconcile', latestOnly
-                ? { snapshot: true, snapshotKind: 'generation', snapshotTurnKey: `manual:${key}` }
+                ? { snapshot: true, snapshotKind: 'generation', snapshotTurnKey: `manual:${key}`, snapshotReadReceipt: receipt }
                 : { snapshot: false });
             const successDetails = latestOnly
                 ? `第 ${receipt.floor || '?'} 层助手正文已写入 REV ${saved.revision} · 只读正文 · API 1/1`
@@ -3993,6 +4025,7 @@
             if (latestOnly) reportTurnReadProgress('读取完成', 'success', successDetails);
             return saved;
         } catch (error) {
+            if (mutationRevision !== chatMutationRevision) return null;
             const next = WSM.Storage.load();
             if (latestOnly) next.runtime = Object.assign({}, next.runtime, { pendingTurnReads: [] });
             next.planner = Object.assign({}, next.planner, { error: `结算失败：${safeText(error?.message || error)}` });
@@ -4050,17 +4083,27 @@
         [events.MESSAGE_SENT, events.MESSAGE_RECEIVED, events.MESSAGE_SWIPED, events.MESSAGE_EDITED, events.MESSAGE_UPDATED]
             .filter(Boolean).forEach((event) => source.on(event, refreshMirror));
         if (events.MESSAGE_DELETED) source.on(events.MESSAGE_DELETED, () => {
+            chatMutationRevision += 1;
+            planningController?.abort();
             const before = knownChatMirror;
             const after = captureChatMirror();
+            const deletionChatKey = WSM.Storage.currentChatKey();
+            const remainingMessages = WSM.Context.chat(WSM.Context.context(), { includeHidden: true });
+            const remainingFloor = WSM.Context.context()?.chat?.length || 0;
+            const remainingIds = new Set(after.map((message) => message.messageId));
+            const deletedMessageIds = before.filter((message) => !remainingIds.has(message.messageId)).map((message) => message.messageId);
             knownChatMirror = after;
             const assistantReplies = deletedAssistantCount(before, after);
-            if (!assistantReplies) return;
             deletionRollbackPromise = deletionRollbackPromise.then(async () => {
-                const result = await WSM.Storage.rollbackGenerations?.(assistantReplies);
+                if (WSM.Storage.currentChatKey() !== deletionChatKey) return;
+                const result = await WSM.Storage.rollbackGenerations?.(assistantReplies, {
+                    remainingFloor,
+                    deletedMessageIds,
+                    remainingReceipts: remainingMessages.map(previousBodyReceipt),
+                });
                 const rolledBack = Number(result?.rolledBack || 0);
-                if (!rolledBack) return;
                 await syncRegisteredPrompt();
-                reportProgress('已撤回删除楼层对应的状态增量', 'success', `检测到删除 ${assistantReplies} 条助手回复 · 已回滚 ${rolledBack} 次插件生成结果 · 未调用 API`);
+                reportProgress('已同步删除后的读取位置', 'success', `剩余 ${remainingFloor} 层 · 已回滚 ${rolledBack} 次状态更新 · 未调用 API${rolledBack ? '' : ' · 无可恢复的逐轮快照，已有基准内容未重建'}`);
             }).catch((error) => console.error('[WorldStateMachine] 删除楼层自动回滚失败', error));
         });
         return true;
@@ -4084,4 +4127,5 @@
         }
     }
     WSM.Engine = { init, plan: ensurePlan, settle: ensureSettle, readPreviousBody, interceptor, fallbackInjection, reportProgress, resetProgress, getProgress, cancelRead, isReading, syncRegisteredPrompt, refreshGptLocalState, clearRegisteredPrompts, _test: { ordinaryTurnCallPolicy, pendingTurnReads, shouldReuseTurnPlan, interceptorTurnUserMessage, previousBodyReceipt, readFloorHighWater, readReceiptRuntime, compactTurnState, compactPreviousBodyState, deletedAssistantCount, generationBlockReason, plannerAvailable, activeChatAvailable, setPrompt, setStatePrompts, syncIdentities, initializeInSlices, sourceForInitializeSlice, rotateTriggersForNextTurn, completeSourceRecords, compactSourceChronicle, compactGptSourceChronicle, splitCompleteRecords, splitGptCompleteRecords, removeMirroredChatRecords, prepareSourceForStateRequests, buildStateWithinLimit, normalizeStateResult, normalizeSettlementDelta, normalizeSettlementResult, applyAssistantSceneFacts, normalizeStateCollection, normalizeStateCollections, normalizeGptIdentityAliases, reconcileEntityReferences, auditStateLifecycle, mergeStatePatch, applyStateDelta, applyHistoryLedger, historyChangesFromDelta, mergeCompleteEvidence, mergeAdjudicatedEvidence, supplementMissingEvidenceFromArchive, localEvidenceFromSource, deterministicMeowLedger, ensureDeterministicMeowLedger, sanitizeGptEvidence, sanitizeGptHydratedState, applyGptSceneToState, stateFromEvidence, firstHalfCacheKey, validateEvidenceContract, validateFilledEvidence, normalizeEvidenceFillShapes, completeExplicitlyAuditedEvidence, synthesizeEvidenceAudit, repairFinalFillFromSourceCompile, markIncompleteEvidence, preserveUnreturnedStateModules } };
+    WSM.Engine.readFloor = readFloorHighWater;
 })();

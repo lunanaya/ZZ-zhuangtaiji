@@ -267,7 +267,9 @@
     }
     function parseSseResponse(raw, interrupted = false) {
         const chunks = [];
-        let finishReason = interrupted ? 'length' : '';
+        let finishReason = '';
+        let reasoningChars = 0;
+        let usage;
         let errorEnvelope = null;
         String(raw || '').split(/\r?\n/).forEach((line) => {
             const trimmed = line.trim();
@@ -276,8 +278,10 @@
             if (!payload || payload === '[DONE]') return;
             try {
                 const event = JSON.parse(payload);
+                if (event.usage) usage = event.usage;
                 if (event?.error && !errorEnvelope) errorEnvelope = event;
                 const choice = event?.choices?.[0] || {};
+                reasoningChars += contentText(choice?.delta?.reasoning_content ?? choice?.delta?.reasoning).length;
                 const text = contentText(choice?.delta?.content)
                     || contentText(choice?.message?.content)
                     || contentText(choice?.text)
@@ -286,8 +290,8 @@
                 if (choice?.finish_reason) finishReason = String(choice.finish_reason);
             } catch (_) { /* Ignore comments and incomplete trailing SSE lines. */ }
         });
-        if (errorEnvelope && !chunks.length) return errorEnvelope;
-        return { choices: [{ message: { content: chunks.join('') }, finish_reason: finishReason }] };
+        if (errorEnvelope) return errorEnvelope;
+        return { choices: [{ message: { content: chunks.join('') }, finish_reason: finishReason }], usage, reasoningChars, streamInterrupted: interrupted };
     }
     async function readForwardedResponse(response, streaming, meta = {}) {
         if (!streaming || typeof response?.body?.getReader !== 'function' || typeof TextDecoder === 'undefined') {
@@ -297,21 +301,41 @@
         const decoder = new TextDecoder();
         let raw = '';
         let lastReported = 0;
+        let scanned = 0;
         try {
             while (true) {
                 const { value, done } = await reader.read();
                 if (done) break;
                 raw += decoder.decode(value, { stream: true });
+                // A completion marker ends this response even when a proxy
+                // keeps its HTTP connection open. Never scan a partial line.
+                let lineEnd;
+                let complete = false;
+                while ((lineEnd = raw.indexOf('\n', scanned)) >= 0) {
+                    const line = raw.slice(scanned, lineEnd).trim();
+                    scanned = lineEnd + 1;
+                    if (!line.startsWith('data:')) continue;
+                    const data = line.slice(5).trim();
+                    if (data === '[DONE]') { complete = true; continue; }
+                    try {
+                        const event = JSON.parse(data);
+                        if (event.error || event.choices?.some(choice => (choice.index ?? 0) === 0 && choice.finish_reason)) complete = true;
+                    } catch (_) { /* Incomplete or non-JSON event. */ }
+                }
+                if (complete) {
+                    void reader.cancel().catch(() => {});
+                    return { raw, interrupted: false };
+                }
                 if (raw.length - lastReported >= 1000) {
                     lastReported = raw.length;
-                    WSM.Engine?.reportProgress?.('请求 B 正在流式返回证据', 'running', `任务 ${meta.task || 'unknown'} · 已接收约 ${raw.length} 字 · 仍是同一次 API`);
+                    WSM.Engine?.reportProgress?.('正在流式接收响应', 'running', `任务 ${meta.task || 'unknown'} · 已接收约 ${raw.length} 字 · 仍是同一次 API`);
                 }
             }
             raw += decoder.decode();
             return { raw, interrupted: false };
         } catch (error) {
             if (!raw.trim()) throw error;
-            console.warn('[WorldStateMachine] 流式响应在尾部中断，尝试保留已完成证据模块', { task: meta.task, receivedChars: raw.length, reason: String(error?.message || error) });
+            console.warn('[WorldStateMachine] 流式连接中断', { task: meta.task, receivedChars: raw.length, reason: String(error?.message || error) });
             return { raw, interrupted: true };
         }
     }
@@ -584,9 +608,11 @@
         ];
         const meta = {
             task: String(payload?.task || payload?.phase || 'completion'),
+            stage: payload?.sourceBatchIndex || 0,
             inputChars: messages.reduce((sum, message) => sum + String(message.content || '').length, 0),
             maxTokens,
         };
+        const requestStartedAt = Date.now();
         const headers = { 'Content-Type': 'application/json' };
         if (settings.apiKey) headers.Authorization = `Bearer ${settings.apiKey}`;
         const body = {
@@ -603,8 +629,10 @@
             // alias compatibility, but suppress sampling and lengthy hidden
             // reasoning for bounded internal state tasks.
             body.reasoning_effort = String(options.reasoningEffort);
-            body.verbosity = 'low';
-            delete body.temperature;
+            if (!/gemini/i.test(String(body.model || ''))) {
+                body.verbosity = 'low';
+                delete body.temperature;
+            }
         }
         if (!body.model) delete body.model;
         if (isGptReasoningModel(body.model)) {
@@ -634,6 +662,17 @@
                     reverse_proxy: endpointBase(settings.endpoint),
                     proxy_password: settings.apiKey || '',
                 };
+                if (body.reasoning_effort) {
+                    // ST's OpenAI branch drops reasoning_effort for aliases
+                    // outside its official-model allowlist. Its supported
+                    // custom adapter forwards these fields to the SAME endpoint.
+                    proxyBody.chat_completion_source = 'custom';
+                    proxyBody.custom_url = endpointBase(settings.endpoint);
+                    proxyBody.custom_include_headers = JSON.stringify({ Authorization: `Bearer ${settings.apiKey || ''}` });
+                    proxyBody.custom_include_body = JSON.stringify({ reasoning_effort: body.reasoning_effort, ...(body.verbosity ? { verbosity: body.verbosity } : {}) });
+                    delete proxyBody.reverse_proxy;
+                    delete proxyBody.proxy_password;
+                }
                 const proxyHeaders = await requestHeaders();
                 response = await fetch('/api/backends/chat-completions/generate', {
                     method: 'POST', headers: proxyHeaders, body: JSON.stringify(proxyBody), signal: attempt.signal,
@@ -646,8 +685,22 @@
             let data;
             try { data = JSON.parse(raw); }
             catch (_) { data = /^\s*data:/m.test(raw) ? parseSseResponse(raw, streamInterrupted) : { output_text: raw }; }
+            const finishReason = String(data?.choices?.[0]?.finish_reason || '');
+            const visibleChars = responseText(data).length;
+            console.info('[WorldStateMachine] 请求诊断 ' + JSON.stringify({
+                ...meta, model: settings.model, stream: options.stream === true,
+                durationMs: Date.now() - requestStartedAt, finishReason,
+                visibleChars, reasoningChars: data.reasoningChars || 0,
+                outputTokens: data.usage?.completion_tokens ?? null,
+                reasoningTokens: data.usage?.completion_tokens_details?.reasoning_tokens ?? null,
+                interrupted: streamInterrupted,
+            }));
             const providerError = providerResponseError(data);
             if (providerError) throw new Error(`Planner API 拒绝了任务 ${meta.task}：${providerError}；输入 ${meta.inputChars} 字，输出上限 ${maxTokens} Tokens，流式 ${options.stream === true ? '已开启' : '未开启'}`);
+            if (streamInterrupted) throw new Error(`任务 ${meta.task} 流式连接中断或等待超时；已收到正文 ${visibleChars} 字，推理 ${data.reasoningChars || 0} 字。未确认完整结束，本批未写入；这不等同于输出 Tokens 耗尽`);
+            if (meta.task === 'SOURCE_READ_SEQUENTIAL_BATCH' && /length|max[_\s-]*tokens/i.test(finishReason)) {
+                throw new Error(`任务 ${meta.task} 接口明确报告输出预算耗尽；上限 ${maxTokens} Tokens，正文 ${visibleChars} 字，推理 ${data.reasoningChars || 0} 字；本批未写入`);
+            }
             try {
                 return extractJson(responseText(data) || raw, { jsonContract: options.jsonContract });
             } catch (error) {

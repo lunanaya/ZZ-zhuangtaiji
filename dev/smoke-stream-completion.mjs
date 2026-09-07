@@ -26,6 +26,18 @@ assert.equal(interrupted.choices[0].finish_reason, '', 'interruption must not be
 assert.equal(interrupted.reasoningChars, 8);
 const failureAfterContent = api._test.parseSseResponse(event({ choices: [{ delta: { content: '{}' } }] }) + event({ error: { message: 'Gateway Timeout' } }));
 assert.equal(failureAfterContent.error.message, 'Gateway Timeout');
+const responsesStyle = api._test.parseSseResponse(
+    event({ type: 'response.output_text.delta', delta: '{"evidence":{"canon":[]}}' })
+    + event({ type: 'response.completed', response: { status: 'completed' } }),
+);
+assert.equal(responsesStyle.choices[0].message.content, '{"evidence":{"canon":[]}}', 'Responses风格SSE正文不得被误判为0字');
+const anthropicStyle = api._test.parseSseResponse(
+    event({ type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'hidden' } })
+    + event({ type: 'content_block_delta', delta: { type: 'text_delta', text: '{"evidence":{"canon":[]}}' } })
+    + event({ type: 'message_stop' }),
+);
+assert.equal(anthropicStyle.choices[0].message.content, '{"evidence":{"canon":[]}}', 'Anthropic风格SSE正文不得被误判为0字');
+assert.equal(anthropicStyle.reasoningChars, 6);
 globalThis.fetch = async () => new Response(event({ choices: [{ delta: { content: '{"evidence":{"canon":[]}}' }, finish_reason: 'length' }] }));
 const lengthRecovered = await run();
 assert.deepEqual(lengthRecovered, { evidence: { canon: [] } }, '输出上限之前已闭合的证据必须安全保留');

@@ -443,6 +443,7 @@
         return contentText(data?.choices?.[0]?.message?.content)
             || contentText(data?.choices?.[0]?.text)
             || contentText(data?.output_text)
+            || contentText(data?.output)
             || contentText(data?.content);
     }
     function parseSseResponse(raw, interrupted = false) {
@@ -460,14 +461,26 @@
                 const event = JSON.parse(payload);
                 if (event.usage) usage = event.usage;
                 if (event?.error && !errorEnvelope) errorEnvelope = event;
+                if (String(event?.type || '') === 'response.failed' && !errorEnvelope) {
+                    errorEnvelope = { error: event?.response?.error || event?.error || { message: 'Responses API reported failure' } };
+                }
                 const choice = event?.choices?.[0] || {};
-                reasoningChars += contentText(choice?.delta?.reasoning_content ?? choice?.delta?.reasoning).length;
+                const eventType = String(event?.type || '');
+                const deltaType = String(event?.delta?.type || '');
+                reasoningChars += contentText(choice?.delta?.reasoning_content ?? choice?.delta?.reasoning
+                    ?? (eventType.includes('reasoning') || eventType.includes('thinking') || /thinking|reasoning/i.test(deltaType) ? event?.delta?.thinking ?? event?.delta : '')).length;
                 const text = contentText(choice?.delta?.content)
                     || contentText(choice?.message?.content)
                     || contentText(choice?.text)
-                    || contentText(event?.output_text);
+                    || contentText(event?.output_text)
+                    // OpenAI Responses API and Anthropic-compatible streams
+                    // use root-level delta events instead of choices[].
+                    || (eventType === 'response.output_text.delta' ? contentText(event?.delta) : '')
+                    || (eventType === 'content_block_delta' && !/thinking|reasoning/i.test(deltaType) ? contentText(event?.delta?.text) : '')
+                    || contentText(event?.delta?.content);
                 if (text) chunks.push(text);
                 if (choice?.finish_reason) finishReason = String(choice.finish_reason);
+                else if (['response.completed','message_stop','message_delta'].includes(eventType)) finishReason = String(event?.delta?.stop_reason || event?.response?.status || 'stop');
             } catch (_) { /* Ignore comments and incomplete trailing SSE lines. */ }
         });
         if (errorEnvelope) return errorEnvelope;
@@ -486,6 +499,7 @@
             while (true) {
                 const { value, done } = await reader.read();
                 if (done) break;
+                if (typeof meta.onActivity === 'function') meta.onActivity();
                 raw += decoder.decode(value, { stream: true });
                 // A completion marker ends this response even when a proxy
                 // keeps its HTTP connection open. Never scan a partial line.
@@ -499,7 +513,8 @@
                     if (data === '[DONE]') { complete = true; continue; }
                     try {
                         const event = JSON.parse(data);
-                        if (event.error || event.choices?.some(choice => (choice.index ?? 0) === 0 && choice.finish_reason)) complete = true;
+                        if (event.error || event.choices?.some(choice => (choice.index ?? 0) === 0 && choice.finish_reason)
+                            || ['response.completed','response.failed','message_stop'].includes(String(event?.type || ''))) complete = true;
                     } catch (_) { /* Incomplete or non-JSON event. */ }
                 }
                 if (complete) {
@@ -515,8 +530,9 @@
             return { raw, interrupted: false };
         } catch (error) {
             if (!raw.trim()) throw error;
-            console.warn('[WorldStateMachine] 流式连接中断', { task: meta.task, receivedChars: raw.length, reason: String(error?.message || error) });
-            return { raw, interrupted: true };
+            const interruptionReason = typeof meta.interruptionReason === 'function' ? meta.interruptionReason() : 'upstream';
+            console.warn('[WorldStateMachine] 流式连接中断', { task: meta.task, receivedChars: raw.length, interruptionReason, reason: String(error?.message || error) });
+            return { raw, interrupted: true, interruptionReason };
         }
     }
     function providerResponseError(data) {
@@ -661,12 +677,29 @@
     }
     function attemptSignal(parentSignal, timeoutMs) {
         const controller = new AbortController();
-        const abort = () => controller.abort();
-        if (parentSignal?.aborted) controller.abort();
+        let abortReason = '';
+        let timer;
+        const abort = () => {
+            abortReason = 'cancelled';
+            controller.abort();
+        };
+        if (parentSignal?.aborted) {
+            abortReason = 'cancelled';
+            controller.abort();
+        }
         else parentSignal?.addEventListener?.('abort', abort, { once: true });
-        const timer = window.setTimeout(abort, timeoutMs);
+        const armTimeout = () => {
+            window.clearTimeout(timer);
+            timer = window.setTimeout(() => {
+                abortReason = 'timeout';
+                controller.abort();
+            }, timeoutMs);
+        };
+        armTimeout();
         return {
             signal: controller.signal,
+            reason: () => abortReason || 'upstream',
+            touch: () => { if (!controller.signal.aborted) armTimeout(); },
             cleanup() {
                 window.clearTimeout(timer);
                 parentSignal?.removeEventListener?.('abort', abort);
@@ -867,9 +900,17 @@
                 response = await fetch('/api/backends/chat-completions/generate', {
                     method: 'POST', headers: proxyHeaders, body: JSON.stringify(proxyBody), signal: attempt.signal,
                 });
-                const forwarded = await readForwardedResponse(response, options.stream === true, meta);
+                const forwarded = await readForwardedResponse(response, options.stream === true, { ...meta, interruptionReason: attempt.reason, onActivity: attempt.touch });
                 raw = forwarded.raw;
                 streamInterrupted = forwarded.interrupted;
+                meta.interruptionReason = forwarded.interruptionReason || '';
+            } catch (error) {
+                if (error?.name === 'AbortError') {
+                    const reason = attempt.reason();
+                    if (reason === 'cancelled') throw new Error(`任务 ${meta.task} 已由用户取消`);
+                    if (reason === 'timeout') throw new Error(`任务 ${meta.task} 请求超时：等待模型首条正文或后续数据超过 ${Math.round(timeoutMs / 1000)} 秒`);
+                }
+                throw error;
             } finally { attempt.cleanup(); }
             if (!response.ok) throw new Error(`Planner API 后端转发失败 ${response.status}: ${raw.slice(0, 500)}`);
             let data;
@@ -904,7 +945,10 @@
                     );
                     return recovered;
                 } catch (_recoveryError) {
-                    if (streamInterrupted) throw new Error(`任务 ${meta.task} 流式连接中断或等待超时；已收到正文 ${visibleChars} 字，推理 ${data.reasoningChars || 0} 字，但尚未形成一个可安全保存的完整JSON模块；本批未写入`);
+                    if (streamInterrupted) {
+                        const interruptionLabel = meta.interruptionReason === 'timeout' ? '本地等待超时' : meta.interruptionReason === 'cancelled' ? '用户取消' : '上游或反代断流';
+                        throw new Error(`任务 ${meta.task} ${interruptionLabel}；已收到正文 ${visibleChars} 字，推理 ${data.reasoningChars || 0} 字，但尚未形成一个可安全保存的完整JSON模块；本批未写入`);
+                    }
                     if (meta.task === 'SOURCE_READ_SEQUENTIAL_BATCH') throw new Error(`任务 ${meta.task} 接口明确报告输出预算耗尽；上限 ${maxTokens} Tokens，正文 ${visibleChars} 字，推理 ${data.reasoningChars || 0} 字，且未形成可安全保存的完整JSON模块；本批未写入。${requestIdentity}`);
                 }
             }

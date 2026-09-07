@@ -29,13 +29,13 @@ WorldStateMachine.Api = {
                 patches: [], checkedModules: [], candidateModules: ['characters'], end: false, maxCheckpoint: 1,
             } };
         }
-        if (payload.task === 'SOURCE_READ_FACT_STREAM') {
-            return { factStream: {
-                facts: [{ kind: 'relationship', sourceIndex: 2, subject: '夏以昼', object: '夏寻樨', value: '兄妹' }],
-                patches: [], checkedModules: [], candidateModules: [], end: true, maxCheckpoint: 2,
-            } };
-        }
-        if (payload.task === 'SOURCE_READ_FACT_ADJUDICATE') throw new Error('模拟第二步 502');
+        if (payload.task === 'SOURCE_READ_FACT_ADJUDICATE') return { factStream: {
+            facts: [
+                { kind: 'relationship', sourceIndex: 2, subject: '夏以昼', object: '夏寻樨', value: '兄妹' },
+                ...minimalFill,
+            ],
+            patches: [], checkedModules: auditedModules, candidateModules: auditedModules, end: true, maxCheckpoint: 2,
+        } };
         throw new Error(`unexpected task ${payload.task}`);
     },
 };
@@ -58,9 +58,18 @@ const forcedRelationship = WorldStateMachine.Engine._test.factsWithRegisteredSou
 assert.equal(forcedRelationship.length, 1, '第二轮必须允许为空栏目建立可覆盖的合理模拟');
 assert.equal(forcedRelationship[0].truthStatus, 'system_generated');
 assert.equal(forcedRelationship[0].data.simulationFill, true);
-assert.equal(WorldStateMachine.Engine._test.factsWithRegisteredSources([
+const singleSourceMissingIndex = WorldStateMachine.Engine._test.factsWithRegisteredSources([
     { kind: 'relationship', subject: '甲', object: '乙', value: '亲属' },
-], [{ ref: 'worldbook:人物' }], 'confirmed').length, 0, '第一轮无有效来源的身份关系事实必须拒绝');
+], [{ ref: 'worldbook:人物', serializedJson: '{"text":"甲与乙是亲属"}' }], 'confirmed');
+assert.equal(singleSourceMissingIndex.length, 1, '第一轮只有一个来源时，漏写sourceIndex不得导致有意义事实整条删除');
+assert.deepEqual(singleSourceMissingIndex[0].sourceRefs, ['worldbook:人物']);
+const inferredSourceFact = WorldStateMachine.Engine._test.factsWithRegisteredSources([
+    { kind: 'character', subject: '夏以昼', field: 'identity', value: '皇帝' },
+], [
+    { ref: 'worldbook:无关', serializedJson: '{"text":"其他人物"}' },
+    { ref: 'worldbook:人物', serializedJson: '{"text":"夏以昼是皇帝"}' },
+], 'confirmed');
+assert.deepEqual(inferredSourceFact[0].sourceRefs, ['worldbook:人物'], '第一轮漏写sourceIndex时应按事实文本回查来源，而不是删除整条记录');
 
 const fillModules = auditedModules;
 const minimalFill = [
@@ -122,13 +131,47 @@ assert.ok(xia.basis.length > 0, '依据不得因模型少一个字段而丢失')
 assert.ok(result.state.relationships.some((item) => item.identityRelation === '兄妹'));
 assert.ok(!calls[0].prompt.includes('moduleCoverage'), '第一轮不得再要求模型输出18模块覆盖表');
 assert.ok(calls[0].prompt.includes('不要输出sourceRefs'), '第一轮应明确省略由代码登记的来源元数据');
-assert.equal(calls.filter((call) => call.payload.task === 'SOURCE_READ_FACT_STREAM').length, 2, '无end的完整行必须从断点续读');
+assert.equal(Object.prototype.hasOwnProperty.call(calls[0].payload, 'moduleOwnership'), false, '第一轮不得携带冗长的旧模块归属表');
+assert.deepEqual(calls[0].payload.moduleNames, auditedModules, '第一轮只携带紧凑的模块名称清单');
+assert.equal(calls.filter((call) => call.payload.task === 'SOURCE_READ_FACT_STREAM').length, 1, '第一次完整读取的事实提取固定只调用一次');
 assert.equal(calls.at(-1).payload.task, 'SOURCE_READ_FACT_ADJUDICATE');
+assert.ok(calls.every((call) => call.options.singleAttempt === true), '两次初始读取都不得在API封装层偷偷产生额外兼容请求');
+assert.equal(calls.at(-1).payload.unreadSourceRecords.length, 1, '第一次只读到断点时，第二次调用必须接管未读来源');
+assert.equal(calls.at(-1).payload.targetedSourceRecords.some((record) => record.sourceIndex === 2), false, '第二次调用不得在未读来源和定点原文中重复发送同一记录');
 assert.ok(Array.isArray(calls.at(-1).payload.requiredEmptyModuleOutputs) && calls.at(-1).payload.requiredEmptyModuleOutputs.length > 0, '第二轮必须收到逐栏推演目标和最小合格示例');
 assert.equal(Object.prototype.hasOwnProperty.call(calls.at(-1).payload, 'moduleOwnership'), false, '第二轮不得再收到要求无来源留空的旧模块规则');
-assert.equal(prepared.requestAttempts, 3);
-assert.ok(result.evidence.uncertainties.some((item) => item.title === '定点补全待重试'), '第二步失败只能记录待修复，不得报废第一步');
+assert.equal(prepared.requestAttempts, 2, '初次读取不得超过两次API');
 const cache = JSON.parse(storage.get('wsm_extract_then_reason_cache_v16'));
-assert.equal(Object.values(cache)[0].evidence.__factPipelineComplete, false, '疑难项未补全时不得把缓存标成完全成功');
+assert.equal(Object.values(cache)[0].evidence.__factPipelineComplete, true, '第二次调用接管未读来源并补齐18栏后应完整保存');
+
+const retryCalls = [];
+WorldStateMachine.Api.complete = async (_prompt, payload, options) => {
+    retryCalls.push({ payload, options });
+    if (payload.task === 'SOURCE_READ_FACT_STREAM' && retryCalls.filter((item) => item.payload.task === payload.task).length === 1) {
+        throw new Error('任务 SOURCE_READ_FACT_STREAM 上游或反代断流；已收到正文 0 字，推理 232 字');
+    }
+    if (payload.task === 'SOURCE_READ_FACT_ADJUDICATE') return { factStream: {
+        facts: [
+            { kind: 'character', sourceIndex: 1, subject: '重试角色', field: 'identity', value: '测试身份' },
+            ...minimalFill,
+        ],
+        patches: [], checkedModules: auditedModules, candidateModules: auditedModules, end: true, maxCheckpoint: 1,
+    } };
+    throw new Error(`unexpected retry task ${payload.task}`);
+};
+const retryPrepared = {
+    transportVersion: 'fact-stream-v1', large: true,
+    batches: [[{ ref: 'worldbook:重试', kind: 'worldbook-entry', serializedJson: '{"text":"重试角色拥有测试身份"}' }]],
+    localEvidence: {}, originalChars: 20, includedChars: 20,
+};
+const retryResult = await WorldStateMachine.Engine._test.buildStateWithinLimit(
+    '', { sourceBoundary: {} }, WorldStateMachine.Defaults.createState(),
+    { model: 'retry-test', useTavernApi: false, endpoint: 'test', maxTokens: 9000 }, undefined, retryPrepared,
+);
+assert.equal(retryCalls.length, 2, '第一次零正文断流后只能由第二次也是最后一次调用接管');
+assert.equal(retryCalls[1].payload.task, 'SOURCE_READ_FACT_ADJUDICATE', '第二次调用必须同时恢复未读来源并完成补全，不能再发一次事实提取');
+assert.equal(retryCalls[1].payload.unreadSourceRecords.length, 1);
+assert.ok(retryResult.state.characters.some((item) => item.name === '重试角色'), '重试成功后的完整事实必须进入状态');
+assert.equal(retryPrepared.sourceComplete, true, '第二次调用返回最终through后必须核实来源完整');
 
 console.log('fact stream smoke test passed');

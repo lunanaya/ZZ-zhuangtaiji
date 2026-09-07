@@ -346,16 +346,16 @@
     const SOURCE_COMPILE_BUDGET_PROMPT = '输出传输约束：只返回从来源中提取的有效事实；空字段、默认值、重复剧情和审计长句不输出。不使用低于用户Tokens设置的额外字符硬上限。';
     const STATE_ADJUDICATE_BUDGET_PROMPT = '输出传输约束：只返回必要的裁定、修正和补全，不重述已正确事实。不使用低于用户Tokens设置的额外字符硬上限。';
     const FACT_STREAM_VERSION = 1;
-    const FACT_STREAM_MAX_EXTRACTION_CALLS = 3;
     const FACT_STREAM_SOURCE_PROMPT = `你是资料事实读取器，不是故事续写者，也不负责填完整状态表。按 sourceIndex 顺序读完 sourceRecords，只输出 JSONL（每行一个独立闭合JSON对象），禁止Markdown、解释和整个大JSON外壳。
 事实行只写有意义的最少字段，例如 {"kind":"character","sourceIndex":1,"subject":"夏以昼","field":"identity","value":"皇帝"} 或 {"kind":"relationship","sourceIndex":2,"subject":"夏以昼","object":"夏寻樨","value":"兄妹"}。kind使用18个状态模块对应的英文名单数或模块名；关系等需要区分语义时才写field，结构化补充确有必要时才写data。
 不要输出sourceRefs、basis、truthStatus、ID、优先级、活跃度、空字段、默认值、覆盖码、覆盖依据或18模块审计表；程序会根据sourceIndex登记来源、补齐内部元数据并核验18个模块。不得为了格式伪造事实。
 组织或势力名称必须保留完整限定语，例如“夏以昼的母家势力”不得截成“昼的母家势力”；组织的当前处境必须描述该组织自身，其他人物对它的忌惮、偏袒或态度属于关系或政治影响，不能原句冒充该组织自身的处境。
-每读完8条 sourceRecord，或到本次剩余来源末尾时，输出 {"checkpoint":已读到的sourceIndex}。全部读完后最后只输出 {"end":true,"through":最后sourceIndex}。这个end必须是最后一行；没有结束标记时程序从已保存断点继续，不清空完整事实行。`;
+立即从第一条事实开始输出，不要先写前言或长时间规划。每读完8条 sourceRecord，或到本次所给来源末尾时，输出 {"checkpoint":已读到的sourceIndex}。本次所给来源全部读完后最后只输出 {"end":true,"through":最后sourceIndex}。这个end必须是最后一行；没有结束标记时程序从已保存断点继续，不清空完整事实行。`;
     const FACT_STREAM_REASON_PROMPT = `你是事实裁定与受约束模拟补全器，不是故事续写者。draftFacts是第一步事实，draftState是代码组装草稿，unresolvedFacts是待补字段，emptyModules是第一步之后仍为空的栏目，targetedSourceRecords是疑难项原文。只输出需要新增或修正的JSONL行，不得重述已正确事实。
+如果unreadSourceRecords非空，说明第一次调用断流或只完成了前半段；你必须先逐条读取这些未读来源，输出其中尚未进入draftFacts的有效事实，再完成emptyModules的裁定与补全。这是初次读取的第二次也是最后一次API调用，不得要求第三次续补。结束行必须写 {"end":true,"through":最后一个unreadSourceRecords的sourceIndex}；若unreadSourceRecords为空则写 {"end":true}。
 世界书、角色卡和正文在本阶段是推演约束与素材，不是“只有逐字写明才能输出”的限制。requiredEmptyModuleOutputs为每个空栏给出推演目标和最小合格示例；必须按该清单逐项返回，每项至少一条可组装记录，禁止留空：①原文虽未直写时，先由称谓、身份、关系、行为、时间地点或多处线索推导；②不能唯一推导时，依据现有世界观、人物身份与剧情阶段做不冲突的合理模拟；③没有直接素材也要生成最小但有实际内容的当前版本。不得用“原文未写”“暂无”“未知”“不适用”充当记录，也不得跳过requiredEmptyModuleOutputs中的任何栏目。
 有来源的修正写最小补丁，例如 {"target":"事实id","fill":{"identityRelation":"兄妹"}}；有来源的新事实沿用第一步最小事实行并带sourceIndex。合理模拟的新行不写sourceIndex，程序据此在后台登记为可覆盖的生成态。
-合理模拟必须优先选择低影响、与现状相容且可被后续正文自然覆盖的内容。主角任务写成可选择的候选方向，不声称主角已接受；剧情扣子写成可能入口，不声称邀请或事件已经发生；日程、时间线、秘密、关系、权限、资源、因果与事实锚点只能补成不改变既有重大结论的最小版本，不得制造死亡、背叛、灾难、强制承诺、精确数值或不可逆结果。不要输出来源、依据、真实性、覆盖表、默认值或完整卡片。最后只输出 {"end":true}。`;
+合理模拟必须优先选择低影响、与现状相容且可被后续正文自然覆盖的内容。主角任务写成可选择的候选方向，不声称主角已接受；剧情扣子写成可能入口，不声称邀请或事件已经发生；日程、时间线、秘密、关系、权限、资源、因果与事实锚点只能补成不改变既有重大结论的最小版本，不得制造死亡、背叛、灾难、强制承诺、精确数值或不可逆结果。不要输出来源、依据、真实性、覆盖表、默认值或完整卡片。最后严格输出前述结束行，不得省略through要求。`;
     const FACT_STREAM_POLICY_PROMPT = '只保留原文明确事实或能由原文唯一确定的推导；证据不足的项目不输出，不得编造。来源、依据、真实性、覆盖状态和审计元数据由程序在后台登记，事实行不要重述。';
     const FACT_STREAM_REASON_POLICY_PROMPT = '来源事实必须能回指原文；emptyModules不得留空，无来源编号的补全由程序登记为可覆盖模拟。模拟必须与现有事实相容、避免重大或不可逆改写，并在后续真实信息出现时让位。';
     const FACT_STREAM_EMPTY_MODULE_GUIDANCE = Object.freeze({
@@ -3257,12 +3257,26 @@
             if (generatedActors.allowStoryCandidates === true && ['tasks','triggers','threads','progression','processes'].includes(module)) return true;
             return false;
         };
+        const inferSourceRefs = (value) => {
+            if (defaultTruth !== 'confirmed' || !records.length) return [];
+            if (records.length === 1) return [safeText(records[0]?.ref)].filter(Boolean);
+            const clues = [value?.subject, value?.object, value?.value]
+                .map(safeText).filter((clue) => clue.length >= 2).slice(0, 3);
+            if (!clues.length) return [];
+            const ranked = records.map((record) => {
+                const text = safeText(record?.serializedJson || record?.text || record?.content);
+                return { ref: safeText(record?.ref), score: clues.reduce((score, clue) => score + (text.includes(clue) ? Math.min(8, clue.length) : 0), 0) };
+            }).filter((item) => item.ref && item.score > 0).sort((a, b) => b.score - a.score);
+            if (!ranked.length) return [];
+            return ranked.filter((item) => item.score === ranked[0].score).slice(0, 3).map((item) => item.ref);
+        };
         return (Array.isArray(values) ? values : []).map((value) => {
             if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
             const sourceIndex = Math.max(0, Number(value.sourceIndex || 0));
-            const sourceRef = sourceIndex > 0 && sourceIndex <= records.length ? safeText(records[sourceIndex - 1]?.ref) : '';
+            const validSourceIndex = sourceIndex > 0 && sourceIndex <= records.length;
+            const sourceRef = validSourceIndex ? safeText(records[sourceIndex - 1]?.ref) : '';
             const suppliedRefs = (Array.isArray(value.sourceRefs) ? value.sourceRefs : []).map(safeText).filter((ref) => registeredRefs.has(ref));
-            const sourceRefs = [...new Set([...suppliedRefs, sourceRef].filter(Boolean))];
+            const sourceRefs = [...new Set([...suppliedRefs, sourceRef, ...(validSourceIndex ? [] : inferSourceRefs(value))].filter(Boolean))];
             const generated = sourceRefs.length === 0 && allowGenerated && generatedFieldAllowed(value);
             if (!sourceRefs.length && !generated) return null;
             const basis = Array.isArray(value.basis) ? value.basis.map(safeText).filter(Boolean) : (safeText(value.basis) ? [safeText(value.basis)] : []);
@@ -3315,59 +3329,56 @@
         let sourceComplete = cached?.__sourceComplete === true;
         let legacyEvidence = cached?.__legacyEvidence || null;
         if (facts.length || processedThrough) prepared.cacheHits = 1;
-        let extractionCalls = 0;
-        while (!sourceComplete && extractionCalls < FACT_STREAM_MAX_EXTRACTION_CALLS) {
+        let sourceReadFailure = '';
+        // Hard contract: an initial full read uses at most two API calls. The
+        // first call gets every still-unread source record exactly once. If it
+        // is truncated or fails before visible output, call two receives the
+        // unread tail and performs recovery together with adjudication.
+        if (!sourceComplete) {
             throwIfCancelled(signal);
             const remaining = indexedRecords.slice(processedThrough);
-            if (!remaining.length) {
-                sourceComplete = true;
-                break;
+            if (!remaining.length) sourceComplete = true;
+            else {
+                const startedAt = Date.now();
+                reportProgress('第一步：逐条提取资料事实', 'running', `已核对 ${processedThrough}/${indexedRecords.length} 条来源 · 本次读取剩余 ${remaining.length} 条 · API 1/2`);
+                try {
+                    const response = await WSM.Api.complete(
+                        `${IDENTITY_READ_RULE}\n\n${FACT_STREAM_SOURCE_PROMPT}\n\n${FACT_STREAM_POLICY_PROMPT}`,
+                        {
+                            task: 'SOURCE_READ_FACT_STREAM', factStreamVersion: FACT_STREAM_VERSION,
+                            sourceRecords: remaining, sourceBoundary: payload?.sourceBoundary || {}, moduleNames: AUDITED_MODULES,
+                        },
+                        { maxTokens: 9000, timeoutMs: 300000, singleAttempt: true, signal, jsonContract: 'facts', reasoningEffort: 'low', stream: true },
+                    );
+                    const stream = factStreamOf(response);
+                    if (!stream) {
+                        const evidence = evidenceFromResult(response);
+                        if (!evidence || typeof evidence !== 'object') throw new Error('第一步既未返回事实流，也未返回可兼容的资料证据');
+                        legacyEvidence = mergeCompleteEvidence(legacyEvidence || {}, evidence);
+                        sourceComplete = true;
+                        processedThrough = indexedRecords.length;
+                    } else {
+                        facts = applyFactPatches(mergeFactRecords(facts, factsWithRegisteredSources(stream.facts || [], indexedRecords, 'confirmed')), stream.patches || []);
+                        checkedModules = [...new Set([...checkedModules, ...(stream.checkedModules || []).map(normalizeFactModule).filter(Boolean)])];
+                        candidateModules = [...new Set([...candidateModules, ...(stream.candidateModules || []).map(normalizeFactModule).filter(Boolean), ...facts.map((fact) => fact.module)])];
+                        moduleCoverage = { ...moduleCoverage, ...(stream.moduleCoverage || {}) };
+                        coverageBasis = { ...coverageBasis, ...(stream.coverageBasis || {}) };
+                        processedThrough = Math.max(processedThrough, Math.min(indexedRecords.length, Number(stream.maxCheckpoint || 0)));
+                        sourceComplete = stream.end === true && processedThrough >= indexedRecords.length;
+                    }
+                } catch (error) {
+                    if (signal?.aborted) throw error;
+                    sourceReadFailure = safeText(error?.message || error || '第一步读取失败');
+                    reportProgress('第一步连接异常，第二步将接管未读来源', 'running', `已保存 ${facts.length} 条完整事实和 ${processedThrough}/${indexedRecords.length} 条断点 · API 仍限制为 2 次`);
+                }
+                prepared.requestDurationsMs.push(Date.now() - startedAt);
+                prepared.requestAttempts += 1;
             }
-            const startedAt = Date.now();
-            reportProgress('第一步：逐条提取资料事实', 'running', `已核对 ${processedThrough}/${indexedRecords.length} 条来源 · 事实 ${facts.length} 条 · 请求 ${prepared.requestAttempts + 1}`);
-            const response = await WSM.Api.complete(
-                `${IDENTITY_READ_RULE}\n\n${FACT_STREAM_SOURCE_PROMPT}\n\n${FACT_STREAM_POLICY_PROMPT}`,
-                {
-                    task: 'SOURCE_READ_FACT_STREAM', factStreamVersion: FACT_STREAM_VERSION,
-                    sourceRecords: remaining, sourceBoundary: payload?.sourceBoundary || {},
-                    moduleOwnership: payload?.moduleOwnership || WSM.Defaults.MODULE_OWNERSHIP,
-                },
-                { maxTokens: 9000, timeoutMs: 300000, singleAttempt: false, signal, jsonContract: 'facts', reasoningEffort: 'low', stream: true },
-            );
-            const durationMs = Date.now() - startedAt;
-            prepared.requestDurationsMs.push(durationMs);
-            prepared.requestAttempts += 1;
-            extractionCalls += 1;
-            const stream = factStreamOf(response);
-            if (!stream) {
-                const evidence = evidenceFromResult(response);
-                if (!evidence || typeof evidence !== 'object') throw new Error('第一步既未返回事实流，也未返回可兼容的资料证据');
-                legacyEvidence = mergeCompleteEvidence(legacyEvidence || {}, evidence);
-                sourceComplete = true;
-                checkedModules = [...AUDITED_MODULES];
-                break;
-            }
-            facts = applyFactPatches(mergeFactRecords(facts, factsWithRegisteredSources(stream.facts || [], indexedRecords, 'confirmed')), stream.patches || []);
-            checkedModules = [...new Set([...checkedModules, ...(stream.checkedModules || []).map(normalizeFactModule).filter(Boolean)])];
-            candidateModules = [...new Set([...candidateModules, ...(stream.candidateModules || []).map(normalizeFactModule).filter(Boolean), ...facts.map((fact) => fact.module)])];
-            moduleCoverage = { ...moduleCoverage, ...(stream.moduleCoverage || {}) };
-            coverageBasis = { ...coverageBasis, ...(stream.coverageBasis || {}) };
-            const nextCheckpoint = Math.max(processedThrough, Math.min(indexedRecords.length, Number(stream.maxCheckpoint || 0)));
-            if (nextCheckpoint > processedThrough) processedThrough = nextCheckpoint;
-            // The model's end flag is only a claim. Code verifies that the
-            // durable checkpoint actually reached the last source record.
-            // An early end therefore resumes from the checkpoint instead of
-            // silently declaring the unread tail complete.
-            sourceComplete = stream.end === true && processedThrough >= indexedRecords.length;
             await writeFirstHalfCache(cacheKey, {
                 __factStreamFacts: facts, __checkedModules: checkedModules, __candidateModules: candidateModules,
                 __moduleCoverage: moduleCoverage, __coverageBasis: coverageBasis,
                 __processedThrough: processedThrough, __sourceComplete: sourceComplete, __legacyEvidence: legacyEvidence,
             });
-            reportProgress(sourceComplete ? '资料事实提取完成' : '输出中断，已保存完整事实行', 'running', `已核对 ${processedThrough}/${indexedRecords.length} 条来源 · 保留 ${facts.length} 条事实 · 本次 ${(durationMs / 1000).toFixed(1)} 秒`);
-        }
-        if (!sourceComplete) {
-            throw new Error(`资料事实流在 ${FACT_STREAM_MAX_EXTRACTION_CALLS} 次有界读取后仍未返回结束标记；已保存 ${facts.length} 条完整事实和 ${processedThrough}/${indexedRecords.length} 条来源断点，再次读取会继续而不是清空`);
         }
         checkedModules = [...AUDITED_MODULES];
         const firstEvidence = mergeCompleteEvidence(prepared.localEvidence || {}, legacyEvidence || {}, evidenceFromFactRecords(facts, { checkedModules, candidateModules, moduleCoverage, coverageBasis }));
@@ -3378,8 +3389,14 @@
             .map(safeText).filter(Boolean);
         const unresolved = unresolvedFactRecords(facts);
         const emptyModules = AUDITED_MODULES.filter((module) => !stateModuleHasContent(draftState, module));
-        const targetedSourceRecords = targetedFactSourceRecords(indexedRecords, facts, unresolved);
-        reportProgress('第二步：定点推理与表格补全', 'running', `草稿事实 ${facts.length} 条 · 疑难项 ${unresolved.length} 条 · 回看原文 ${targetedSourceRecords.length} 条`);
+        const unreadSourceRecords = sourceComplete ? [] : indexedRecords.slice(processedThrough);
+        const unreadIndexes = new Set(unreadSourceRecords.map((record) => Number(record?.sourceIndex || 0)));
+        // Do not send the same original record twice in call two. Unread input
+        // is already complete; targetedSourceRecords only needs adjudication
+        // snippets from the portion call one finished.
+        const targetedSourceRecords = targetedFactSourceRecords(indexedRecords, facts, unresolved)
+            .filter((record) => !unreadIndexes.has(Number(record?.sourceIndex || 0)));
+        reportProgress('第二步：接管未读来源并完成推理补全', 'running', `API 2/2 · 草稿事实 ${facts.length} 条 · 未读来源 ${unreadSourceRecords.length} 条 · 空栏 ${emptyModules.length} 个`);
         const reasonStartedAt = Date.now();
         let reasonResponse = null;
         let reasonFailure = '';
@@ -3391,6 +3408,8 @@
                     draftFacts: facts,
                     draftState: plannerState(draftState),
                     unresolvedFacts: unresolved,
+                    unreadSourceRecords,
+                    firstPassFailure: sourceReadFailure,
                     emptyModules,
                     emptyModuleLabels: Object.fromEntries(emptyModules.map((module) => [module, moduleDisplayName(module)])),
                     requiredEmptyModuleOutputs: emptyModules.map((module) => ({
@@ -3400,13 +3419,13 @@
                     targetedSourceRecords,
                     candidateCounts: Object.fromEntries(AUDITED_MODULES.map((module) => [module, facts.filter((fact) => fact.module === module).length])),
                 },
-                { maxTokens: 9000, timeoutMs: 300000, singleAttempt: false, signal, jsonContract: 'facts', reasoningEffort: 'medium', stream: true },
+                { maxTokens: 9000, timeoutMs: 300000, singleAttempt: true, signal, jsonContract: 'facts', reasoningEffort: 'medium', stream: true },
             );
         } catch (error) {
             if (signal?.aborted) throw error;
             reasonFailure = safeText(error?.message || error || '未知错误');
-            console.warn('[WorldStateMachine] 第二步定点补全失败，将保留第一步事实并机械组装最小卡片', error);
-            reportProgress('第二步暂未完成，已保留第一步事实', 'running', `${facts.length} 条事实已保存；未补全项下次将定点重试：${reasonFailure.slice(0, 180)}`);
+            console.warn('[WorldStateMachine] 第二步定点补全失败，保留已经安全读取的事实并标记未完成', error);
+            reportProgress('第二步未完成，已保留安全事实', 'error', `${facts.length} 条事实已保存；没有使用第三次API或代码兜底：${reasonFailure.slice(0, 180)}`);
         }
         prepared.requestDurationsMs.push(Date.now() - reasonStartedAt);
         prepared.requestAttempts += 1;
@@ -3421,55 +3440,22 @@
             })), reasonStream.patches || []);
             candidateModules = [...new Set([...candidateModules, ...(reasonStream.candidateModules || []).map(normalizeFactModule).filter(Boolean), ...facts.map((fact) => fact.module)])];
             checkedModules = [...new Set([...checkedModules, ...(reasonStream.checkedModules || []).map(normalizeFactModule).filter(Boolean)])];
-        } else secondEvidence = evidenceFromResult(reasonResponse);
-        const provisionalEvidence = mergeCompleteEvidence(
-            prepared.localEvidence || {}, legacyEvidence || {}, evidenceFromFactRecords(facts, { checkedModules, candidateModules, moduleCoverage, coverageBasis }), secondEvidence || {},
-        );
-        const provisionalState = stateFromEvidence(provisionalEvidence, {}, _baseState).state;
-        const stillEmptyAfterReason = AUDITED_MODULES.filter((module) => !stateModuleHasContent(provisionalState, module));
-        if (!reasonFailure && stillEmptyAfterReason.length) {
-            reportProgress('第二步续补：仍有空栏', 'running', `只补 ${stillEmptyAfterReason.map(moduleDisplayName).join('、')}，不重述已完成栏目`);
-            const retryStartedAt = Date.now();
-            try {
-                const retryResponse = await WSM.Api.complete(
-                    `${IDENTITY_READ_RULE}\n\n${FACT_STREAM_REASON_PROMPT}\n\n${FACT_STREAM_REASON_POLICY_PROMPT}`,
-                    {
-                        task: 'SOURCE_READ_FACT_ADJUDICATE_CONTINUE', factStreamVersion: FACT_STREAM_VERSION,
-                        retryOnlyMissing: true, draftFacts: facts, draftState: plannerState(provisionalState),
-                        unresolvedFacts: [], emptyModules: stillEmptyAfterReason,
-                        emptyModuleLabels: Object.fromEntries(stillEmptyAfterReason.map((module) => [module, moduleDisplayName(module)])),
-                        requiredEmptyModuleOutputs: stillEmptyAfterReason.map((module) => ({
-                            module, label: moduleDisplayName(module), goal: FACT_STREAM_EMPTY_MODULE_GUIDANCE[module]?.[0] || '结合现有资料推演当前状态',
-                            minimumExample: FACT_STREAM_EMPTY_MODULE_GUIDANCE[module]?.[1] || `{"kind":"${module}","subject":"当前状态"}`,
-                        })),
-                        targetedSourceRecords, candidateCounts: Object.fromEntries(AUDITED_MODULES.map((module) => [module, facts.filter((fact) => fact.module === module).length])),
-                    },
-                    { maxTokens: 9000, timeoutMs: 300000, singleAttempt: false, signal, jsonContract: 'facts', reasoningEffort: 'medium', stream: true },
-                );
-                const retryStream = factStreamOf(retryResponse);
-                if (retryStream) {
-                    facts = applyFactPatches(mergeFactRecords(facts, factsWithRegisteredSources(retryStream.facts || [], indexedRecords, 'derived', true, {
-                        characterSubjects: sourceCharacterSubjects,
-                        activitySubjects: knownActivitySubjects,
-                        allowStoryCandidates: true,
-                        forceFillModules: stillEmptyAfterReason,
-                    })), retryStream.patches || []);
-                    candidateModules = [...new Set([...candidateModules, ...(retryStream.candidateModules || []).map(normalizeFactModule).filter(Boolean), ...facts.map((fact) => fact.module)])];
-                } else secondEvidence = mergeCompleteEvidence(secondEvidence || {}, evidenceFromResult(retryResponse) || {});
-            } catch (error) {
-                if (signal?.aborted) throw error;
-                reasonFailure = safeText(error?.message || error || '空栏续补失败');
-                console.warn('[WorldStateMachine] 第二步空栏定点续补失败', error);
+            if (unreadSourceRecords.length) {
+                processedThrough = Math.max(processedThrough, Math.min(indexedRecords.length, Number(reasonStream.maxCheckpoint || 0)));
+                sourceComplete = reasonStream.end === true && processedThrough >= indexedRecords.length;
             }
-            prepared.requestDurationsMs.push(Date.now() - retryStartedAt);
-            prepared.requestAttempts += 1;
-        }
+        } else secondEvidence = evidenceFromResult(reasonResponse);
         let finalEvidence = mergeCompleteEvidence(
             prepared.localEvidence || {}, legacyEvidence || {}, evidenceFromFactRecords(facts, { checkedModules, candidateModules, moduleCoverage, coverageBasis }), secondEvidence || {},
         );
         if (reasonFailure) finalEvidence.uncertainties.push({
             title: '定点补全待重试', status: 'retrieval_failed', basis: reasonFailure,
             sourceRefs: [...new Set(unresolved.flatMap((fact) => fact.sourceRefs || []).map(safeText).filter(Boolean))].slice(0, 12),
+        });
+        if (!sourceComplete) finalEvidence.uncertainties.push({
+            title: '来源读取未到最终断点', status: 'retrieval_failed',
+            basis: sourceReadFailure || `只确认到来源 ${processedThrough}/${indexedRecords.length}`,
+            sourceRefs: indexedRecords.slice(processedThrough, processedThrough + 12).map((record) => safeText(record?.ref)).filter(Boolean),
         });
         synthesizeEvidenceAudit(finalEvidence);
         const finalHydrated = stateFromEvidence(finalEvidence, {}, _baseState);
@@ -3483,12 +3469,15 @@
         prepared.incompleteModules = incompleteModules;
         prepared.incompleteEvidenceKeys = missingKeys;
         prepared.reportedIncompleteEvidenceKeys = missingKeys;
-        const factPipelineComplete = incompleteModules.length === 0 && !reasonFailure;
+        prepared.sourceComplete = sourceComplete;
+        prepared.sourceProcessedThrough = processedThrough;
+        prepared.sourceRecordCount = indexedRecords.length;
+        const factPipelineComplete = incompleteModules.length === 0 && !reasonFailure && sourceComplete;
         await writeFirstHalfCache(cacheKey, {
             __factPipelineComplete: factPipelineComplete, __finalEvidence: finalEvidence,
             __factStreamFacts: facts, __checkedModules: checkedModules, __candidateModules: candidateModules,
             __moduleCoverage: moduleCoverage, __coverageBasis: coverageBasis,
-            __processedThrough: indexedRecords.length, __sourceComplete: true,
+            __processedThrough: processedThrough, __sourceComplete: sourceComplete,
             __candidateCounts: candidateCounts, __reportedIncompleteEvidenceKeys: missingKeys,
         });
         reportProgress('事实流组装与18栏核验完成', incompleteModules.length ? 'error' : 'running', incompleteModules.length
@@ -4270,7 +4259,7 @@
                         totalReadableMessages: chatMessages.length,
                         processedMessages: chatMessages.length,
                         failedMessages: 0,
-                        failedChunks: prepared.reportedIncompleteEvidenceKeys?.length ? 1 : 0,
+                        failedChunks: (prepared.reportedIncompleteEvidenceKeys?.length || prepared.sourceComplete === false) ? 1 : 0,
                         hiddenIncluded: chatMessages.filter((message) => message?.hidden === true).length,
                         chunks: prepared.large ? (prepared.batches || prepared.halves || []).length : 1,
                         referenceChunks: 0,
@@ -4295,8 +4284,13 @@
                 const moduleAudit = sourceSummary.moduleAudit || { total: AUDITED_MODULES.length, filled: 0, emptyConfirmed: [] };
                 const emptyText = (moduleAudit.emptyConfirmed || []).map(moduleDisplayName).join('、');
                 const finalFilledModules = AUDITED_MODULES.filter((module) => stateModuleHasContent(next, module)).length;
-                if (incompleteModules.length) {
-                    reportProgress('读取仅部分完成：仍有未覆盖栏目', 'error', `未完整返回：${incompleteModules.map(moduleDisplayName).join('、')} · 最终有记录 ${finalFilledModules}/${AUDITED_MODULES.length} 栏 · ${chatLabel} ${sourceSummary.chatMessages} 条 · 世界书 ${sourceSummary.loadedWorldbooks.length} 本 · API ${prepared.requestAttempts || 0} 次 · 总用时 ${(durationMs / 1000).toFixed(1)} 秒 · 本次不把空栏标记为完成`);
+                const sourceIncomplete = prepared.sourceComplete === false;
+                if (incompleteModules.length || sourceIncomplete) {
+                    const missingDescription = [
+                        incompleteModules.length ? `未完整返回：${incompleteModules.map(moduleDisplayName).join('、')}` : '',
+                        sourceIncomplete ? `来源只确认到 ${prepared.sourceProcessedThrough || 0}/${prepared.sourceRecordCount || 0}` : '',
+                    ].filter(Boolean).join(' · ');
+                    reportProgress('读取仅部分完成', 'error', `${missingDescription} · 最终有记录 ${finalFilledModules}/${AUDITED_MODULES.length} 栏 · ${chatLabel} ${sourceSummary.chatMessages} 条 · 世界书 ${sourceSummary.loadedWorldbooks.length} 本 · API ${prepared.requestAttempts || 0} 次 · 总用时 ${(durationMs / 1000).toFixed(1)} 秒 · 未核实完整前不标记成功`);
                 } else {
                     reportProgress('读取完成：18栏均已有内容', 'success', `最终有记录 ${finalFilledModules}/${AUDITED_MODULES.length} 栏${emptyText ? ` · 第一轮空栏已由第二轮推导或合理模拟：${emptyText}` : ''} · ${chatLabel} ${sourceSummary.chatMessages} 条 · 世界书 ${sourceSummary.loadedWorldbooks.length} 本 · 串行批次 ${(prepared.batches || prepared.halves || []).length || 1} · 本次 API ${prepared.requestAttempts || 0} 次 · 缓存 ${prepared.cacheHits || 0} 批 · 总用时 ${(durationMs / 1000).toFixed(1)} 秒 · 原聊天仍保留在酒馆`);
                 }
@@ -4344,8 +4338,12 @@
         planningChatKey = requestedChatKey;
         planningIntent = requestedIntent;
         if (interactiveRead) activeReadController = controller;
-        const maximumCalls = options.initialize === true || options.readFullChat === true ? 4 : ORDINARY_TURN_CALL_BUDGET;
-        const runPromise = WSM.Api.withCallBudget(maximumCalls, maximumCalls === 4 ? 'fact-extract-then-reason' : 'pre-generation-reasoning', () => plan({
+        // Billing contract: a full initialization uses at most two model
+        // calls (fact extraction, then adjudication/recovery). Ordinary turns
+        // retain their single-call budget.
+        const fullRead = options.initialize === true || options.readFullChat === true;
+        const maximumCalls = fullRead ? 2 : ORDINARY_TURN_CALL_BUDGET;
+        const runPromise = WSM.Api.withCallBudget(maximumCalls, fullRead ? 'two-call-fact-then-reason' : 'pre-generation-reasoning', () => plan({
             ...options, signal: controller?.signal || options.signal,
         }));
         const wrappedPromise = runPromise.finally(() => {

@@ -64,6 +64,15 @@ assert.ok(prepared.localEvidence.organizations.some((item) => item.name === '禁
 assert.ok(prepared.localEvidence.organizations.some((item) => item.name === '三省六部'), 'named institutions in worldbook text must be extracted locally');
 assert.equal(prepared.localEvidence.triggers.length, 0, 'old meow_FM seeds are unresolved threads, not protagonist-facing triggers');
 
+const maternalFactionEvidence = WorldStateMachine.Engine._test.localEvidenceFromSource({
+    identities: { user: '用户', char: '夏以昼' }, character: { name: '夏以昼' },
+    worldbooks: [{ name: '人物', entries: [{ id: 2, content: '皇帝对夏以昼的母家势力多有忌惮，与皇后是政治联姻。' }] }], chat: [],
+});
+const maternalFaction = maternalFactionEvidence.organizations.find((item) => item.name === '夏以昼的母家势力');
+assert.ok(maternalFaction, 'possessive faction names must retain the complete character name');
+assert.equal(maternalFactionEvidence.organizations.some((item) => item.name === '昼的母家势力'), false, 'organization extraction must not keep only the tail of a possessive name');
+assert.equal(maternalFaction.situation, '', 'another actor\'s attitude toward a faction must not become that faction\'s own situation');
+
 const invitationEvidence = WorldStateMachine.Engine._test.localEvidenceFromSource({
     identities: { user: '用户', char: '角色' }, character: { name: '角色' }, worldbooks: [],
     chat: [{ id: 'invite', role: 'assistant', content: '我邀请你明日去观星台，你愿不愿意？' }],

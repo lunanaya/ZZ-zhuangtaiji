@@ -18,7 +18,8 @@ const ctx = {
 globalThis.SillyTavern = { getContext: () => ctx };
 for (const module of ['defaults', 'storage', 'context']) await import(`../src/${module}.js`);
 const WSM = WorldStateMachine;
-WSM.Settings = { get: () => ({ enabled: true, useTavernApi: false, endpoint: 'test', plannerPrompt: 'test', diceEnabled: false, blockOnPlannerError: false }) };
+const engineSettings = { enabled: true, useTavernApi: false, endpoint: 'test', plannerPrompt: 'test', diceEnabled: false, blockOnPlannerError: false };
+WSM.Settings = { get: () => engineSettings };
 WSM.Injection = { compose: () => '<WORLD_STATE>test</WORLD_STATE>', composeByDepth: () => ({ 0: '<WORLD_STATE>test</WORLD_STATE>' }) };
 WSM.WorldbookCompiler = { installNativeWorldbookFilter() {}, setWorldbookPrompts: async () => {} };
 const calls = [];
@@ -97,5 +98,19 @@ release({ stateDelta: { statePatch: { world: { weather: 'stale-response' } }, co
 await WSM.Engine._test.waitForPostGenerationReads();
 assert.equal(WSM.Storage.load().world.weather, 'mild');
 assert.notEqual(WSM.Storage.load().world.weather, 'stale-response');
+
+const callsBeforeDisabledMessage = calls.length;
+const weatherBeforeDisabledMessage = WSM.Storage.load().world.weather;
+engineSettings.enabled = false;
+await WSM.Engine.setEnabled(false);
+ctx.chat.push(raw('user-407', true, 'I wait while the plugin is off.'));
+ctx.chat.push(raw('assistant-408', false, 'A disabled plugin must ignore this message.'));
+events.get('received')();
+await WSM.Engine._test.waitForPostGenerationReads();
+assert.equal(calls.length, callsBeforeDisabledMessage, '总开关关闭后收到正文不得调用状态 API');
+assert.equal(WSM.Storage.load().world.weather, weatherBeforeDisabledMessage, '总开关关闭后不得更新已有状态');
+await assert.rejects(WSM.Engine.readPreviousBody(), /总开关已关闭/, '总开关关闭后手动读取也必须停止');
+engineSettings.enabled = true;
+await WSM.Engine.setEnabled(true);
 
 console.log('Post-generation background read, reroll rollback, and late-response tests passed');

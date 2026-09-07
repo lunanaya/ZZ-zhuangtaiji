@@ -17,8 +17,9 @@ const compilerConfig = {
     contextMessages: 8,
     failClosed: true,
 };
+let masterEnabled = true;
 WorldStateMachine.Settings = {
-    get: () => ({ worldbookCompiler: compilerConfig, recentMessages: 12, maxSourceChars: 60000 }),
+    get: () => ({ enabled: masterEnabled, worldbookCompiler: compilerConfig, recentMessages: 12, maxSourceChars: 60000 }),
     update: ({ worldbookCompiler }) => { if (worldbookCompiler) Object.assign(compilerConfig, worldbookCompiler); },
 };
 globalThis.selected_world_info = ['测试世界书'];
@@ -71,6 +72,17 @@ WorldStateMachine.Api = {
     },
 };
 await import('../src/worldbook-compiler.js');
+masterEnabled = false;
+const disabledChat = [{ role: 'user', content: '关闭时不得处理的原文' }];
+const disabledWorldbookResult = await WorldStateMachine.WorldbookCompiler.processChat(disabledChat);
+assert.equal(disabledWorldbookResult.disabledByMaster, true, '总开关关闭后不得处理世界书');
+assert.deepEqual(disabledChat, [{ role: 'user', content: '关闭时不得处理的原文' }], '总开关关闭后不得改写正文请求');
+await assert.rejects(
+    WorldStateMachine.WorldbookCompiler.compileConfig(compilerConfig, { entries: [] }),
+    /总开关已关闭/,
+    '总开关关闭后不得调用世界书拆解 API',
+);
+masterEnabled = true;
 const nativePayload = {
     globalLore: [
         { world: '测试世界书', uid: 1, content: '开启规则' },

@@ -299,7 +299,7 @@ const partlyMalformed = completeEvidence({
 });
 const partlyFilled = WorldStateMachine.Engine._test.validateFilledEvidence(partlyMalformed, '部分坏卡', { allowPartial: true });
 assert.equal(partlyFilled.complete, true, '一张坏卡不能把同栏目其他合格卡整体标成读取失败');
-assert.equal(partlyMalformed.organizations.length, 1);
+assert.equal(partlyMalformed.organizations.length, 2, '允许部分结果时，缺字段候选必须保留给第二轮修复，不得直接删除');
 assert.equal(partlyMalformed.organizations[0].name, '有效组织');
 
 const localFallbackEvidence = WorldStateMachine.Engine._test.localEvidenceFromSource({
@@ -547,6 +547,7 @@ const representedHugeMessages = hugePrepared.batches.flat().reduce((sum, item) =
     + (item.kind === 'chat-chronicle-block' ? Number(item.messageCount || 0) : item.kind === 'chat-message' ? 1 : 0), 0);
 assert.equal(representedHugeMessages, 823, 'every large-chat message must remain represented in the semantic chronicle blocks');
 
+prepared.transportVersion = 'legacy-two-pass';
 const result = await WorldStateMachine.Engine._test.buildStateWithinLimit(plannerPrompt, { ...payload, source: null }, payload.currentState, settings, undefined, prepared);
 assert.ok(calls[0].payload.outputForm.modules.schedules.fields.includes('preconditions[]'), '实际API请求必须携带逐模块填空合同');
 assert.match(calls[0].payload.moduleOwnership.schedules, /明确承诺|约定/, '实际API请求必须携带模块唯一归属规则');
@@ -585,6 +586,7 @@ assert.equal(calls[1].options.reasoningEffort, undefined);
 assert.equal(calls[1].payload.modulePrompts, undefined, 'request B must not resend local module prompt text');
 
 calls.length = 0;
+hugePreparedGpt.transportVersion = 'legacy-two-pass';
 const gptResult = await WorldStateMachine.Engine._test.buildStateWithinLimit(
     plannerPrompt,
     { ...payload, source: null },
@@ -615,6 +617,7 @@ assert.match(progress.steps.map((step) => `${step.message} ${step.details}`).joi
 
 calls.length = 0;
 const preparedAgain = WorldStateMachine.Engine._test.prepareSourceForStateRequests(source, { plannerPrompt, payload });
+preparedAgain.transportVersion = 'legacy-two-pass';
 await WorldStateMachine.Engine._test.buildStateWithinLimit(plannerPrompt, { ...payload, source: null }, payload.currentState, settings, undefined, preparedAgain);
 assert.equal(calls.length, 0, 'all completed sequential batches should be reusable without another API call');
 assert.equal(preparedAgain.cacheHits, preparedAgain.batches.length);
@@ -630,6 +633,7 @@ const smallSource = {
 };
 const smallPayload = { ...payload, source: smallSource };
 const smallPrepared = WorldStateMachine.Engine._test.prepareSourceForStateRequests(smallSource, { plannerPrompt, payload: smallPayload });
+smallPrepared.transportVersion = 'legacy-two-pass';
 assert.equal(smallPrepared.large, false);
 const smallResult = await WorldStateMachine.Engine._test.buildStateWithinLimit(plannerPrompt, smallPayload, payload.currentState, settings, undefined, smallPrepared);
 assert.equal(calls.length, 2, 'a small source must also use compile + tick as exactly two semantic requests');
@@ -655,7 +659,7 @@ WorldStateMachine.Api.complete = async (_prompt, request) => {
     }) };
 };
 const recoveryPrepared = {
-    large: true, gptMode: true, localEvidence: completeEvidence(), originalChars: 64123, includedChars: 32123,
+    transportVersion: 'legacy-two-pass', large: true, gptMode: true, localEvidence: completeEvidence(), originalChars: 64123, includedChars: 32123,
     records: 2, sentRecords: 2, batches: [
         [{ ref: 'recover-a', kind: 'test', serializedJson: '{"half":"A"}' }],
         [{ ref: 'recover-b', kind: 'test', serializedJson: '{"half":"B"}' }],
@@ -709,7 +713,7 @@ partialBase.organizations = [{ id: 'old-org', name: '旧组织', kind: 'faction'
 const storageBeforePartial = WorldStateMachine.Storage;
 WorldStateMachine.Storage = { ...(storageBeforePartial || {}), clone: (value) => JSON.parse(JSON.stringify(value)) };
 const partialPrepared = {
-    large: true, gptMode: true, localEvidence: completeEvidence({
+    transportVersion: 'legacy-two-pass', large: true, gptMode: true, localEvidence: completeEvidence({
         tasks: [{ id: 'local-task', title: '原文可确定的新任务', description: '前往新场景核验线索', status: 'active', sourceRefs: ['partial-b'], truthStatus: 'confirmed' }],
         organizations: [{ id: 'local-org', name: '兴州王府', kind: 'dynastic', situation: '被禁军接管', sourceRefs: ['partial-b'], truthStatus: 'confirmed', priority: 'L2', activity: 'WARM' }],
     }), originalChars: 65124, includedChars: 33124,

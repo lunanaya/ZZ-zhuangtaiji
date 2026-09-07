@@ -848,6 +848,7 @@
         // as state modules. Clear legacy standalone prompts to guarantee that
         // preview and the actual request are byte-for-byte equivalent.
         await setWorldbookPrompts({});
+        if (WSM.Settings.get().enabled === false) return { enabled: false, disabledByMaster: true };
         if (!config.enabled || !config.entryKeys.length) {
             return { enabled: false };
         }
@@ -900,6 +901,7 @@
         }
     }
     async function compileConfig(configValue, options = {}) {
+        if (WSM.Settings.get().enabled === false) throw new Error('状态机总开关已关闭');
         return WSM.Api.withCallBudget(1, 'worldbook-update', async () => {
             const config = normalizeConfig(configValue);
             const explicit = Array.isArray(options.entries) ? options.entries : null;

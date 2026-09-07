@@ -442,7 +442,7 @@
     const statusLabels = {
         active: '进行中', dormant: '暂未活动', resolved: '已结束', pending: '待开始', blocked: '受阻', done: '已完成', failed: '未完成',
         armed: '等待条件', eligible: '条件已满足', triggered: '已触发', expired: '已失效', open: '持续中', paused: '已暂停', decaying: '逐渐减弱',
-        developing: '正在形成', active: '仍在生效', arrived: '仍在生效', ongoing: '正在发生', occurred: '已经发生', discarded: '路径不成立', reached: '仍在生效', deferred: '尚未形成', sufficient: '因果充分', insufficient: '因果不足', confirmed: '已确认', derived: '可确定推导', system_generated: '系统生成', suspected: '暂定推测', assumed: '运行暂定', unknown: '原文未说明', not_established: '尚未建立', not_applicable: '不适用', believed: '人物相信', rumor: '传闻',
+        developing: '正在形成', active: '仍在生效', arrived: '仍在生效', ongoing: '正在发生', occurred: '已经发生', discarded: '路径不成立', reached: '仍在生效', deferred: '尚未形成', suggested: '候选方向', possible: '可能入口', sufficient: '因果充分', insufficient: '因果不足', confirmed: '已确认', derived: '可确定推导', system_generated: '系统生成', suspected: '暂定推测', assumed: '运行暂定', unknown: '原文未说明', not_established: '尚未建立', not_applicable: '不适用', believed: '人物相信', rumor: '传闻',
     };
     const mapStatusLabels = { known: '已知', visited: '已到访', unavailable: '暂不可达', open: '可通行', blocked: '路线受阻', unknown: '状况未知' };
     const mapTypeLabels = { world: '世界', region: '区域', country: '国家', city: '城市', district: '城区', landmark: '城市地标', residence: '建筑·住所', workplace: '建筑·工作地', building: '建筑', room: '室内空间', other: '地点' };
@@ -486,6 +486,7 @@
             if (kind === 'task' && /^(?:无|暂无|没有|无待办(?:事项)?|暂无待办(?:事项)?|未明确|不适用|none|n\/?a)[。！!？?、；;\s]*$/i.test(String(item?.title || '').trim())) return false;
             if (inactive.has(item?.status) || item?.userVisible === false) return false;
             if (kind === 'trigger') {
+                if (item?.candidateOnly === true || item?.status === 'possible') return true;
                 const hookText = [item?.title, item?.hook, ...(Array.isArray(item?.conditions) ? item.conditions : [])]
                     .map((value) => String(value || '').replace(/<br\s*\/?>/gi, '；').trim()).filter(Boolean).join('；');
                 const establishedEntry = /(?:邀请|邀约|约见|召见|请(?:你|主角|前往|赴|参加)|请求|委托|拜托|要求(?:你|主角|答复|选择)|命令(?:你|主角)|询问(?:你|主角)|追问|要不要|愿不愿|是否愿意|可愿|想不想|等待(?:你|主角)?.{0,12}(?:来电|来信|回复|答复|决定|选择|回应)|需要(?:你|主角).{0,12}(?:决定|选择|回应))/.test(hookText);
@@ -787,14 +788,14 @@
             }, {});
             return Object.entries(groups).map(([characterId, entries]) => {
                 const current = entries.at(-1);
-                return card(resolveRef(state, characterId), displayValue(current?.action) || '暂无活动', `<div class="wsm-activity-trail"><div><time>当前</time><span>${icon('pin')}<small>${escape(displayValue(current?.movement || current?.location) || '移动情况未明')}</small><b>${escape(displayValue(current?.action) || '活动未记录')}</b>${current?.location && current?.movement ? `<small>${escape(displayValue(current.location))}</small>` : ''}${current?.currentRole ? `<small>${escape(displayValue(current.currentRole))}</small>` : ''}</span></div></div>${labeled('依据', current?.basis || current?.sourceRefs)}`, { icon: 'process' });
+                return card(resolveRef(state, characterId), displayValue(current?.action) || '暂无活动', `<div class="wsm-activity-trail"><div><time>当前</time><span>${icon('pin')}<small>${escape(displayValue(current?.movement || current?.location) || '移动情况未明')}</small><b>${escape(displayValue(current?.action) || '活动未记录')}</b>${current?.location && current?.movement ? `<small>${escape(displayValue(current.location))}</small>` : ''}${current?.currentRole ? `<small>${escape(displayValue(current.currentRole))}</small>` : ''}</span></div></div>`, { icon: 'process' });
             }).join('') || empty('NPC活动轨迹');
         }
         if (active === 'relationships') return (state.relationships || []).filter((item) => item?.from && item?.to && (item?.identityRelation || item?.currentPerception || item?.status)).map((item) => card(`${resolveRef(state,item.from)} → ${resolveRef(state,item.to)}`, item.identityRelation || '人物关系', `${labeled('身份关系', item.identityRelation)}${labeled('当前关系认知', item.currentPerception)}${labeled('形成依据', item.formationBasis)}${labeled('阶段边界', item.boundaries)}`, { icon: 'heart', badge: item.truthStatus })).join('') || empty('人物关系');
         if (active === 'knowledge') return (state.knowledge || []).filter((item) => item?.information).map((item) => card(displayValue(item.information), item.source ? `来源/渠道：${displayValue(item.source)}` : '', `${labeled('持有人', (item.holderIds || item.knownBy || []).map((id) => resolveRef(state,id)))}${labeled('未知者', (item.unknownTo || []).map((id) => resolveRef(state,id)))}${labeled('怀疑者', (item.suspectedBy || []).map((id) => resolveRef(state,id)))}${labeled('认知状态', item.cognitiveStatus)}${labeled('公开状态', ({ confidential: '保密', restricted: '受限', public: '公开' }[item.disclosure] || item.disclosure))}${labeled('可靠性', item.reliability)}${labeled('玩家界面可见', item.userVisible === true ? '是' : '否')}${labeled('发现路径', item.discoveryPaths)}${labeled('成熟条件', item.maturityConditions)}${userKnowsKnowledge(state, item) ? '' : '<p class="wsm-muted">当前玩家角色尚未确认该信息；系统只把它作为认知边界，禁止正文让玩家角色凭空知晓。</p>'}`, { icon: 'lock', badge: item.cognitiveStatus || item.disclosure })).join('') || empty('知识记录');
         if (active === 'schedules') return (state.schedules || []).filter((item) => item?.title && !['completed','cancelled'].includes(item.status)).map((item) => card(item.title, item.expectedTime ? `预计：${item.expectedTime}` : '时间未明确', `${labeled('参与者', (item.participantIds || []).map((id) => resolveRef(state,id)))}${labeled('前置条件', item.preconditions)}${labeled('状态', item.status)}${labeled('来源', item.source)}`, { icon: 'clock', badge: item.status })).join('') || empty('已有安排');
-        if (active === 'tasks') return userFacingItems(state, 'task').filter((item) => item?.title).map((item) => card(displayValue(item.title), item.deadline ? `截止：${displayValue(item.deadline)}` : '没有明确截止时间', `${labeled('任务类型', item.questType === 'main' ? '主线' : '支线')}${labeled('主角目标', item.objective)}${labeled('为什么与你有关', item.userRelevance)}${labeled('当前进展', item.progress)}${labeled('开始前需要', item.dependencies)}${labeled('完成条件（必须核验）', item.completionConditions)}${labeled('已核验完成条件', item.completedConditions)}${labeled('可能影响', item.consequences)}${intentPanel('tasks', item)}`, { icon: 'check', badge: item.questType === 'main' ? '主线' : '支线' })).join('') || empty('主角当前没有已成立的任务');
-        if (active === 'triggers') return userFacingItems(state, 'trigger').map((item) => card(item.title, '世界已经留下、等待你回应的剧情扣子', `${labeled('剧情入口', item.hook)}${labeled('为什么你能注意到', item.userRelevance)}${labeled('回应条件', item.conditions)}${labeled('目前尚缺', item.blockedReasons)}${intentPanel('triggers', item)}`, { icon: 'flag', badge: item.status })).join('') || empty('当前没有等待主角回应的剧情扣子');
+        if (active === 'tasks') return userFacingItems(state, 'task').filter((item) => item?.title).map((item) => card(displayValue(item.title), item.candidateOnly ? '根据当前状态推测的可选方向' : (item.deadline ? `截止：${displayValue(item.deadline)}` : '没有明确截止时间'), `${labeled('任务类型', item.questType === 'main' ? '主线' : '支线')}${labeled('主角目标', item.objective)}${labeled('为什么与你有关', item.userRelevance)}${labeled('当前进展', item.progress)}${labeled('开始前需要', item.dependencies)}${labeled('完成条件（必须核验）', item.completionConditions)}${labeled('已核验完成条件', item.completedConditions)}${labeled('可能影响', item.consequences)}${intentPanel('tasks', item)}`, { icon: 'check', badge: item.candidateOnly ? '候选方向' : (item.questType === 'main' ? '主线' : '支线') })).join('') || empty('主角当前没有已成立的任务');
+        if (active === 'triggers') return userFacingItems(state, 'trigger').map((item) => card(item.title, item.candidateOnly ? '根据当前世界推测的可能入口' : '世界已经留下、等待你回应的剧情扣子', `${labeled('剧情入口', item.hook)}${labeled('为什么你能注意到', item.userRelevance)}${labeled('回应条件', item.conditions)}${labeled('目前尚缺', item.blockedReasons)}${intentPanel('triggers', item)}`, { icon: 'flag', badge: item.candidateOnly ? '可能入口' : item.status })).join('') || empty('当前没有等待主角回应的剧情扣子');
         if (active === 'threads') return (state.threads || []).map((item) => card(item.title, item.stakes || '长期发展的事务', `${labeled('相关人物', (item.participantIds || []).map((id) => resolveRef(state,id)))}${labeled('自然下一步', item.nextNaturalStep)}${labeled('已有发展', item.history)}`, { icon: 'thread', badge: item.status })).join('') || empty('长期线程');
         if (active === 'progression') {
             const item = state.progression || {};
@@ -1141,15 +1142,18 @@
             <div class="wsm-shell">
                 <button id="wsm-main-close" class="wsm-icon-button" data-action="close" aria-label="关闭">${icon('close')}</button>
                 <header class="wsm-header"><div class="wsm-actions">
-                    <div class="wsm-read-action"><button id="wsm-read-current" data-action="read-current">读取当前聊天</button><section id="wsm-operation-status" class="wsm-operation-status" role="status" aria-live="polite"><div class="wsm-operation-current"><b></b><small></small></div><div class="wsm-operation-steps" aria-label="读取步骤"></div></section></div><button id="wsm-read-previous" data-action="read-previous">读取上一轮正文</button><button id="wsm-compile-worldbook" data-action="compile-worldbook-main">拆解世界书</button><button id="wsm-clear-read" data-action="clear-read">清空读取</button><button data-action="organize">整理状态</button><button data-action="settings">设置</button><small id="wsm-read-floor" class="wsm-read-floor" aria-live="polite"></small>
+                    <button id="wsm-read-current" data-action="read-current">读取当前聊天</button><button id="wsm-read-previous" data-action="read-previous">读取上一轮正文</button><button id="wsm-compile-worldbook" data-action="compile-worldbook-main">拆解世界书</button><button id="wsm-clear-read" data-action="clear-read">清空读取</button><button data-action="organize">整理状态</button><button data-action="settings">设置</button>
                 </div></header>
-                <nav class="wsm-category-bar">${categoryButtons}</nav>
-                <div class="wsm-body"><nav class="wsm-tabs">${tabs}</nav><main class="wsm-main">
-                    <div class="wsm-section-heading"><div id="wsm-section-title"></div><div class="wsm-view-toolbar"><button class="wsm-icon-button wsm-pencil-only" data-action="toggle-edit" aria-label="编辑当前栏目" title="编辑当前栏目">${icon('edit')}</button></div></div>
-                    <p id="wsm-section-help" class="wsm-section-help"></p>
-                    <div id="wsm-game-view"></div><textarea id="wsm-editor" spellcheck="false" hidden></textarea>
-                    <div class="wsm-editor-actions" hidden><button data-action="save-section">保存修改</button><button data-action="reload">放弃修改</button></div>
-                </main></div>
+                <div class="wsm-scroll-page">
+                    <div class="wsm-read-progress-region"><section id="wsm-operation-status" class="wsm-operation-status" role="status" aria-live="polite"><div class="wsm-operation-current"><b></b><small></small></div><div class="wsm-operation-steps" aria-label="读取步骤"></div></section><small id="wsm-read-floor" class="wsm-read-floor" aria-live="polite"></small></div>
+                    <nav class="wsm-category-bar">${categoryButtons}</nav>
+                    <div class="wsm-body"><nav class="wsm-tabs">${tabs}</nav><main class="wsm-main">
+                        <div class="wsm-section-heading"><div id="wsm-section-title"></div><div class="wsm-view-toolbar"><button class="wsm-icon-button wsm-pencil-only" data-action="toggle-edit" aria-label="编辑当前栏目" title="编辑当前栏目">${icon('edit')}</button></div></div>
+                        <p id="wsm-section-help" class="wsm-section-help"></p>
+                        <div id="wsm-game-view"></div><textarea id="wsm-editor" spellcheck="false" hidden></textarea>
+                        <div class="wsm-editor-actions" hidden><button data-action="save-section">保存修改</button><button data-action="reload">放弃修改</button></div>
+                    </main></div>
+                </div>
             </div></div>
             <div id="wsm-settings-modal" class="wsm-submodal" hidden><div class="wsm-dialog"><header><b>世界状态机设置</b><button class="wsm-icon-button" data-action="close-settings" aria-label="关闭">${icon('close')}</button></header>
                 <nav class="wsm-settings-tabs"><button data-settings-tab="api">${icon('plug')}<span>API</span></button><button data-settings-tab="source">${icon('clipboard')}<span>分解正文</span></button><button data-settings-tab="pacing">${icon('process')}<span>剧情节奏</span></button><button data-settings-tab="dice">${icon('event')}<span>骰子</span></button><button data-settings-tab="worldbook">${icon('note')}<span>拆解世界书</span></button><button data-settings-tab="injection">${icon('send')}<span>注入模块</span></button><button data-settings-tab="prompts">${icon('brain')}<span>内置提示词</span></button></nav>
@@ -1157,7 +1161,7 @@
                     <label class="wsm-check"><input id="wsm-use-tavern-api" type="checkbox">使用酒馆默认 API（当前连接与模型）</label>
                     <p class="wsm-settings-help">启用后无需另填地址、模型或 Key，状态机直接跟随酒馆主界面当前使用的 API；请求只包含状态机所需内容。</p>
                     <label class="wsm-check"><input id="wsm-gpt-mode" type="checkbox">GPT 模式（仅使用 GPT 时勾选）</label>
-                    <p class="wsm-settings-help">默认关闭。勾选后，GPT 会先在本地整理旧聊天与世界书，再严格执行两次调用：第一次完整提取所有栏目，第二次基于提取结果独立推演；不再追加第三次补读。</p>
+                    <p class="wsm-settings-help">默认关闭。勾选后，GPT 与其他模型使用相同的事实流：第一次只逐条提取事实，第二次定点回看原文并补全疑难栏目。正常为两次调用；只有事实流被截断时才从断点续传。</p>
                     <div id="wsm-custom-api-fields">
                         <div class="wsm-api-profile-toolbar"><div id="wsm-api-profile-buttons"></div><button type="button" data-action="add-api-profile">＋ 新增 API</button><button type="button" data-action="delete-api-profile">删除当前</button></div>
                         <label>配置名称<input id="wsm-api-profile-name" type="text" placeholder="例如：主线路、备用线路"></label>
@@ -1176,9 +1180,9 @@
                     <p class="wsm-settings-help">只调整状态机文字，不改变面板大小和按钮的可点击范围。建议使用 80%–100%。</p>
                     <div class="wsm-grid"><label>单次输出 Tokens<input id="wsm-max-tokens" type="text" inputmode="numeric" pattern="[0-9０-９]+"></label><label>注入最大字符<input id="wsm-injection-max" type="number" min="500"></label></div>
                     <p id="wsm-effective-settings" class="wsm-settings-help"></p>
-                    <p class="wsm-settings-help">Tokens 是模型单次返回 JSON 的上限。发送用户消息时直接使用最近一次成功状态生成正文，不等待状态 API；正文完成后在后台调用状态机 1 次，读取这篇最新正文并更新状态。手动完整读取严格 2 次：全量提取 1 次、独立推演 1 次，不补第三次。</p>
-                    <label class="wsm-check"><input id="wsm-enabled" type="checkbox">启用自动状态机</label>
-                    <p class="wsm-settings-help">打开插件或切换聊天不会自动读取和初始化。点击“读取当前聊天”建立或刷新状态；世界书拆解必须使用顶部单独按钮。</p>
+                    <p class="wsm-settings-help">Tokens 是模型单次返回的上限。发送用户消息时直接使用最近一次成功状态生成正文，不等待状态 API；正文完成后在后台调用状态机 1 次。手动完整读取通常 2 次：第一次输出可逐行保存的轻量事实，第二次使用中等推理定点补全；仅当输出中断时从已保存的来源断点续传。</p>
+                    <label class="wsm-check"><input id="wsm-enabled" type="checkbox">插件总开关</label>
+                    <p class="wsm-settings-help">关闭后停止自动读取、状态 API、世界书处理与正文注入，但保留已有状态和面板；重新打开即可继续使用。打开插件或切换聊天仍不会自动初始化。</p>
                     <label class="wsm-check" hidden><input id="wsm-block-on-planner-error" type="checkbox">兼容旧设置</label>
                 </section>
                 <section class="wsm-settings-section" data-settings-section="source">
@@ -1255,6 +1259,22 @@
         bindHorizontalNavigation();
         revealHorizontalItem(root.querySelector('.wsm-category-bar'), root.querySelector(`[data-category-select="${activeCategory}"]`));
     }
+    function syncEnabledControls(settings = WSM.Settings.get()) {
+        if (!root) return;
+        const enabled = settings.enabled !== false;
+        const settingsToggle = $('#wsm-enabled');
+        if (settingsToggle) settingsToggle.checked = enabled;
+        ['#wsm-read-previous', '#wsm-compile-worldbook', '[data-action="organize"]'].forEach((selector) => {
+            const control = root.querySelector(selector);
+            if (control) control.disabled = !enabled;
+        });
+        const readCurrent = $('#wsm-read-current');
+        if (readCurrent) {
+            const progress = WSM.Engine?.getProgress?.() || {};
+            const reading = WSM.Engine?.isReading?.() === true;
+            readCurrent.disabled = !enabled || (progress.state === 'running' && !reading);
+        }
+    }
     function renderOperationStatus(progress = WSM.Engine?.getProgress?.() || {}, state = WSM.Storage.load()) {
         const status = $('#wsm-status');
         const operation = $('#wsm-operation-status');
@@ -1301,8 +1321,8 @@
         const reading = WSM.Engine?.isReading?.() === true;
         readCurrent.textContent = reading ? '终止读取' : '读取当前聊天';
         readCurrent.dataset.action = reading ? 'cancel-read' : 'read-current';
-        readCurrent.disabled = progress.state === 'running' && !reading;
         clearRead.disabled = progress.state === 'running';
+        syncEnabledControls();
     }
     function open() { $('#wsm-modal').hidden = false; render(); }
     function close() { $('#wsm-modal').hidden = true; }
@@ -1962,6 +1982,15 @@
         }, true);
         root.addEventListener('change', (event) => {
             if (event.target?.id === 'wsm-map-search') { activeMapSearch = event.target.value || ''; render(); return; }
+            if (event.target?.id === 'wsm-enabled') {
+                const enabled = event.target.checked;
+                WSM.Settings.update({ enabled });
+                syncEnabledControls();
+                notify(enabled
+                    ? '状态机已开启；已有状态与正文注入已恢复'
+                    : '状态机已关闭；不会自动读取、调用状态 API 或注入正文，已有状态仍保留', 'success');
+                return;
+            }
             const changed = event.target instanceof HTMLInputElement ? event.target : null;
             if (changed?.matches('[data-worldbook-book-choice],[data-worldbook-entry-choice]')) {
                 const current = WSM.WorldbookCompiler.normalizeConfig(WSM.Settings.get().worldbookCompiler);
@@ -2013,7 +2042,7 @@
         mountWandMenuItemWhenReady();
         mountExternalWorldbookButton();
         window.addEventListener('wsm-state-changed', () => { if (!$('#wsm-modal')?.hidden) render(); });
-        window.addEventListener('wsm-settings-changed', () => syncLauncherVisibility());
+        window.addEventListener('wsm-settings-changed', () => { syncLauncherVisibility(); syncEnabledControls(); });
         window.addEventListener('resize', () => {
             const button = document.getElementById('wsm-launcher');
             if (!button || button.hidden) return;

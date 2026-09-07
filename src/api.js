@@ -96,6 +96,11 @@
             // a usable delta candidate; the engine wraps it into statePatch.
             return objectKeyCount(value, WORLD_DETAIL_KEYS) >= 2 ? 45 : 0;
         }
+        if (contract === 'facts') {
+            if (value.factStream && typeof value.factStream === 'object') return 100;
+            if (Array.isArray(value.facts) || value.type === 'fact' || value.type === 'patch' || value.end === true) return 90;
+            return 0;
+        }
         return 1;
     }
     function contractRichness(value, contract) {
@@ -120,7 +125,97 @@
         if (contract === 'evidence') return '包含 evidence/digest 的资料证据';
         if (contract === 'digest') return '包含 digest 的资料摘要';
         if (contract === 'delta') return '包含 stateDelta（或直接状态模块）的增量结算结果';
+        if (contract === 'facts') return '至少一条完整事实记录或结束标记';
         return '有效结果';
+    }
+
+    function parseFactLines(value) {
+        if (value?.factStream && typeof value.factStream === 'object') return value.factStream;
+        const records = [];
+        const addRecord = (record) => {
+            if (!record || typeof record !== 'object' || Array.isArray(record)) return;
+            if (Array.isArray(record.facts)) record.facts.forEach(addRecord);
+            if (Array.isArray(record.records)) record.records.forEach(addRecord);
+            if (record.type || record.kind || record.module || record.target || record.end === true || record.checkpoint != null) records.push(record);
+        };
+        if (value && typeof value === 'object') addRecord(value);
+        const cleaned = typeof value === 'string'
+            ? String(value || '').replace(/<think(?:ing)?\b[\s\S]*?<\/think(?:ing)?>/gi, '').replace(/```(?:jsonl|ndjson|json)?/gi, '').trim()
+            : '';
+        if (cleaned) {
+            // Scan complete top-level objects instead of splitting only on
+            // newlines. Providers sometimes join JSONL records into a single
+            // SSE chunk, and a truncated final record must not invalidate the
+            // complete records before it.
+            for (let start = 0; start < cleaned.length; start += 1) {
+                if (cleaned[start] !== '{') continue;
+                let depth = 0;
+                let inString = false;
+                let escaped = false;
+                for (let index = start; index < cleaned.length; index += 1) {
+                    const char = cleaned[index];
+                    if (inString) {
+                        if (escaped) escaped = false;
+                        else if (char === '\\') escaped = true;
+                        else if (char === '"') inString = false;
+                        continue;
+                    }
+                    if (char === '"') { inString = true; continue; }
+                    if (char === '{') depth += 1;
+                    else if (char === '}') {
+                        depth -= 1;
+                        if (depth === 0) {
+                            try { addRecord(JSON.parse(cleaned.slice(start, index + 1))); } catch (_) { /* discard only this malformed record */ }
+                            start = index;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        const facts = [];
+        const patches = [];
+        const checkedModules = new Set();
+        const candidateModules = new Set();
+        const moduleCoverage = {};
+        const coverageBasis = {};
+        let end = false;
+        let maxCheckpoint = 0;
+        records.forEach((record) => {
+            if (record.end === true || String(record.type || '').toLowerCase() === 'end') {
+                end = true;
+                (Array.isArray(record.checkedModules) ? record.checkedModules : []).forEach((module) => checkedModules.add(String(module || '').trim()));
+                (Array.isArray(record.candidateModules) ? record.candidateModules : []).forEach((module) => candidateModules.add(String(module || '').trim()));
+                if (record.moduleCoverage && typeof record.moduleCoverage === 'object' && !Array.isArray(record.moduleCoverage)) {
+                    Object.entries(record.moduleCoverage).forEach(([module, status]) => {
+                        moduleCoverage[String(module || '').trim()] = String(status || '').trim();
+                        checkedModules.add(String(module || '').trim());
+                        if (/^(?:H|has_records)$/i.test(String(status || '').trim())) candidateModules.add(String(module || '').trim());
+                    });
+                }
+                if (record.coverageBasis && typeof record.coverageBasis === 'object' && !Array.isArray(record.coverageBasis)) {
+                    Object.entries(record.coverageBasis).forEach(([module, basis]) => { coverageBasis[String(module || '').trim()] = String(basis || '').trim(); });
+                }
+                maxCheckpoint = Math.max(maxCheckpoint, Number(record.checkpoint || record.processedThrough || record.through || 0));
+                return;
+            }
+            if (record.checkpoint != null || String(record.type || '').toLowerCase() === 'checkpoint') {
+                maxCheckpoint = Math.max(maxCheckpoint, Number(record.checkpoint || record.sourceIndex || record.processedThrough || record.through || 0));
+                return;
+            }
+            if (record.target || String(record.type || '').toLowerCase() === 'patch') patches.push(record);
+            else facts.push(record);
+            if (record.module) candidateModules.add(String(record.module).trim());
+            maxCheckpoint = Math.max(maxCheckpoint, Number(record.sourceIndex || 0));
+        });
+        return {
+            facts, patches, end, maxCheckpoint,
+            checkedModules: [...checkedModules].filter(Boolean),
+            candidateModules: [...candidateModules].filter(Boolean),
+            moduleCoverage,
+            coverageBasis,
+            completeRecords: records.length,
+        };
     }
     function escapeStrayJsonQuotes(value) {
         let output = '';
@@ -175,6 +270,15 @@
     }
     function extractJson(value, options = {}) {
         const contract = String(options.jsonContract || '');
+        if (contract === 'facts') {
+            const factStream = parseFactLines(value);
+            if (factStream.facts.length || factStream.patches.length || factStream.end || factStream.maxCheckpoint > 0) return { factStream };
+            // Keep compatibility with cached/mocked evidence responses while
+            // the on-disk cache rolls from the former large-object protocol to
+            // the fact stream protocol.
+            if (value && typeof value === 'object') return value;
+            throw new Error('Planner 返回中没有可保存的完整事实行');
+        }
         const candidates = [];
         const addCandidate = (candidate) => {
             if (candidate && typeof candidate === 'object') candidates.push(candidate);
@@ -184,7 +288,27 @@
             ? String(value || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
             : '';
         if (cleaned) {
-            try { addCandidate(JSON.parse(cleaned)); } catch (_) { /* scan embedded JSON */ }
+            try {
+                const parsed = JSON.parse(cleaned);
+                // A complete response that already satisfies the requested
+                // top-level envelope cannot be improved by rescanning every
+                // nested object or by running truncation repair over the same
+                // text. Provider envelopes such as result.evidence keep the
+                // existing candidate-selection path and return shape.
+                const topLevelContract = contract === 'evidence'
+                    ? ((parsed?.evidence && typeof parsed.evidence === 'object') || (parsed?.digest && typeof parsed.digest === 'object'))
+                    : contract === 'digest'
+                        ? parsed?.digest && typeof parsed.digest === 'object'
+                        : contract === 'state'
+                            ? parsed?.state && typeof parsed.state === 'object' && !Array.isArray(parsed.state)
+                            : contract === 'delta'
+                                ? Object.prototype.hasOwnProperty.call(parsed || {}, 'stateDelta')
+                                    || Object.prototype.hasOwnProperty.call(parsed || {}, 'delta')
+                                    || (parsed?.state && typeof parsed.state === 'object' && !Array.isArray(parsed.state))
+                                : false;
+                if (!contract || topLevelContract) return parsed;
+                addCandidate(parsed);
+            } catch (_) { /* scan embedded JSON */ }
 
             // A reasoning response may contain several valid JSON objects: an
             // example or echoed evidence first, and the actual answer last.
@@ -614,7 +738,10 @@
             // can reject even a compact delta schema with HTTP 400 "too many
             // states" before generation begins. Prompt-enforced JSON avoids that
             // provider-specific setup cost without changing the one-call contract.
-            const useStructuredGeneration = !['evidence', 'delta'].includes(jsonContract);
+            // JSONL fact streams must remain ordinary text. Wrapping them in a
+            // root-object schema recreates the giant-JSON failure mode that the
+            // stream transport is specifically designed to avoid.
+            const useStructuredGeneration = !['evidence', 'delta', 'facts'].includes(jsonContract);
             const firstAttempt = singleAttempt
                 ? { content: await tavernAttempt(context, messages, settings, signal, timeoutMs, useStructuredGeneration, jsonContract), maxTokens: effectiveMaxTokens }
                 : await tavernAttemptWithQuotaBackoff(context, messages, settings, signal, timeoutMs, useStructuredGeneration, { ...meta, jsonContract });
@@ -702,7 +829,7 @@
             delete body.temperature;
         }
         try {
-            if (settings.useTavernApi !== false && options.forceExternal !== true) return await completeViaTavern(messages, requestSettings, options.signal, timeoutMs, meta, options.singleAttempt === true || !!callBudget, options.jsonContract);
+            if (settings.useTavernApi !== false && options.forceExternal !== true) return await completeViaTavern(messages, requestSettings, options.signal, timeoutMs, meta, options.singleAttempt === true, options.jsonContract);
             const attempt = attemptSignal(options.signal, timeoutMs);
             let response;
             let raw;
@@ -850,5 +977,5 @@
             return result?.ok === true;
         });
     }
-    WSM.Api = { complete, test, listModels, withCallBudget, requestHeaders, _test: { outputTokens, quotaTokenBudgets, isQuotaReservationError, consumeCallBudget, extractJson, repairTruncatedJson, parseLenientJsonObject, parseSseResponse, responseText, providerResponseError, isGptReasoningModel, contractScore } };
+    WSM.Api = { complete, test, listModels, withCallBudget, requestHeaders, _test: { outputTokens, quotaTokenBudgets, isQuotaReservationError, consumeCallBudget, extractJson, repairTruncatedJson, parseFactLines, parseLenientJsonObject, parseSseResponse, responseText, providerResponseError, isGptReasoningModel, contractScore } };
 })();

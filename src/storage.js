@@ -50,9 +50,10 @@
         item.sourceRefs = stringList(item.sourceRefs);
         item.basis = stringList(item.basis);
         item.truthStatus = normalizeTruthStatus(module, item);
+        const simulationFill = item.simulationFill === true;
         const policyKey = ({ worldRules: 'worldRules', factAnchors: 'factAnchors', resourceConstraints: 'resourceConstraints', characters: 'characterIdentity', relationships: 'relationships', knowledge: 'knowledge', tasks: 'tasks', npcActivities: 'npcActivities' })[module];
         const allowed = WSM.Defaults?.INFERENCE_POLICIES?.[policyKey]?.allow;
-        if (Array.isArray(allowed) && !allowed.includes(item.truthStatus)) item.truthStatus = HIGH_RISK_MODULES.has(module) ? 'unknown' : 'assumed';
+        if (Array.isArray(allowed) && !allowed.includes(item.truthStatus) && !(simulationFill && item.truthStatus === 'system_generated')) item.truthStatus = HIGH_RISK_MODULES.has(module) ? 'unknown' : 'assumed';
         const configuredIdentity = module === 'characters' && ['user','char','character','<user>','<char>'].includes(String(item.id || '').toLowerCase());
         if (item.truthStatus === 'confirmed' && !evidenceRefs(item).length && !configuredIdentity) {
             item.truthStatus = module === 'relationships' ? 'suspected' : (HIGH_RISK_MODULES.has(module) ? 'unknown' : 'assumed');
@@ -62,7 +63,7 @@
             item.truthStatus = HIGH_RISK_MODULES.has(module) ? 'unknown' : 'assumed';
             item.basis = ['缺少可复算的推导依据'];
         }
-        if (item.truthStatus === 'system_generated' && HIGH_RISK_MODULES.has(module)) {
+        if (item.truthStatus === 'system_generated' && HIGH_RISK_MODULES.has(module) && !simulationFill) {
             item.truthStatus = 'unknown';
             item.basis = ['该模块禁止系统自由生成，等待原文或设定依据'];
         }

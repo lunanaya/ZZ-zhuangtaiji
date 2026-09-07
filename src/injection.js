@@ -482,9 +482,10 @@
     });
 
     function compose(state, plan = {}, plannerBlocks = {}) {
+        const settings = WSM.Settings.get();
+        if (settings.enabled === false) return '';
         const override = finalOverride(state);
         if (override) return override;
-        const settings = WSM.Settings.get();
         const modules = settings.injectionModules || WSM.Defaults.INJECTION_MODULES;
         const generated = fallbackBlocks(state, plan);
         const supplied = normalizePlannerBlocks(plannerBlocks, state);
@@ -517,9 +518,10 @@
     }
 
     function composeByDepth(state, plan = {}, plannerBlocks = {}) {
+        const settings = WSM.Settings.get();
+        if (settings.enabled === false) return {};
         const override = finalOverride(state);
         if (override) return { 0: override };
-        const settings = WSM.Settings.get();
         const modules = settings.injectionModules || WSM.Defaults.INJECTION_MODULES;
         const generated = fallbackBlocks(state, plan);
         const supplied = normalizePlannerBlocks(plannerBlocks, state);

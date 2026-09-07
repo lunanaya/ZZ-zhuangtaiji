@@ -43,6 +43,11 @@ const richerRecoveredEvidence = WorldStateMachine.Api._test.extractJson(
 );
 assert.equal((richerRecoveredEvidence.evidence || richerRecoveredEvidence).canon[0].summary, '真实资料', '较小的闭合示例不能抢走后面可修复的真实答案');
 assert.equal((richerRecoveredEvidence.evidence || richerRecoveredEvidence).characters[0].name, '夏以昼');
+const nestedProviderEvidence = WorldStateMachine.Api._test.extractJson(
+    '{"result":{"evidence":{"sourceRefs":["chat:1"],"canon":[],"characters":[]}}}',
+    { jsonContract: 'evidence' },
+);
+assert.deepEqual(nestedProviderEvidence, { evidence: { sourceRefs: ['chat:1'], canon: [], characters: [] } }, '完整的供应商外壳必须保持旧解析结果形状');
 let operationId = 0;
 const complete = (system, payload, options = {}) => WorldStateMachine.Api.withCallBudget(
     1,
@@ -132,8 +137,8 @@ SillyTavern.getContext = () => ({
         return '{"ok":true}';
     },
 });
-await assert.rejects(complete('BASE-SYSTEM', { task: 'retry' }), /Gateway Timeout/);
-assert.equal(attempts, 1, 'A bounded completion must not spend a second billable attempt');
+assert.deepEqual(await complete('BASE-SYSTEM', { task: 'retry' }), { ok: true });
+assert.equal(attempts, 2, 'singleAttempt:false must retain the compatible retry even inside a logical call budget');
 
 let singleAttempts = 0;
 SillyTavern.getContext = () => ({
@@ -151,8 +156,8 @@ SillyTavern.getContext = () => ({
         return '{"ok":true}';
     },
 });
-await assert.rejects(complete('BASE-SYSTEM', { task: 'quota-backoff' }), /拒绝了请求|额度/);
-assert.deepEqual(quotaAttempts, [3210]);
+assert.deepEqual(await complete('BASE-SYSTEM', { task: 'quota-backoff' }), { ok: true });
+assert.deepEqual(quotaAttempts, [3210, 2048, 1024]);
 assert.equal(tavernRequest.jsonSchema.name, 'world_state_machine_result');
 
 SillyTavern.getContext = () => ({
@@ -166,6 +171,16 @@ await assert.rejects(
 const mixedJson = '<think>{"evidence":{"canon":["示例"]}}</think>\n{"state":{"world":{},"map":{},"characters":[]},"plan":{"notes":"最终答案"}}';
 const contracted = WorldStateMachine.Api._test.extractJson(mixedJson, { jsonContract: 'state' });
 assert.equal(contracted.plan.notes, '最终答案');
+const partialFactStream = WorldStateMachine.Api._test.extractJson([
+    '{"kind":"character","sourceIndex":1,"subject":"夏以昼","field":"identity","value":"皇帝","sourceRefs":["worldbook:人物"]}',
+    '{"kind":"relationship","sourceIndex":2,"subject":"夏以昼","object":"夏寻樨","value":"兄妹","sourceRefs":["worldbook:关系"]}',
+    '{"type":"checkpoint","checkpoint":2}',
+    '{"end":true,"through":2}',
+    '{"kind":"character","subject":"未闭合"',
+].join('\n'), { jsonContract: 'facts' }).factStream;
+assert.equal(partialFactStream.facts.length, 2, 'a truncated final JSONL row must not discard earlier complete facts');
+assert.equal(partialFactStream.maxCheckpoint, 2);
+assert.equal(partialFactStream.end, true);
 assert.equal(WorldStateMachine.Api._test.isGptReasoningModel('[按次]gpt-5.5'), false);
 assert.equal(WorldStateMachine.Api._test.responseText({ choices: [{ message: { content: [{ type: 'text', text: '{"ok":true}' }] } }] }), '{"ok":true}');
 assert.match(WorldStateMachine.Api._test.providerResponseError({ error: true, quota_error: '预扣额度不足', message: '请求被拒绝' }), /预扣额度不足|请求被拒绝/);

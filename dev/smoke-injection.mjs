@@ -37,12 +37,6 @@ await import('../src/injection.js');
 await import('../src/engine.js');
 await import('../src/ui.js');
 
-const runningTurnPopup = WorldStateMachine.UI._test.turnReadPopupView({ state: 'running', message: '正在读取上一轮正文' });
-assert.equal(runningTurnPopup.status, '读取状态：进行中 · API 1/1');
-assert.equal(runningTurnPopup.closeDelay, null, '读取进行中弹窗不得自动关闭');
-const completedTurnPopup = WorldStateMachine.UI._test.turnReadPopupView({ state: 'success', message: '读取完成' });
-assert.equal(completedTurnPopup.closeDelay, 450, '读取完成后弹窗必须自动关闭');
-
 const activeChatStore = () => {
     const root = testContext.chatMetadata.worldStateMachine;
     return root?.chatStores?.[WorldStateMachine.Storage._test.currentChatKey()] || root;
@@ -60,7 +54,7 @@ assert.match(hiddenActivityIntent, /不代表我已经知道状态栏中的后�
 assert.equal(Object.prototype.hasOwnProperty.call(WorldStateMachine.UI._test.interactionActions, 'world'), false, '世界状态必须保持只读');
 assert.equal(Object.prototype.hasOwnProperty.call(WorldStateMachine.UI._test.interactionActions, 'progression'), false, '剧情推进后台快照必须保持只读');
 assert.equal(Object.keys(WorldStateMachine.Settings.get().modulePrompts).length, Object.keys(WorldStateMachine.Defaults.MODULE_PROMPTS).length);
-assert.equal(WorldStateMachine.Settings.get().rulesVersion, 28);
+assert.equal(WorldStateMachine.Settings.get().rulesVersion, 29);
 assert.equal(Object.prototype.hasOwnProperty.call(WorldStateMachine.UI._test.interactionActions, 'map'), false, '场景地图必须保持纯本地只读展示');
 assert.equal(WorldStateMachine.Settings.get().injectionModules.knowledge.enabled, true, '秘密知识边界必须能够参与统一注入');
 assert.equal(WorldStateMachine.Settings.get().injectionModules.worldRules.enabled, true, '硬规则库必须默认启用');
@@ -370,7 +364,6 @@ const fastPacing = WorldStateMachine.Injection.compose(state);
 assert.match(fastPacing, /推进速度：快速/);
 assert.match(fastPacing, /场景切换：允许/);
 assert.match(fastPacing, /时间跳跃：允许/);
-assert.match(fastPacing, /不得替用户选择/);
 assert.match(fastPacing, /不得越过用户决策点/);
 WorldStateMachine.Settings.update({ storyPacing: { mode: 'off', allowSceneTransition: false, allowTimeSkip: false } });
 

@@ -122,6 +122,57 @@
         if (contract === 'delta') return '包含 stateDelta（或直接状态模块）的增量结算结果';
         return '有效结果';
     }
+    function escapeStrayJsonQuotes(value) {
+        let output = '';
+        let inString = false;
+        for (let index = 0; index < value.length; index += 1) {
+            const char = value[index];
+            if (!inString) {
+                output += char;
+                if (char === '"') inString = true;
+                continue;
+            }
+            if (char === '\\') {
+                output += char;
+                if (index + 1 < value.length) output += value[++index];
+                continue;
+            }
+            if (char === '"') {
+                let nextIndex = index + 1;
+                while (nextIndex < value.length && /\s/.test(value[nextIndex])) nextIndex += 1;
+                const next = value[nextIndex] || '';
+                if (!next || [':', ',', '}', ']'].includes(next)) {
+                    output += char;
+                    inString = false;
+                } else output += '\\"';
+                continue;
+            }
+            output += char;
+        }
+        return output;
+    }
+    function parseLenientJsonObject(value) {
+        let input = String(value || '').trim();
+        if (!input) return null;
+        input = input.replace(/<think(?:ing)?\b[\s\S]*?<\/think(?:ing)?>/gi, '').trim();
+        const danglingClose = Math.max(input.toLowerCase().lastIndexOf('</think>'), input.toLowerCase().lastIndexOf('</thinking>'));
+        if (danglingClose >= 0) input = input.slice(input.indexOf('>', danglingClose) + 1).trim();
+        const fenced = input.match(/```(?:json)?\s*([\s\S]*?)```/i);
+        if (fenced) input = fenced[1].trim();
+        const first = input.indexOf('{');
+        const last = input.lastIndexOf('}');
+        if (first < 0 || last <= first) return null;
+        const body = input.slice(first, last + 1);
+        const variants = [
+            body,
+            body.replace(/[“”]/g, '"').replace(/[‘’]/g, "'").replace(/,\s*([}\]])/g, '$1'),
+        ];
+        for (const candidate of variants) {
+            try { return JSON.parse(candidate); } catch (_) { /* try conservative quote repair */ }
+            try { return JSON.parse(escapeStrayJsonQuotes(candidate)); } catch (_) { /* keep strict failure */ }
+        }
+        return null;
+    }
     function extractJson(value, options = {}) {
         const contract = String(options.jsonContract || '');
         const candidates = [];
@@ -175,6 +226,11 @@
             ? repairTruncatedJson(cleaned, contract)
             : null;
         if (repairedCandidate) addCandidate(repairedCandidate);
+        // Add the complete lenient parse after a truncation candidate so an
+        // equally valid but more complete repaired envelope wins the existing
+        // later-candidate tie break (for example it retains actualChanges).
+        const lenientCandidate = cleaned ? parseLenientJsonObject(cleaned) : null;
+        if (lenientCandidate) addCandidate(lenientCandidate);
         if (!candidates.length) throw new Error('Planner 返回的不是有效 JSON');
         if (!contract) return candidates[0];
         let best = null;
@@ -462,9 +518,11 @@
         const marker = String(messages?.[1]?.content || '').slice(0, 200);
         const handler = (data) => {
             const ownsRequest = (Array.isArray(data?.messages) ? data.messages : []).some((message) => String(message?.content || '').includes(marker));
-            const gptModeAlias = settings.gptMode === true && /gpt/i.test(String(data?.model || settings.model || ''));
+            const actualModel = String(data?.model || settings.model || '');
+            const gptModeAlias = settings.gptMode === true && /gpt/i.test(actualModel);
+            const supportsReasoningControl = /gemini|gpt-5|(?:^|[\s/\]])o[134](?:[.\/-]|$)|claude/i.test(actualModel);
             const taskReasoningEffort = String(settings.taskReasoningEffort || '').trim();
-            if (!marker || !ownsRequest || (!taskReasoningEffort && !isGptReasoningModel(data?.model) && !gptModeAlias)) return;
+            if (!marker || !ownsRequest || !supportsReasoningControl || (!taskReasoningEffort && !isGptReasoningModel(data?.model) && !gptModeAlias)) return;
             // Internal state updates need reliable JSON, not lengthy hidden reasoning.
             // This hook also covers Gemini requests made through generateRaw.
             // options.reasoningEffort used to be lost on that path, so the
@@ -550,13 +608,13 @@
         const startedAt = Date.now();
         let effectiveMaxTokens = Number(settings.maxTokens || 5000);
         try {
-            // Source-reading calls deliberately receive the model's JSON text and
-            // validate it locally. Several SillyTavern/provider combinations reject
-            // the large evidence jsonSchema with HTTP 400 before the model is ever
-            // called. The reader has a strict two-call budget, so an incompatible
-            // structured attempt must not consume one of those calls. Smaller
-            // state-update calls can still use ST's native structured generation.
-            const useStructuredGeneration = jsonContract !== 'evidence';
+            // Evidence and delta calls deliberately receive ordinary JSON text
+            // and validate it locally. Gemini and several compatible gateways
+            // compile jsonSchema into a constrained-decoding state machine and
+            // can reject even a compact delta schema with HTTP 400 "too many
+            // states" before generation begins. Prompt-enforced JSON avoids that
+            // provider-specific setup cost without changing the one-call contract.
+            const useStructuredGeneration = !['evidence', 'delta'].includes(jsonContract);
             const firstAttempt = singleAttempt
                 ? { content: await tavernAttempt(context, messages, settings, signal, timeoutMs, useStructuredGeneration, jsonContract), maxTokens: effectiveMaxTokens }
                 : await tavernAttemptWithQuotaBackoff(context, messages, settings, signal, timeoutMs, useStructuredGeneration, { ...meta, jsonContract });
@@ -663,7 +721,10 @@
                     reverse_proxy: endpointBase(settings.endpoint),
                     proxy_password: settings.apiKey || '',
                 };
-                if (options.jsonContract === 'delta') proxyBody.json_schema = structuredJsonSchema('delta');
+                // Do not attach json_schema for the frequent post-generation
+                // delta. The prompt already defines the exact envelope and the
+                // local parser validates/repairs complete JSON boundaries. This
+                // is substantially faster and avoids Gemini's schema-state 400.
                 if (body.reasoning_effort) {
                     // ST's OpenAI branch drops reasoning_effort for aliases
                     // outside its official-model allowlist. Its supported
@@ -699,16 +760,32 @@
             }));
             const providerError = providerResponseError(data);
             if (providerError) throw new Error(`Planner API 拒绝了任务 ${meta.task}：${providerError}；输入 ${meta.inputChars} 字，输出上限 ${maxTokens} Tokens，流式 ${options.stream === true ? '已开启' : '未开启'}`);
-            if (streamInterrupted) throw new Error(`任务 ${meta.task} 流式连接中断或等待超时；已收到正文 ${visibleChars} 字，推理 ${data.reasoningChars || 0} 字。未确认完整结束，本批未写入；这不等同于输出 Tokens 耗尽`);
-            if (meta.task === 'SOURCE_READ_SEQUENTIAL_BATCH' && /length|max[_\s-]*tokens/i.test(finishReason)) {
-                throw new Error(`任务 ${meta.task} 接口明确报告输出预算耗尽；上限 ${maxTokens} Tokens，正文 ${visibleChars} 字，推理 ${data.reasoningChars || 0} 字；本批未写入。${requestIdentity}`);
+            const visibleOutput = responseText(data) || '';
+            const budgetExhausted = /length|max[_\s-]*tokens/i.test(finishReason);
+            // A number of mobile/proxy stacks omit the final SSE marker, and
+            // some providers report `length` even after closing a useful JSON
+            // module. Always run the conservative local parser first. Its
+            // truncation repair keeps only whole root/module boundaries; an
+            // unfinished card or array is never committed.
+            if (streamInterrupted || budgetExhausted) {
+                try {
+                    const recovered = extractJson(visibleOutput || raw, { jsonContract: options.jsonContract });
+                    WSM.Engine?.reportProgress?.(
+                        streamInterrupted ? '流式结束标记缺失，已安全接收' : '模型输出到达上限，已安全抢救',
+                        'running',
+                        `任务 ${meta.task} · 只保留闭合的JSON模块 · 可见输出 ${visibleOutput.length} 字 · 未额外请求API`,
+                    );
+                    return recovered;
+                } catch (_recoveryError) {
+                    if (streamInterrupted) throw new Error(`任务 ${meta.task} 流式连接中断或等待超时；已收到正文 ${visibleChars} 字，推理 ${data.reasoningChars || 0} 字，但尚未形成一个可安全保存的完整JSON模块；本批未写入`);
+                    if (meta.task === 'SOURCE_READ_SEQUENTIAL_BATCH') throw new Error(`任务 ${meta.task} 接口明确报告输出预算耗尽；上限 ${maxTokens} Tokens，正文 ${visibleChars} 字，推理 ${data.reasoningChars || 0} 字，且未形成可安全保存的完整JSON模块；本批未写入。${requestIdentity}`);
+                }
             }
             try {
-                return extractJson(responseText(data) || raw, { jsonContract: options.jsonContract });
+                return extractJson(visibleOutput || raw, { jsonContract: options.jsonContract });
             } catch (error) {
                 const finishReason = String(data?.choices?.[0]?.finish_reason || '');
                 if (/length|max[_\s-]*tokens/i.test(finishReason)) {
-                    const visibleOutput = responseText(data) || '';
                     const repairContract = ['state', 'evidence'].includes(options.jsonContract) ? options.jsonContract : '';
                     const repaired = repairContract ? repairTruncatedJson(visibleOutput, repairContract) : null;
                     if (repaired) {
@@ -773,5 +850,5 @@
             return result?.ok === true;
         });
     }
-    WSM.Api = { complete, test, listModels, withCallBudget, requestHeaders, _test: { outputTokens, quotaTokenBudgets, isQuotaReservationError, consumeCallBudget, extractJson, repairTruncatedJson, parseSseResponse, responseText, providerResponseError, isGptReasoningModel, contractScore } };
+    WSM.Api = { complete, test, listModels, withCallBudget, requestHeaders, _test: { outputTokens, quotaTokenBudgets, isQuotaReservationError, consumeCallBudget, extractJson, repairTruncatedJson, parseLenientJsonObject, parseSseResponse, responseText, providerResponseError, isGptReasoningModel, contractScore } };
 })();

@@ -1176,17 +1176,17 @@
                     <p class="wsm-settings-help">只调整状态机文字，不改变面板大小和按钮的可点击范围。建议使用 80%–100%。</p>
                     <div class="wsm-grid"><label>单次输出 Tokens<input id="wsm-max-tokens" type="text" inputmode="numeric" pattern="[0-9０-９]+"></label><label>注入最大字符<input id="wsm-injection-max" type="number" min="500"></label></div>
                     <p id="wsm-effective-settings" class="wsm-settings-help"></p>
-                    <p class="wsm-settings-help">Tokens 是模型单次返回 JSON 的上限。普通轮次每条新消息只调用状态机 1 次：结算上一段正文、吸收本轮用户明确事实、更新状态并规划下一段；酒馆随后自行生成正文，正文后不再追加状态机调用。手动读取严格 2 次：全量提取 1 次、独立推演 1 次，不补第三次。</p>
+                    <p class="wsm-settings-help">Tokens 是模型单次返回 JSON 的上限。发送用户消息时直接使用最近一次成功状态生成正文，不等待状态 API；正文完成后在后台调用状态机 1 次，读取这篇最新正文并更新状态。手动完整读取严格 2 次：全量提取 1 次、独立推演 1 次，不补第三次。</p>
                     <label class="wsm-check"><input id="wsm-enabled" type="checkbox">启用自动状态机</label>
                     <p class="wsm-settings-help">打开插件或切换聊天不会自动读取和初始化。点击“读取当前聊天”建立或刷新状态；世界书拆解必须使用顶部单独按钮。</p>
-                    <label class="wsm-check"><input id="wsm-block-on-planner-error" type="checkbox">Planner失败时严格阻止正文生成</label>
+                    <label class="wsm-check" hidden><input id="wsm-block-on-planner-error" type="checkbox">兼容旧设置</label>
                 </section>
                 <section class="wsm-settings-section" data-settings-section="source">
                     <p class="wsm-settings-help">“分解正文”页面只管理聊天正文的读取范围；它与“拆解世界书”的条目选择和缓存独立，不会把聊天楼层列成世界书条目。</p>
                     <label>聊天总结标签（留空读取全文）<input id="wsm-summary-tag" type="text" maxlength="64" placeholder="meow_FM"></label>
                     <p class="wsm-settings-help">填写标签名后采用混合读取：最近若干层读取可见正文，更早楼层只读取该总结标签；留空则全部读取正文。</p>
                     <div class="wsm-grid"><label>普通轮次扫描最近楼层数（0=全部）<input id="wsm-recent-messages" type="number" min="0" max="200"></label><label>其中最近全文楼层数<input id="wsm-recent-full-text-messages" type="number" min="1" max="20"></label></div>
-                    <section class="wsm-rollback-panel"><b>${icon('clipboard')}<span>近层正文、远层总结</span></b><p>默认最近 5 层读取可见原文；5 层之外只读取 meow_FM（或你填写的标签），没有标签的旧楼层会跳过。这样既能结算最新正文，也不会反复注入整个历史。</p><small>世界书原文、角色卡和 Persona 仍作为资料来源。普通轮次在下一条用户消息到来时，用唯一一次调用结算上一段正文并规划下一段。</small></section>
+                    <section class="wsm-rollback-panel"><b>${icon('clipboard')}<span>近层正文、远层总结</span></b><p>默认最近 5 层读取可见原文；5 层之外只读取 meow_FM（或你填写的标签），没有标签的旧楼层会跳过。这个范围用于完整初始化；普通轮次只读取刚生成的最新正文和完整旧状态。</p><small>正文一生成完成便在后台读取。重 roll 会回滚旧候选对应的状态，再读取当前新候选；发送下一条消息不会等待状态 API。</small></section>
                 </section>
                 <section class="wsm-settings-section" data-settings-section="pacing">
                     <p class="wsm-settings-help">控制正文模型每轮允许推进的最大幅度。关闭时保持正文模型原有节奏；该功能不会替模型规划剧情，也不会改变既定事实。</p>
@@ -1484,7 +1484,7 @@
             launcherVisible: $('#wsm-launcher-visible').checked,
             temperature: Number($('#wsm-temperature').value), maxTokens: outputBudget, enabled: $('#wsm-enabled').checked,
             autoInitialize: false,
-            blockOnPlannerError: $('#wsm-block-on-planner-error').checked,
+            blockOnPlannerError: false,
             diceEnabled: $('#wsm-dice-enabled').checked,
             storyPacing: {
                 mode: $('#wsm-story-pacing-mode').value,

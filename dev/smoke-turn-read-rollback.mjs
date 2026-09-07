@@ -10,19 +10,19 @@ const local = new Map();
 globalThis.localStorage = { getItem: key => local.get(key) || null, setItem: (key, value) => local.set(key, value) };
 const events = new Map();
 const ctx = {
-    chatId: 'turn-regression', characterId: 0, chatMetadata: {}, name1: 'User', name2: 'Character',
-    chat: [], saveChat: async () => {},
-    event_types: { MESSAGE_DELETED: 'deleted', MESSAGE_SENT: 'sent', MESSAGE_RECEIVED: 'received' },
+    chatId: 'turn-regression', characterId: 0, chatMetadata: {}, name1: 'User', name2: 'Character', chat: [],
+    saveChat: async () => {}, setExtensionPrompt: async () => {},
+    event_types: { MESSAGE_DELETED: 'deleted', MESSAGE_SENT: 'sent', MESSAGE_RECEIVED: 'received', MESSAGE_SWIPED: 'swiped' },
     eventSource: { on: (name, handler) => events.set(name, handler) },
 };
 globalThis.SillyTavern = { getContext: () => ctx };
 for (const module of ['defaults', 'storage', 'context']) await import(`../src/${module}.js`);
 const WSM = WorldStateMachine;
-WSM.Settings = { get: () => ({ enabled: true, useTavernApi: false, endpoint: 'test', plannerPrompt: 'test', diceEnabled: false }) };
-WSM.Injection = { compose: () => '<WORLD_STATE>test</WORLD_STATE>', composeByDepth: () => ({}) };
-WSM.Storage.loadHistoryMemory = () => ({ status: 'not-started' });
+WSM.Settings = { get: () => ({ enabled: true, useTavernApi: false, endpoint: 'test', plannerPrompt: 'test', diceEnabled: false, blockOnPlannerError: false }) };
+WSM.Injection = { compose: () => '<WORLD_STATE>test</WORLD_STATE>', composeByDepth: () => ({ 0: '<WORLD_STATE>test</WORLD_STATE>' }) };
+WSM.WorldbookCompiler = { installNativeWorldbookFilter() {}, setWorldbookPrompts: async () => {} };
 const calls = [];
-let responder = () => ({ stateDelta: { statePatch: { world: { weather: 'rain' } } }, actualChanges: ['weather changed'] });
+let responder = () => ({ stateDelta: { statePatch: { world: { weather: 'rain' } }, collectionOps: [] }, actualChanges: ['weather changed'] });
 WSM.Api = {
     withCallBudget: async (_limit, _label, run) => run(),
     complete: async (_prompt, payload, options) => { calls.push({ payload, options }); return responder(); },
@@ -33,109 +33,69 @@ ctx.chat = Array.from({ length: 400 }, (_, i) => raw(`old-${i}`, i % 2 === 0, `a
 let baseline = WSM.Defaults.createState();
 baseline.initialized = true;
 baseline.runtime.lastReadFloor = 400;
-baseline.runtime.sourceSummary = { sourceRead: { coveredChatMessages: 404 } };
-baseline.planner = { turnKey: 'old', injection: '<WORLD_STATE>old</WORLD_STATE>' };
+baseline.runtime.readPositionVersion = 2;
 baseline.world.weather = 'sun';
+baseline.characters = Array.from({ length: 20 }, (_, i) => ({ id: `npc-${i}`, name: `Person ${i}`, situation: 'kept' }));
 await WSM.Storage.save(baseline, 'baseline');
 await WSM.Engine.init();
 
-ctx.chat.push(raw('assistant-401', false, 'It starts raining.'));
-ctx.chat.push(raw('user-402', true, 'I open my umbrella.'));
+assert.deepEqual(WSM.Engine._test.ordinaryTurnCallPolicy(), { apiCallsPerUserMessage: 0, postGenerationApiCalls: 1 });
+ctx.chat.push(raw('user-401', true, 'I open my umbrella.'));
+await WSM.Engine.interceptor(ctx.chat, 32000, () => {}, 'normal');
+assert.equal(calls.length, 0, 'sending a user message must not call the state API');
+
+ctx.chat.push(raw('assistant-402', false, 'It starts raining.'));
 events.get('received')();
-await WSM.Engine.plan();
-assert.equal(calls.length, 1);
-assert.ok(progressEvents.some(event => event.state === 'running' && event.message === '正在读取'));
-assert.equal(progressEvents.at(-1).state, 'idle');
-assert.equal(calls[0].payload.previousAssistantFloor, 401, 'old coverage counts must not suppress a new body');
-assert.match(calls[0].payload.currentUserAction.content, /umbrella/);
-assert.match(calls[0].payload.previousAssistantMessage.content, /raining/);
-assert.equal(WSM.Storage.load().world.weather, 'rain', 'actual delta must reach persistent state');
-assert.equal(WSM.Storage.load().runtime.lastReadFloor, 401);
-await WSM.Engine.plan();
-assert.equal(calls.length, 1, 'same turn and same body must reuse its plan');
+await WSM.Engine._test.waitForPostGenerationReads();
+assert.equal(calls.length, 1, 'finished正文 starts exactly one background read');
+assert.equal(calls[0].payload.actualAssistantMessage.content, 'It starts raining.');
+assert.equal(calls[0].payload.preState.characters.length, 20, 'background read receives every old state row');
+assert.equal(calls[0].payload.recentChat, undefined, 'background read receives no older chat body');
+assert.equal(WSM.Storage.load().world.weather, 'rain');
+assert.equal(WSM.Storage.load().runtime.lastReadFloor, 402);
+assert.ok(progressEvents.some(event => event.message === '正在读取'));
 
-// Same floor, edited body: a numeric high-water mark must not hide it.
-ctx.chat[400].mes = 'The rain stops.';
-responder = () => ({ stateDelta: { statePatch: { world: { weather: 'clear' } } } });
-await WSM.Engine.plan();
-assert.equal(calls.length, 2);
-assert.equal(WSM.Storage.load().world.weather, 'clear');
+ctx.chat.push(raw('user-403', true, 'I go outside.'));
+await WSM.Engine.interceptor(ctx.chat, 32000, () => {}, 'normal');
+assert.equal(calls.length, 1, 'the next user send must remain instant');
 
-// An unconsumed reply has no associated state update to undo.
-ctx.chat.push(raw('unread-403', false, 'A new reply.'));
+responder = () => ({ stateDelta: { statePatch: { world: { weather: 'snow' } }, collectionOps: [] }, actualChanges: [] });
+ctx.chat.push(raw('assistant-404', false, 'Snow begins.'));
 events.get('received')();
-ctx.chat.pop();
-events.get('deleted')();
-await WSM.Engine.plan();
-assert.equal(WSM.Storage.load().world.weather, 'clear');
-
-// Delete both consumed versions of floor 401. Restore its baseline and cursor.
-ctx.chat.splice(400);
-events.get('deleted')();
-ctx.chat.push(raw('replacement-401', false, 'It is snowing now.'));
-ctx.chat.push(raw('replacement-user', true, 'I put on a coat.'));
-responder = () => {
-    assert.equal(WSM.Storage.load().world.weather, 'sun', 'deletion must restore the pre-read facts');
-    assert.equal(WSM.Storage.load().runtime.lastReadFloor, 400, '404/401 must return to 400');
-    return { stateDelta: { statePatch: { world: { weather: 'snow' } } } };
-};
-await WSM.Engine.plan();
-assert.match(calls.at(-1).payload.previousAssistantMessage.content, /snowing/);
+await WSM.Engine._test.waitForPostGenerationReads();
 assert.equal(WSM.Storage.load().world.weather, 'snow');
 
-// No snapshots still requires cursor repair.
-const receipts = WSM.Context.chat(ctx, { includeHidden: true }).slice(0, 390).map(WSM.Engine._test.previousBodyReceipt);
-await WSM.Storage.rollbackGenerations(0, { remainingFloor: 390, remainingReceipts: receipts });
-assert.ok(WSM.Storage.load().runtime.lastReadFloor <= 390);
-assert.equal(WSM.Engine._test.readFloorHighWater(WSM.Storage.load()), WSM.Storage.load().runtime.lastReadFloor);
+await WSM.Engine.interceptor(ctx.chat, 32000, () => {}, 'regenerate');
+assert.equal(calls.length, 2, 'reroll rollback is local and must not call the state API');
+assert.equal(WSM.Storage.load().world.weather, 'rain', 'old candidate state is removed before replacement正文 generation');
+responder = () => ({ stateDelta: { statePatch: { world: { weather: 'clear' } }, collectionOps: [
+    { module: 'characters', op: 'update', id: 'npc-0', value: { location: 'garden' } },
+    { module: 'characters', op: 'create', id: 'new-npc', value: { id: 'new-npc', name: 'New Person' } },
+] }, actualChanges: [] });
+ctx.chat.at(-1).mes = 'The sky clears. Person 0 enters the garden with New Person.';
+events.get('swiped')();
+await WSM.Engine._test.waitForPostGenerationReads();
+const rerolled = WSM.Storage.load();
+assert.equal(calls.length, 3);
+assert.equal(rerolled.world.weather, 'clear', 'reroll replaces the old candidate state');
+assert.equal(rerolled.characters.find(item => item.id === 'npc-0').situation, 'kept', 'partial updates preserve old fields');
+assert.equal(rerolled.characters.find(item => item.id === 'npc-0').location, 'garden');
+assert.ok(rerolled.characters.some(item => item.id === 'new-npc'));
 
-// Failed reads do not acknowledge the floor; a later retry can still update it.
-responder = () => { throw new Error('Gateway Timeout'); };
-await WSM.Engine.plan({ force: true });
-assert.match(WSM.Storage.load().planner.error, /Gateway Timeout/);
-assert.equal(progressEvents.at(-1).state, 'idle', 'Failed reads must dismiss the popup');
-assert.ok(WSM.Storage.load().runtime.lastReadFloor < 401);
-responder = () => ({ stateDelta: { statePatch: { world: { weather: 'retry-success' } } } });
-await WSM.Engine.plan();
-assert.equal(WSM.Storage.load().world.weather, 'retry-success');
-assert.equal(WSM.Storage.load().runtime.lastReadFloor, 401);
-
-// A response arriving after deletion must not resurrect removed facts.
-ctx.chat.push(raw('pending-body', false, 'The river freezes.'));
-ctx.chat.push(raw('pending-user', true, 'I wait.'));
-events.get('received')();
+ctx.chat.push(raw('user-405', true, 'I wait.'));
+ctx.chat.push(raw('assistant-406', false, 'The river freezes.'));
 let release;
 let started;
 const didStart = new Promise(resolve => { started = resolve; });
 responder = () => new Promise(resolve => { release = resolve; started(); });
-const pending = WSM.Engine.plan();
+events.get('received')();
 await didStart;
-ctx.chat.splice(400);
-events.get('deleted')();
-release({ stateDelta: { statePatch: { world: { weather: 'stale-response' } } } });
-await pending;
+ctx.chat.at(-1).mes = 'The river remains liquid.';
+responder = () => ({ stateDelta: { statePatch: { world: { weather: 'mild' } }, collectionOps: [] }, actualChanges: [] });
+events.get('swiped')();
+release({ stateDelta: { statePatch: { world: { weather: 'stale-response' } }, collectionOps: [] }, actualChanges: [] });
+await WSM.Engine._test.waitForPostGenerationReads();
+assert.equal(WSM.Storage.load().world.weather, 'mild');
 assert.notEqual(WSM.Storage.load().world.weather, 'stale-response');
-// Full-state input, partial-field output: preserve old rows and add new facts.
-let fullState = WSM.Storage.load();
-fullState.characters = Array.from({ length: 20 }, (_, i) => ({ id: `npc-${i}`, name: `Person ${i}`, location: 'old-place', situation: 'old-context', activity: 'COLD' }));
-await WSM.Storage.save(fullState, 'full-state-input');
-ctx.chat.push(raw('full-state-body', false, 'Person 0 goes to new-place. New Person arrives.'));
-const beforeManualCalls = calls.length;
-responder = () => {
-    const { payload } = calls.at(-1);
-    assert.equal(payload.preState.characters.length, 20, 'manual read must include every stored character');
-    assert.equal(payload.recentChat, undefined, 'manual read must not fetch older chat');
-    assert.equal(payload.actualAssistantMessage.content, 'Person 0 goes to new-place. New Person arrives.');
-    return { stateDelta: { statePatch: {}, collectionOps: [
-        { module: 'characters', op: 'update', id: 'npc-0', value: { location: 'new-place' } },
-        { module: 'characters', op: 'create', id: 'new-npc', value: { id: 'new-npc', name: 'New Person', location: 'new-place' } },
-    ] }, actualChanges: [] };
-};
-await WSM.Engine.readPreviousBody();
-const afterManual = WSM.Storage.load();
-assert.equal(calls.length - beforeManualCalls, 1);
-assert.equal(afterManual.characters.find(item => item.id === 'npc-0').location, 'new-place');
-assert.equal(afterManual.characters.find(item => item.id === 'npc-0').situation, 'old-context', 'unchanged fields survive a partial update');
-assert.ok(afterManual.characters.some(item => item.id === 'npc-19'), 'unmentioned rows survive');
-assert.ok(afterManual.characters.some(item => item.id === 'new-npc'), 'new body facts can create a row');
-console.log('Turn read, edits, deletion rollback, retry, and late-response regression tests passed');
+
+console.log('Post-generation background read, reroll rollback, and late-response tests passed');

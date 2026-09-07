@@ -99,6 +99,17 @@ assert.equal(tavernGenerationData.reasoning_effort, 'low', 'bounded Gemini state
 assert.equal(tavernGenerationData.include_reasoning, false);
 assert.equal(tavernGenerationData.verbosity, 'low');
 assert.doesNotMatch(tavernRequest.prompt[0].content, /CUSTOM-JAILBREAK-MARKER/, 'focused state reads must not inherit the chat jailbreak prompt');
+SillyTavern.getContext = () => ({
+    async generateRaw(request) {
+        tavernRequest = request;
+        return '{"stateDelta":{"statePatch":{},"collectionOps":[]},"actualChanges":[]}';
+    },
+});
+assert.deepEqual(
+    await complete('DELTA-SYSTEM', { phase: 'POST_GENERATION_RECONCILE' }, { jsonContract: 'delta', singleAttempt: true }),
+    { stateDelta: { statePatch: {}, collectionOps: [] }, actualChanges: [] },
+);
+assert.equal('jsonSchema' in tavernRequest, false, 'Gemini-compatible Tavern delta reads must not compile a constrained JSON schema');
 settings.gptMode = false;
 
 SillyTavern.getContext = () => ({
@@ -166,11 +177,12 @@ settings.model = 'mock-model';
 globalThis.getRequestHeaders = async () => ({ 'X-CSRF-Token': 'test' });
 let externalRequest;
 let forwardedCalls = 0;
+let forwardedResponse = '{"choices":[{"message":{"content":"{\\"ok\\":true}"}}]}';
 globalThis.fetch = async (url, request) => {
     externalRequest = { url, request };
     if (String(url).endsWith('/status')) return { ok: true, status: 200, text: async () => '{"data":[{"id":"model-b"},{"id":"model-a"}]}' };
     forwardedCalls += 1;
-    return { ok: true, status: 200, text: async () => '{"choices":[{"message":{"content":"{\\"ok\\":true}"}}]}' };
+    return { ok: true, status: 200, text: async () => forwardedResponse };
 };
 assert.deepEqual(await complete('BASE-SYSTEM', { task: 'external' }), { ok: true });
 assert.equal(externalRequest.url, '/api/backends/chat-completions/generate');
@@ -178,6 +190,14 @@ const externalBody = JSON.parse(externalRequest.request.body);
 assert.equal(externalBody.reverse_proxy, 'https://example.test/v1');
 assert.equal(externalBody.proxy_password, 'secret');
 assert.match(externalBody.messages[0].content, /CUSTOM-JAILBREAK-MARKER/);
+forwardedResponse = '{"choices":[{"message":{"content":"{\\"stateDelta\\":{\\"statePatch\\":{},\\"collectionOps\\":[]},\\"actualChanges\\":[]}"}}]}';
+assert.deepEqual(
+    await complete('DELTA-SYSTEM', { phase: 'POST_GENERATION_RECONCILE' }, { jsonContract: 'delta', singleAttempt: true }),
+    { stateDelta: { statePatch: {}, collectionOps: [] }, actualChanges: [] },
+);
+const externalDeltaBody = JSON.parse(externalRequest.request.body);
+assert.equal('json_schema' in externalDeltaBody, false, 'independent Gemini-compatible delta reads must not send json_schema');
+forwardedResponse = '{"choices":[{"message":{"content":"{\\"ok\\":true}"}}]}';
 settings.model = '[按次]gpt-5.5';
 assert.deepEqual(await complete('BASE-SYSTEM', { task: 'external-alias-reasoning' }, { maxTokens: 3000, reasoningEffort: 'low' }), { ok: true });
 const aliasBody = JSON.parse(externalRequest.request.body);
@@ -215,6 +235,16 @@ const repairedDelta = WorldStateMachine.Api._test.extractJson(
 );
 assert.equal(repairedDelta.stateDelta.statePatch.world.location.current, '揽月轩', '上一轮正文的完整 stateDelta 不得因尾部审计字段截断而整份丢弃');
 assert.deepEqual(repairedDelta.stateDelta.collectionOps, []);
+const smartQuoteDelta = WorldStateMachine.Api._test.extractJson(
+    '```json\n{“stateDelta”:{“statePatch”:{},“collectionOps”:[]},“actualChanges”:[]}\n```',
+    { jsonContract: 'delta' },
+);
+assert.deepEqual(smartQuoteDelta.stateDelta.collectionOps, [], '模型误用智能引号时必须本地修复，不得再次调用 API');
+const trailingAndStrayQuoteDelta = WorldStateMachine.Api._test.extractJson(
+    '{"stateDelta":{"statePatch":{},"collectionOps":[],},"actualChanges":["He said "hi"",],}',
+    { jsonContract: 'delta' },
+);
+assert.equal(trailingAndStrayQuoteDelta.actualChanges[0], 'He said "hi"', '尾逗号和字符串内野引号必须保守修复');
 const parsedStream = WorldStateMachine.Api._test.parseSseResponse('data: {"choices":[{"delta":{"content":"{\\"evidence\\":"}}]}\n\ndata: {"choices":[{"delta":{"content":"{\\"canon\\":[\\"摘要\\"]}}"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n');
 assert.equal(parsedStream.choices[0].message.content, '{"evidence":{"canon":["摘要"]}}');
 assert.equal(parsedStream.choices[0].finish_reason, 'stop');

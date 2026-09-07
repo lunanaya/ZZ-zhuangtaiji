@@ -2,7 +2,7 @@
     'use strict';
     const WSM = window.WorldStateMachine = window.WorldStateMachine || {};
     const KEY = 'worldStateMachine';
-    const RULES_VERSION = 28;
+    const RULES_VERSION = 29;
     const defaults = {
         rulesVersion: RULES_VERSION,
         enabled: true,

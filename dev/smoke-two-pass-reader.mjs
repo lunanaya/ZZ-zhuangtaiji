@@ -95,9 +95,9 @@ WorldStateMachine.Api = {
 await import('../src/engine.js');
 
 assert.deepEqual(WorldStateMachine.Engine._test.ordinaryTurnCallPolicy(), {
-    apiCallsPerUserMessage: 1,
-    postGenerationApiCalls: 0,
-}, '普通轮次必须固定为每条用户消息一次状态机API，正文后不得追加第二次');
+    apiCallsPerUserMessage: 0,
+    postGenerationApiCalls: 1,
+}, '发送用户消息时不得等待状态API；正文完成后只允许一次后台读取');
 
 const queuedTurns = WorldStateMachine.Engine._test.pendingTurnReads([
     { turnKey: 'turn-1', previousAssistantMessage: { id: 1, content: '上一轮正文' }, currentUserAction: { id: 2, content: '用户行动' } },
@@ -506,7 +506,16 @@ assert.equal(prepared.batches.flat().length, prepared.sentRecords);
 const allRecordParts = WorldStateMachine.Engine._test.completeSourceRecords(source).map((item) => `${item.ref}:${item.part || 1}:${item.serializedJson}`);
 const sentRecordParts = prepared.batches.flat().map((item) => `${item.ref}:${item.part || 1}:${item.serializedJson}`);
 const uniqueRecordParts = allRecordParts.filter((item) => !item.startsWith('currentUserAction:') && !item.startsWith('latestAssistantText:'));
-assert.deepEqual(sentRecordParts, uniqueRecordParts, 'two-pass preparation must preserve all unique source records in order');
+const stablePrefixes = ['identities:', 'character:', 'persona:', 'worldbook:'];
+assert.deepEqual(
+    sentRecordParts.filter((item) => stablePrefixes.some((prefix) => item.startsWith(prefix))),
+    uniqueRecordParts.filter((item) => stablePrefixes.some((prefix) => item.startsWith(prefix))),
+    '角色卡、Persona和世界书原文在移动端压缩中不得被截短',
+);
+const representedSourceMessages = prepared.batches.flat().reduce((sum, item) => sum
+    + (item.kind === 'chat-chronicle-block' ? Number(item.messageCount || 0) : item.kind === 'chat-message' ? 1 : 0), 0);
+assert.equal(representedSourceMessages, source.chat.length, '大聊天的每个楼层都必须在语义纪要中保留一条记录');
+assert.ok(prepared.includedChars < prepared.originalChars, '超过移动端阈值的初始资料必须在发送前缩小');
 assert.ok(prepared.batchChars.every((chars) => chars > 0), 'every sequential batch must contain source text');
 
 const hugeChat = Array.from({ length: 823 }, (_, index) => ({
@@ -726,13 +735,20 @@ WorldStateMachine.Storage = storageBeforePartial;
 WorldStateMachine.Api.complete = normalComplete;
 
 const oversizedPreviousBodyState = WorldStateMachine.Defaults.createState();
-oversizedPreviousBodyState.worldRules = Array.from({ length: 30 }, (_, index) => ({ id: `rule-${index}`, statement: `稳定规则${index}${'很长'.repeat(240)}` }));
+oversizedPreviousBodyState.worldRules = Array.from({ length: 30 }, (_, index) => ({ id: `rule-${index}`, statement: `稳定规则${index}${'很长'.repeat(240)}`, basis: ['原文'], sourceRefs: [`worldbook:${index}`], unusedNote: '' }));
 oversizedPreviousBodyState.characters = Array.from({ length: 30 }, (_, index) => ({ id: `person-${index}`, name: `人物${index}`, situation: `旧处境${'很长'.repeat(180)}`, activity: index < 2 ? 'HOT' : 'COLD' }));
 oversizedPreviousBodyState.map = { locations: Array.from({ length: 30 }, (_, index) => ({ id: `place-${index}`, name: `地点${index}` })), routes: Array.from({ length: 30 }, (_, index) => ({ from: `place-${index}`, to: `place-${index + 1}` })) };
 const compactPreviousBody = WorldStateMachine.Engine._test.compactPreviousBodyState(oversizedPreviousBodyState, { content: '人物1来到地点1。' });
-assert.deepEqual(compactPreviousBody.worldRules, oversizedPreviousBodyState.worldRules, 'all rule rows and long text must reach the model');
+assert.equal(compactPreviousBody.worldRules.length, oversizedPreviousBodyState.worldRules.length, 'all rule rows must reach the model');
+assert.deepEqual(compactPreviousBody.worldRules.map((item) => item.statement), oversizedPreviousBodyState.worldRules.map((item) => item.statement), 'all long rule text must reach the model unchanged');
 assert.deepEqual(compactPreviousBody.map, oversizedPreviousBodyState.map, 'all map locations and routes must reach the model');
 assert.deepEqual(compactPreviousBody.characters, oversizedPreviousBodyState.characters, 'all characters including unmentioned cold rows must reach the model');
+assert.deepEqual(compactPreviousBody.worldRules[0].basis, ['原文'], 'fact basis must survive transport compaction');
+assert.deepEqual(compactPreviousBody.worldRules[0].sourceRefs, ['worldbook:0'], 'source references must survive transport compaction');
+assert.equal('unusedNote' in compactPreviousBody.worldRules[0], false, 'empty nested fields should not consume model input');
+assert.ok(Object.prototype.hasOwnProperty.call(compactPreviousBody, 'knowledge'), 'empty top-level panels must remain visible in the state inventory');
+assert.ok(JSON.stringify(compactPreviousBody).length < JSON.stringify(oversizedPreviousBodyState).length, 'transport compaction must reduce input without dropping non-empty facts');
 assert.equal(oversizedPreviousBodyState.worldRules.length, 30, 'payload compaction must not mutate stored state');
+assert.equal(oversizedPreviousBodyState.worldRules[0].unusedNote, '', 'transport compaction must not mutate nested stored values');
 
 console.log('Two-pass large-source smoke tests passed');

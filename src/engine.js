@@ -8,6 +8,8 @@
     let planningChatKey = '';
     let planningIntent = '';
     let settlingPromise = null;
+    let settlingController = null;
+    let postGenerationQueue = Promise.resolve();
     let activeReadController = null;
     let bound = false;
     let settingsBound = false;
@@ -15,8 +17,8 @@
     let deletionRollbackPromise = Promise.resolve();
     let chatMutationRevision = 0;
     let operationProgress = { state: 'idle', message: '', details: '', at: 0, startedAt: 0, elapsedMs: 0, steps: [] };
-    const ORDINARY_TURN_CALL_BUDGET = 1;
-    const AUTO_POST_GENERATION_CALLS = 0;
+    const ORDINARY_TURN_CALL_BUDGET = 0;
+    const AUTO_POST_GENERATION_CALLS = 1;
     function ordinaryTurnCallPolicy() {
         return { apiCallsPerUserMessage: ORDINARY_TURN_CALL_BUDGET, postGenerationApiCalls: AUTO_POST_GENERATION_CALLS };
     }
@@ -209,12 +211,35 @@
     }
     function compactPreviousBodyState(state, assistantMessage = null, userMessage = null) {
         // A previous-body reconciliation receives every semantic panel and
-        // every stored row. Runtime and cached planner output are omitted, but no
-        // state item is relevance-filtered or truncated. The model returns a
-        // delta; local merging preserves every unchanged row.
+        // every stored row. Runtime, cached planner output and diagnostic-only
+        // roots are omitted. Empty nested fields carry no fact, so remove them
+        // from the transport copy while preserving every non-empty value,
+        // basis/sourceRefs and every top-level panel. The local authoritative
+        // state is never mutated; delta merging preserves every unchanged row.
         void assistantMessage;
         void userMessage;
-        return plannerState(state);
+        const clone = plannerState(state);
+        ['schemaVersion', 'initialized', 'revision', 'moduleCoverage', 'reasoningAudit', 'lockedPaths'].forEach((key) => delete clone[key]);
+        const compact = (value) => {
+            if (value === undefined || value === null || value === '') return undefined;
+            if (Array.isArray(value)) {
+                const items = value.map(compact).filter((item) => item !== undefined);
+                return items.length ? items : undefined;
+            }
+            if (!value || typeof value !== 'object') return value;
+            const output = {};
+            Object.entries(value).forEach(([key, item]) => {
+                const next = compact(item);
+                if (next !== undefined) output[key] = next;
+            });
+            return Object.keys(output).length ? output : undefined;
+        };
+        return Object.fromEntries(Object.entries(clone).map(([key, value]) => {
+            const next = compact(value);
+            // Retain every top-level panel name even when it currently has no
+            // records, so the model still sees a complete state inventory.
+            return [key, next === undefined ? (Array.isArray(value) ? [] : {}) : next];
+        }));
     }
     function captureChatMirror() {
         return (WSM.Context?.chat?.(WSM.Context?.context?.(), { includeHidden: true }) || []).map((message) => ({
@@ -301,8 +326,12 @@
         };
     }
     const COMPLETE_SOURCE_PART_CHARS = 24000;
-    const TWO_PASS_SOURCE_TARGET_CHARS = 140000;
-    const GPT_SOURCE_TARGET_CHARS = 64000;
+    // Initialization also carries prompts and a module contract. Keep its
+    // source portion below the sizes at which mobile reverse proxies commonly
+    // stall, while retaining every floor as recent text or a meow_FM record.
+    const SOURCE_COMPACTION_THRESHOLD_CHARS = 50000;
+    const TWO_PASS_SOURCE_TARGET_CHARS = 60000;
+    const GPT_SOURCE_TARGET_CHARS = 52000;
     const GPT_SOURCE_MAX_BATCHES = 2;
     const SOURCE_PROGRESS_FRAGMENT_CHARS = 8000;
     const FIRST_HALF_CACHE_KEY = 'wsm_extract_then_reason_cache_v16';
@@ -314,6 +343,8 @@
     const SOURCE_COMPILE_EXACT_PROMPT = '你正在执行两步状态机的第一步：SOURCE_COMPILE_EXACT（全资料忠实提取），不是剧情摘要、事实裁定或世界模拟。sourceRecords已经包含本轮允许读取的世界书、角色卡、Persona与全部聊天记录；必须逐项读取，一次性检查outputForm的每个栏目。先按指定格式返回18个极短覆盖码，再立即返回所有标H栏目的证据数组；不得输出moduleDecisions或审计长句。为了保证所有栏目一次返回：相同事实只保留唯一归属，basis限一条短句，sourceRefs只留最直接的1至2个，人物最多12项，worldRules最多8项，timeline最多6项，其余每栏最多3项；较旧同类记录合并成当前有效卡片，不复述剧情。tasks只提取围绕用户角色的已成立目标，并标注questType=main或side：贯穿故事的核心长期目标是main（如复兴皇权），为主线服务或可独立完成的具体目标是side（如拉拢某势力）。triggers只提取已经由正文确立、用户角色尚未回应或执行的世界剧情扣子（如某人邀请用户角色前往某地）；它不是随机未来预测，也不是尚无入口的世界进程。第一步只提取，不生成actionOptions，不运行时间推进，不续写结果。空栏目用E，确有记录用H且必须返回记录；代码只会为E/N安全补齐空数组，绝不会把H/U/R的漏答当空。只输出闭合JSON。';
     const STATE_ADJUDICATE_RUN_PROMPT = `${SOURCE_READ_PROMPT}\n你正在执行两步状态机的第二步：INDEPENDENT_REASONING_AND_SIMULATION。你不再重读或分类原文，sourceCompile是第一步已经完整提取的全部事实，currentState是运行前状态。只基于这两者独立执行事实裁定、冲突消解、唯一模块归属、角色行动可行性、生命周期更新、状态机tick与上下文选择。整个事务面板必须从用户角色（世界主角）的视角出发：tasks仅保留主角目标并明确questType=main|side；triggers仅保留已经埋下但主角尚未采取行动的世界剧情扣子。为每个可见task与trigger生成2至4个贴合其人物、地点、条件和进展的actionOptions，每项包含id、label、intent、description、requirements；不得套用固定的“关注/介入/调查”模板。intent只表达主角将尝试什么，不预判成功或后果。隐藏信息不得出现在label、intent或description。最终evidence必须是完整当前快照，所有moduleCoverage/moduleDecisions必须完整返回。`;
     const INITIAL_STATE_PROMPT = '你是世界状态初始化器，不是故事续写者。先识别事实、跨模块去重，再按priority与activity建立紧凑当前状态。必须综合称谓、自称、官职、礼制、正式册封/任命、连续行为、地点层级、时间顺序和已结算事件，自动补全可以唯一确定的身份、正式关系、权限、资源约束与当前状态并标为derived；不得因为世界书没有逐字定义而遗漏。world固定只含当前时间、季节、地点、天气、环境和最多8条正在生效的客观状态；天气必须存在，服从地点、季节、时间与既有气象并连续渐变。resourceConstraints只记录当前会改变行动可行性的资金、权限、人手、关键物品与地点封锁，不做资产清单，不猜测数量。人物背景、历史、未来安排和世界规则不得进入world。factAnchors只放正文已经永久确立且不能由其他模块明确表达的最终客观结果；世界书、角色卡和Persona始终是长期设定权威。L2为当前阶段重要信息，L1为临时信息；HOT仅限当前场景。当前型模块只留最新版本。初始化必须逐一检查stateSchema中的所有展示模块，有依据或可确定推导的模块至少返回一条最相关当前记录；确无依据时保持空集合，禁止建立“当前没有”“尚未读取到”“未明确”“原文未说明”等可见占位卡，也不得用捏造设定凑数。卡片缺关键字段时不创建，禁止空对象、空标题、空白卡和同一事实的多份改写。普通饮食、姿势、衣物、情绪和日用品默认不进入。重要完成节点才进入timeline。单模块通常不超过8张卡，单卡列表字段通常不超过4项；达到容量时保留L3与当前HOT/L2，其余留在原始资料。禁止预演未来、创造姓名、秘密、事件或输出分析。整个JSON严格控制在2200个中文字符以内，只输出闭合严格JSON：{"state":{}}。';
+    const SOURCE_COMPILE_BUDGET_PROMPT = '输出传输约束：总输出必须小于6000个中文字符。空数组和空字段一律省略，basis只写一条短句，sourceRefs每项只留最直接的1个。不能用长句、审计解释或重复剧情挤占事实记录。';
+    const STATE_ADJUDICATE_BUDGET_PROMPT = '输出传输约束：总输出必须小于6500个中文字符。空字段省略，basis只写一条短句，sourceRefs每项只留1个，每个task或trigger只返回2个actionOptions。完整是指栏目覆盖完整，不是复述sourceCompile的长文。';
     const TRUTH_POLICY_PROMPT = '真实性硬规则：补全顺序为原文事实→定点回查世界书/角色卡/摘要/历史→多来源交叉验证→可确定程序推导→有充分线索的推测→仅低风险模块受约束生成→后台未知。每个持久条目都返回truthStatus、basis、sourceRefs。truthStatus只允许confirmed、derived、system_generated、suspected、assumed、unknown、not_established、not_applicable、failed。confirmed必须绑定来源；derived必须有可复算依据；suspected/assumed不得写成事实或自动升级；failed必须重试读取。天气可system_generated但服从地点、季节、时间、上轮天气和特殊气候并连续演变；季节优先由日期、地点和南北半球确定。人物身份、正式关系、权限和地点层级在称谓、自称、正式册封/任命、已结算事件或多处一致上下文能够唯一确定时必须补全为derived；不得因世界书未单独定义就留空。秘密、事件结果和具体数值禁止自由生成。L3禁止suspected、assumed、system_generated。unknown/not_established只供后台审计，不得形成“未明确”“原文未说明”等面板或正文注入文字。';
     function losslessParts(value, limit = COMPLETE_SOURCE_PART_CHARS) {
         const input = String(value ?? '');
@@ -554,9 +585,9 @@
             ? { ...source, compiledWorldbookRules: localWorldbookCatalog }
             : source);
         const localEvidence = options.gptMode === true ? compactGptLocalEvidence(scannedLocalEvidence, gptScene) : scannedLocalEvidence;
-        const chronicle = options.gptMode === true && rawSerialized.length > 50000
+        const chronicle = options.gptMode === true && rawSerialized.length > SOURCE_COMPACTION_THRESHOLD_CHARS
             ? compactGptSourceChronicle(source, GPT_SOURCE_TARGET_CHARS)
-            : rawSerialized.length > TWO_PASS_SOURCE_TARGET_CHARS
+            : rawSerialized.length > SOURCE_COMPACTION_THRESHOLD_CHARS
                 ? compactSourceChronicle(source, TWO_PASS_SOURCE_TARGET_CHARS)
                 : { source, compacted: false, coveredMessages: Array.isArray(source?.chat) ? source.chat.length : 0 };
         const preparedSource = chronicle.source;
@@ -623,6 +654,8 @@
             records: prepared?.batches || prepared?.halves || [],
             compilePrompt: SOURCE_COMPILE_EXACT_PROMPT,
             runPrompt: STATE_ADJUDICATE_RUN_PROMPT,
+            transportForm: SOURCE_READ_TRANSPORT_FORM,
+            transportBudgets: [SOURCE_COMPILE_BUDGET_PROMPT, STATE_ADJUDICATE_BUDGET_PROMPT],
         }))}`;
     }
     function mergeStatePatch(base, patch) {
@@ -1005,6 +1038,20 @@
         },
         coverage: { module: '模块名', status: 'has_records|empty_confirmed|unknown|retrieval_failed|not_applicable', basis: '检查结论与依据' },
         decision: { module: '模块名', operation: 'KEEP|UPDATE|CREATE|REMOVE|ARCHIVE|MERGE', reason: '为什么这样处理' },
+    });
+    // Only transmit the fields the model must fill. The longer descriptions
+    // remain local for validation; resending them used several thousand input
+    // characters without changing the result and hurt small mobile gateways.
+    const SOURCE_READ_TRANSPORT_FORM = Object.freeze({
+        version: 2,
+        rule: '数组内只能是对象；每条先唯一归属；按required/requiredAny填必需字段；持久项附truthStatus、basis、sourceRefs、priority、activity。',
+        modules: Object.fromEntries(Object.entries(SOURCE_READ_OUTPUT_FORM.modules).map(([key, spec]) => [key, {
+            ...(spec.required ? { required: spec.required } : {}),
+            ...(spec.requiredAny ? { requiredAny: spec.requiredAny } : {}),
+            fields: spec.fields,
+        }])),
+        coverage: 'moduleCoverage: 18个模块的H|E|U|R|N',
+        decisions: 'moduleDecisions仅第二步返回',
     });
     function repairFinalFillFromSourceCompile(value, sourceCompile) {
         if (!value || typeof value !== 'object' || !sourceCompile || typeof sourceCompile !== 'object') return value;
@@ -2930,8 +2977,8 @@
             try {
                 result = await WSM.Api.complete(
                     prepared.gptMode === true
-                        ? `${IDENTITY_READ_RULE}\n\n${finalStage ? STATE_ADJUDICATE_RUN_PROMPT : SOURCE_COMPILE_EXACT_PROMPT}\n\n${GPT_SOURCE_READ_EXTENSION}`
-                        : `${IDENTITY_READ_RULE}\n\n${finalStage ? STATE_ADJUDICATE_RUN_PROMPT : SOURCE_COMPILE_EXACT_PROMPT}\n\n${SOURCE_READ_MODULE_EXTENSION}\n\n${TRUTH_POLICY_PROMPT}`,
+                        ? `${IDENTITY_READ_RULE}\n\n${finalStage ? STATE_ADJUDICATE_RUN_PROMPT : SOURCE_COMPILE_EXACT_PROMPT}\n\n${finalStage ? STATE_ADJUDICATE_BUDGET_PROMPT : SOURCE_COMPILE_BUDGET_PROMPT}\n\n${GPT_SOURCE_READ_EXTENSION}`
+                        : `${IDENTITY_READ_RULE}\n\n${finalStage ? STATE_ADJUDICATE_RUN_PROMPT : SOURCE_COMPILE_EXACT_PROMPT}\n\n${finalStage ? STATE_ADJUDICATE_BUDGET_PROMPT : SOURCE_COMPILE_BUDGET_PROMPT}\n\n${SOURCE_READ_MODULE_EXTENSION}\n\n${TRUTH_POLICY_PROMPT}`,
                     {
                         task: 'SOURCE_READ_SEQUENTIAL_BATCH',
                         semanticStage: finalStage ? 'INDEPENDENT_REASONING_AND_SIMULATION' : 'SOURCE_COMPILE_EXACT',
@@ -2948,15 +2995,16 @@
                             records: prepared.records, sentRecords: prepared.sentRecords || prepared.records,
                             mirroredChatRecordsReused: prepared.deduplicatedRefs || [],
                         },
-                        outputForm: SOURCE_READ_OUTPUT_FORM,
-                        ...(!finalStage ? { extractionScaffold: Object.fromEntries(EVIDENCE_KEYS.map((key) => [key, []])), extractionRule: '必须以extractionScaffold为完整键骨架逐栏核对并返回；可填写为空数组，但禁止省略任何数组、moduleCoverage或moduleDecisions。' } : {}),
+                        outputForm: SOURCE_READ_TRANSPORT_FORM,
                         moduleOwnership: payload?.moduleOwnership || WSM.Defaults.MODULE_OWNERSHIP,
                     },
                     {
                         maxTokens: 9000,
                         timeoutMs: 300000,
                         singleAttempt: true, signal, jsonContract: 'evidence',
-                        reasoningEffort: /gemini/i.test(String(settings.model || '')) || (settings.gptMode === true && /gpt/i.test(String(settings.model || ''))) ? 'low' : undefined,
+                        reasoningEffort: settings.useTavernApi !== false
+                            ? 'low'
+                            : (/gemini/i.test(String(settings.model || '')) || (settings.gptMode === true && /gpt/i.test(String(settings.model || ''))) ? 'low' : undefined),
                         // Long source reads need incremental delivery on every
                         // provider, including Gemini behind reverse proxies.
                         stream: true,
@@ -3730,34 +3778,15 @@
             await setPrompt('');
             return;
         }
-        if (shouldReuseTurnPlan(type)) {
-            // A swipe/regenerate replaces the assistant answer for the same
-            // user turn. The state call belongs to that user turn and must not
-            // be charged or repeated for each candidate answer.
-            await syncRegisteredPrompt();
-            return;
-        }
         try {
-            const earlyBlock = generationBlockReason(settings, null);
-            if (earlyBlock) {
-                if (typeof abort === 'function') abort(earlyBlock);
-                else throw new Error(earlyBlock);
-                return;
+            if (shouldReuseTurnPlan(type)) {
+                chatMutationRevision += 1;
+                settlingController?.abort();
+                await rollbackCurrentAssistant();
             }
-            const compiler = await WSM.WorldbookCompiler?.processChat?.(chat);
-            if (compiler?.blocked) {
-                const message = compiler.error || '世界书拆解安全检查阻止了正文请求';
-                if (typeof abort === 'function') abort(message);
-                else throw new Error(message);
-                return;
-            }
-            const planner = await ensurePlan({ turnUserMessage: interceptorTurnUserMessage(chat) });
-            const plannerBlock = generationBlockReason(WSM.Settings.get(), planner);
-            if (plannerBlock) {
-                if (typeof abort === 'function') abort(plannerBlock);
-                else throw new Error(plannerBlock);
-                return;
-            }
+            // Use the most recently saved state immediately. The new assistant
+            //正文 is reconciled after MESSAGE_RECEIVED, outside this generation.
+            await syncRegisteredPrompt();
             // WORLD_STATE modules are delivered through separate depth prompts.
             // The interceptor does not mutate chat, avoiding duplicate injection.
         } catch (error) {
@@ -3905,7 +3934,7 @@
             const result = await WSM.Api.complete(taskPrompt, payload, latestOnly
                 // Full old state is input; only changed fields are output.
                 // Allow reasoning plus a complete delta within the user's budget.
-                ? { singleAttempt: true, maxTokens: 9000, timeoutMs: 180000, jsonContract: 'delta', stream: true, reasoningEffort: 'low', omitJailbreak: true }
+                ? { singleAttempt: true, maxTokens: 9000, timeoutMs: 180000, jsonContract: 'delta', stream: true, reasoningEffort: 'low', omitJailbreak: true, signal: options.signal }
                 : { singleAttempt: true });
             if (mutationRevision !== chatMutationRevision) return null;
             if (WSM.Storage.currentChatKey() !== operationChatKey) return null;
@@ -3961,8 +3990,8 @@
                 contentHash: hash(message.content),
                 changeIds: sourceRefs.includes(`chat:${message.id}`) ? changeIds : [],
             })), { prefix: `turn:${key}` });
-            const saved = await WSM.Storage.save(next, latestOnly ? 'manual-read-previous-body' : 'reconcile', latestOnly
-                ? { snapshot: true, snapshotKind: 'generation', snapshotTurnKey: `manual:${key}`, snapshotReadReceipt: receipt }
+            const saved = await WSM.Storage.save(next, latestOnly ? (options.background ? 'post-generation-read' : 'manual-read-previous-body') : 'reconcile', latestOnly
+                ? { snapshot: true, snapshotKind: 'generation', snapshotTurnKey: `${options.background ? 'post' : 'manual'}:${key}`, snapshotReadReceipt: receipt }
                 : { snapshot: false });
             const successDetails = latestOnly
                 ? `第 ${receipt.floor || '?'} 层助手正文已写入 REV ${saved.revision} · 只读正文 · API 1/1`
@@ -3984,9 +4013,50 @@
     }
     async function ensureSettle(options = {}) {
         if (settlingPromise) return settlingPromise;
-        settlingPromise = WSM.Api.withCallBudget(1, 'post-generation-update', () => settle(options))
-            .finally(() => { settlingPromise = null; });
+        const controller = new AbortController();
+        settlingController = controller;
+        settlingPromise = WSM.Api.withCallBudget(1, 'post-generation-update', () => settle({ ...options, signal: controller.signal }))
+            .finally(() => {
+                if (settlingController === controller) settlingController = null;
+                settlingPromise = null;
+            });
         return settlingPromise;
+    }
+    async function rollbackReplacedAssistant() {
+        const receipt = previousBodyReceipt(WSM.Context.latestAssistantMessage());
+        const runtime = WSM.Storage.load().runtime || {};
+        if (!receipt.messageKey || Number(runtime.lastPreviousBodyFloor || 0) !== receipt.floor
+            || !runtime.lastPreviousBodyMessageKey || runtime.lastPreviousBodyMessageKey === receipt.messageKey) return 0;
+        const result = await WSM.Storage.rollbackGenerations?.(1);
+        await syncRegisteredPrompt();
+        return Number(result?.rolledBack || 0);
+    }
+    async function rollbackCurrentAssistant() {
+        const receipt = previousBodyReceipt(WSM.Context.latestAssistantMessage());
+        const runtime = WSM.Storage.load().runtime || {};
+        if (!receipt.messageKey || runtime.lastPreviousBodyMessageKey !== receipt.messageKey) return 0;
+        const result = await WSM.Storage.rollbackGenerations?.(1);
+        return Number(result?.rolledBack || 0);
+    }
+    function queuePostGenerationRead(options = {}) {
+        const chatKey = WSM.Storage.currentChatKey();
+        if (options.replaced === true) {
+            chatMutationRevision += 1;
+            settlingController?.abort();
+        }
+        postGenerationQueue = postGenerationQueue.then(async () => {
+            if (WSM.Storage.currentChatKey() !== chatKey) return null;
+            if (options.replaced === true) await rollbackReplacedAssistant();
+            const current = WSM.Storage.load();
+            const assistant = WSM.Context.latestAssistantMessage();
+            if (!current.initialized || !needsPreviousBodyRead(current, assistant)) return null;
+            reportTurnReadProgress('正在读取', 'running');
+            return ensureSettle({ latestOnly: true, background: true });
+        }).catch((error) => {
+            console.error('[WorldStateMachine] 正文生成后后台读取失败', error);
+            return null;
+        });
+        return postGenerationQueue;
     }
     async function readPreviousBody() {
         const current = WSM.Storage.load();
@@ -4016,7 +4086,9 @@
         // generate_interceptor below is the single authoritative turn hook.
         if (events.CHAT_CHANGED) source.on(events.CHAT_CHANGED, () => {
             planningController?.abort();
+            settlingController?.abort();
             if (activeReadController && !activeReadController.signal.aborted) activeReadController.abort();
+            reportTurnReadProgress('', 'idle');
             void setPrompt('');
             void WSM.WorldbookCompiler?.setWorldbookPrompts?.({});
             window.setTimeout(async () => {
@@ -4026,11 +4098,20 @@
             }, 0);
         });
         const refreshMirror = () => { knownChatMirror = captureChatMirror(); };
-        [events.MESSAGE_SENT, events.MESSAGE_RECEIVED, events.MESSAGE_SWIPED, events.MESSAGE_EDITED, events.MESSAGE_UPDATED]
+        [events.MESSAGE_SENT, events.MESSAGE_EDITED, events.MESSAGE_UPDATED]
             .filter(Boolean).forEach((event) => source.on(event, refreshMirror));
+        if (events.MESSAGE_RECEIVED) source.on(events.MESSAGE_RECEIVED, () => {
+            refreshMirror();
+            void queuePostGenerationRead();
+        });
+        if (events.MESSAGE_SWIPED) source.on(events.MESSAGE_SWIPED, () => {
+            refreshMirror();
+            void queuePostGenerationRead({ replaced: true });
+        });
         if (events.MESSAGE_DELETED) source.on(events.MESSAGE_DELETED, () => {
             chatMutationRevision += 1;
             planningController?.abort();
+            settlingController?.abort();
             const before = knownChatMirror;
             const after = captureChatMirror();
             const deletionChatKey = WSM.Storage.currentChatKey();
@@ -4074,4 +4155,6 @@
     }
     WSM.Engine = { init, plan: ensurePlan, settle: ensureSettle, readPreviousBody, interceptor, fallbackInjection, reportProgress, resetProgress, getProgress, cancelRead, isReading, syncRegisteredPrompt, refreshGptLocalState, clearRegisteredPrompts, _test: { ordinaryTurnCallPolicy, pendingTurnReads, shouldReuseTurnPlan, interceptorTurnUserMessage, previousBodyReceipt, readFloorHighWater, readReceiptRuntime, compactTurnState, compactPreviousBodyState, deletedAssistantCount, generationBlockReason, plannerAvailable, activeChatAvailable, setPrompt, setStatePrompts, syncIdentities, initializeInSlices, sourceForInitializeSlice, rotateTriggersForNextTurn, completeSourceRecords, compactSourceChronicle, compactGptSourceChronicle, splitCompleteRecords, splitGptCompleteRecords, removeMirroredChatRecords, prepareSourceForStateRequests, buildStateWithinLimit, normalizeStateResult, normalizeSettlementDelta, normalizeSettlementResult, applyAssistantSceneFacts, normalizeStateCollection, normalizeStateCollections, normalizeGptIdentityAliases, reconcileEntityReferences, auditStateLifecycle, mergeStatePatch, applyStateDelta, applyHistoryLedger, historyChangesFromDelta, mergeCompleteEvidence, mergeAdjudicatedEvidence, supplementMissingEvidenceFromArchive, localEvidenceFromSource, deterministicMeowLedger, ensureDeterministicMeowLedger, sanitizeGptEvidence, sanitizeGptHydratedState, applyGptSceneToState, stateFromEvidence, firstHalfCacheKey, validateEvidenceContract, validateFilledEvidence, normalizeEvidenceFillShapes, completeExplicitlyAuditedEvidence, synthesizeEvidenceAudit, repairFinalFillFromSourceCompile, markIncompleteEvidence, preserveUnreturnedStateModules } };
     WSM.Engine.readFloor = readFloorHighWater;
+    WSM.Engine._test.waitForPostGenerationReads = () => postGenerationQueue;
+    WSM.Engine._test.queuePostGenerationRead = queuePostGenerationRead;
 })();

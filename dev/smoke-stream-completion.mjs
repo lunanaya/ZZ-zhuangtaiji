@@ -27,5 +27,6 @@ assert.equal(interrupted.reasoningChars, 8);
 const failureAfterContent = api._test.parseSseResponse(event({ choices: [{ delta: { content: '{}' } }] }) + event({ error: { message: 'Gateway Timeout' } }));
 assert.equal(failureAfterContent.error.message, 'Gateway Timeout');
 globalThis.fetch = async () => new Response(event({ choices: [{ delta: { content: '{"evidence":{"canon":[]}}' }, finish_reason: 'length' }] }));
-await assert.rejects(run(), /明确报告输出预算耗尽/);
+const lengthRecovered = await run();
+assert.deepEqual(lengthRecovered, { evidence: { canon: [] } }, '输出上限之前已闭合的证据必须安全保留');
 console.log('Stream termination, interruption classification and error propagation tests passed');

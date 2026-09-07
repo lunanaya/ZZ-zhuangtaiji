@@ -502,7 +502,7 @@
             const source = [(['ambient','planner'].includes(id) ? (supplied[id] || generated[id]) : generated[id]), projectedFacts].filter(Boolean).join('\n');
             const content = dedupeContent(removeRatingNumbers(replaceIdentityTokens(source, state)), seenFacts);
             if (!content) return;
-            const instruction = text(config.instruction);
+            const instruction = text(settings.modulePrompts?.[id] || config.instruction);
             candidates.push({ label: config.label, content, instruction, protected: ['worldRules','knowledge'].includes(id) || factGroups.some((group) => group.owner === id && group.protected), priority: moduleBudgetPriority[id] || 50 });
         });
         factGroups.filter((group) => group.owner === 'worldbook').forEach((group) => {
@@ -534,10 +534,7 @@
             const source = [(['ambient','planner'].includes(id) ? (supplied[id] || generated[id]) : generated[id]), projectedFacts].filter(Boolean).join('\n');
             const content = dedupeContent(removeRatingNumbers(replaceIdentityTokens(source, state)), seenFacts);
             if (!content) return;
-            // modulePrompts guide the state-maintenance model. Sending them to
-            // the prose model repeats implementation instructions every turn
-            // and can crowd out the actual current state.
-            const instruction = text(config.instruction);
+            const instruction = text(settings.modulePrompts?.[id] || config.instruction);
             const depth = Math.max(0, Math.min(4, Math.round(Number(config.depth ?? defaultModule.depth ?? 2))));
             if (!groups.has(depth)) groups.set(depth, []);
             groups.get(depth).push({ id, label: config.label, content, instruction, protected: ['worldRules','knowledge'].includes(id) || factGroups.some((group) => group.owner === id && group.protected), priority: moduleBudgetPriority[id] || 50 });

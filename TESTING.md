@@ -1,5 +1,10 @@
 # 测试指南
 
+## v0.16.83 流式性能回归
+
+- `node dev/smoke-stream-performance.mjs`：模拟 1000/2000 个含 backend 标识的小数据包，统计实际 JSON 解析次数和字符量，验证增长近似线性、无句子丢失、进度刷新节流。
+- 回归 `smoke-stream-completion.mjs`、`smoke-api.mjs`、`smoke-plain-memory.mjs`、`smoke-tavern-stream.mjs`，覆盖拆分字节、无末尾换行、断流、空心跳、严格结束校验与调用上限。均不调用真实付费 API。
+
 ## v0.16.82 流式接收
 
 - `node dev/smoke-stream-completion.mjs`：模拟拆分 UTF-8 字节、缺少末尾换行和 HTTP 结束、有效句子结束回执、半途 `Load failed`、首响应失败、空心跳与本地超时。验证完整回执及时停止、半条回执和文本里的示例不判完成、完整句子保留且不自动重试。

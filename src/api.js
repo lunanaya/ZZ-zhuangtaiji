@@ -531,6 +531,46 @@
             || contentText(data?.output)
             || contentText(data?.content);
     }
+    function sseContent(event) {
+        const choice = event?.choices?.[0] || {};
+        const type = String(event?.type || ''), deltaType = String(event?.delta?.type || '');
+        return contentText(choice?.delta?.content) || contentText(choice?.message?.content)
+            || contentText(choice?.text) || contentText(event?.output_text)
+            || (type === 'response.output_text.delta' ? contentText(event?.delta) : '')
+            || (type === 'content_block_delta' && !/thinking|reasoning/i.test(deltaType) ? contentText(event?.delta?.text) : '')
+            || contentText(event?.delta?.content);
+    }
+    // Scan each new character once. Retain only the current JSON frame until
+    // it closes, rather than repeatedly parsing the accumulated response.
+    function jsonFrames(onFrame) {
+        let depth = 0, quoted = false, escaped = false, pieces = [];
+        return text => {
+            let start = depth ? 0 : -1;
+            for (let i = 0; i < text.length; i++) {
+                const char = text[i];
+                if (!depth) {
+                    if (char === '{' || char === '[') { start = i; depth = 1; }
+                    continue;
+                }
+                if (quoted) {
+                    if (escaped) escaped = false;
+                    else if (char === '\\') escaped = true;
+                    else if (char === '"') quoted = false;
+                    continue;
+                }
+                if (char === '"') quoted = true;
+                else if (char === '{' || char === '[') depth++;
+                else if (char === '}' || char === ']') {
+                    if (--depth === 0) {
+                        pieces.push(text.slice(start,i+1));
+                        onFrame(pieces.join(''));
+                        pieces = []; start = -1;
+                    }
+                }
+            }
+            if (depth && start >= 0) pieces.push(text.slice(start));
+        };
+    }
     function parseSseResponse(raw, interrupted = false) {
         const chunks = [];
         let finishReason = '';
@@ -554,15 +594,7 @@
                 const deltaType = String(event?.delta?.type || '');
                 reasoningChars += contentText(choice?.delta?.reasoning_content ?? choice?.delta?.reasoning
                     ?? (eventType.includes('reasoning') || eventType.includes('thinking') || /thinking|reasoning/i.test(deltaType) ? event?.delta?.thinking ?? event?.delta : '')).length;
-                const text = contentText(choice?.delta?.content)
-                    || contentText(choice?.message?.content)
-                    || contentText(choice?.text)
-                    || contentText(event?.output_text)
-                    // OpenAI Responses API and Anthropic-compatible streams
-                    // use root-level delta events instead of choices[].
-                    || (eventType === 'response.output_text.delta' ? contentText(event?.delta) : '')
-                    || (eventType === 'content_block_delta' && !/thinking|reasoning/i.test(deltaType) ? contentText(event?.delta?.text) : '')
-                    || contentText(event?.delta?.content);
+                const text = sseContent(event);
                 if (text) chunks.push(text);
                 if (choice?.finish_reason) finishReason = String(choice.finish_reason);
                 else if (['response.completed','message_stop','message_delta'].includes(eventType)) finishReason = String(event?.delta?.stop_reason || event?.response?.status || 'stop');
@@ -577,56 +609,68 @@
         }
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
-        let raw = '';
-        let lastReported = 0;
-        let scanned = 0;
+        const rawChunks = [], visibleChunks = [];
+        let receivedChars = 0, lastReported = 0, lastReportAt = 0;
+        let complete = false, activity = false, receiptSeen = false;
+        const sentences = jsonFrames(frame => {
+            if (frame.includes('"end"') && parseSentenceLines(frame).end) receiptSeen = true;
+        });
+        const consumeEvent = frame => {
+            if (frame === '[DONE]') { complete = true; return; }
+            try {
+                const event = JSON.parse(frame);
+                if (event.choices?.length || event.delta || event.output_text || event.error
+                    || /^(response\.|content_block|message_)/.test(String(event.type || ''))) activity = true;
+                if (event.error || event.choices?.some(choice => (choice.index ?? 0) === 0 && choice.finish_reason)
+                    || ['response.completed','response.failed','message_stop'].includes(String(event.type || ''))) complete = true;
+                if (meta.jsonContract === 'sentences') {
+                    const text = sseContent(event);
+                    if (text) { visibleChunks.push(text); sentences(text); }
+                }
+            } catch (_) { /* Only a complete, valid SSE envelope supplies text. */ }
+        };
+        let prefix = '', lineMode = 'prefix', eventFrames = jsonFrames(consumeEvent);
+        const consumeFragment = fragment => {
+            let offset = 0;
+            if (lineMode === 'prefix') {
+                for (; offset < fragment.length; offset++) {
+                    const char = fragment[offset];
+                    prefix += char;
+                    if (char === ':') { lineMode = prefix.trim() === 'data:' ? 'data' : 'ignore'; offset++; break; }
+                    if (prefix.trim().length > 5) { lineMode = 'ignore'; break; }
+                }
+            }
+            if (lineMode === 'data') eventFrames(fragment.slice(offset));
+        };
         try {
             while (true) {
                 const { value, done } = await reader.read();
                 if (done) break;
-                raw += decoder.decode(value, { stream: true });
-                // A completion marker ends this response even when a proxy
-                // keeps its HTTP connection open. Never scan a partial line.
-                let lineEnd;
-                let complete = false;
-                let activity = false;
-                while ((lineEnd = raw.indexOf('\n', scanned)) >= 0) {
-                    const line = raw.slice(scanned, lineEnd).trim();
-                    scanned = lineEnd + 1;
-                    if (!line.startsWith('data:')) continue;
-                    const data = line.slice(5).trim();
-                    if (data === '[DONE]') { complete = true; continue; }
-                    try {
-                        const event = JSON.parse(data);
-                        // Transport heartbeats do not mean the model is still
-                        // producing output. Otherwise a stalled stream can wait forever.
-                        if (event.choices?.length || event.delta || event.output_text || event.error
-                            || /^(response\.|content_block|message_)/.test(String(event.type || ''))) activity = true;
-                        if (event.error || event.choices?.some(choice => (choice.index ?? 0) === 0 && choice.finish_reason)
-                            || ['response.completed','response.failed','message_stop'].includes(String(event?.type || ''))) complete = true;
-                    } catch (_) { /* Incomplete or non-JSON event. */ }
+                const text = decoder.decode(value, { stream: true });
+                rawChunks.push(text); receivedChars += text.length;
+                activity = false; receiptSeen = false;
+                const fragments = text.split('\n');
+                for (let i = 0; i < fragments.length; i++) {
+                    consumeFragment(fragments[i]);
+                    if (i < fragments.length - 1) { prefix = ''; lineMode = 'prefix'; eventFrames = jsonFrames(consumeEvent); }
                 }
                 if (activity && typeof meta.onActivity === 'function') meta.onActivity();
-                // The sentence protocol has its own explicit receipt. A full,
-                // validated receipt does not need the proxy to close its socket.
-                // Parse complete SSE envelopes first: quoted example text and
-                // truncated JSON must never be mistaken for that receipt.
-                if (!complete && meta.jsonContract === 'sentences' && raw.includes('end')) {
-                    const parsed = /^\s*data:/m.test(raw) ? parseSseResponse(raw) : null;
-                    if (parsed && !providerResponseError(parsed) && parseSentenceLines(responseText(parsed)).end) complete = true;
-                }
+                // Validate the full protocol only when a new complete receipt
+                // arrives, never on every token or on an SSE id containing "end".
+                if (!complete && receiptSeen && parseSentenceLines(visibleChunks.join('')).end) complete = true;
                 if (complete) {
                     void reader.cancel().catch(() => {});
-                    return { raw, interrupted: false };
+                    return { raw:rawChunks.join(''), interrupted: false };
                 }
-                if (raw.length - lastReported >= 1000) {
-                    lastReported = raw.length;
-                    WSM.Engine?.reportProgress?.('正在流式接收响应', 'running', `任务 ${meta.task || 'unknown'} · 已接收约 ${raw.length} 字 · 仍是同一次 API`);
+                if (receivedChars - lastReported >= 1000 && Date.now() - lastReportAt >= 250) {
+                    lastReported = receivedChars; lastReportAt = Date.now();
+                    WSM.Engine?.reportProgress?.('正在流式接收响应', 'running', `任务 ${meta.task || 'unknown'} · 已接收约 ${receivedChars} 字 · 仍是同一次 API`);
                 }
             }
-            raw += decoder.decode();
-            return { raw, interrupted: false };
+            rawChunks.push(decoder.decode());
+            return { raw:rawChunks.join(''), interrupted: false };
         } catch (error) {
+            const raw = rawChunks.join('');
             if (!raw.trim()) throw error;
             const interruptionReason = typeof meta.interruptionReason === 'function' ? meta.interruptionReason() : 'upstream';
             console.warn('[WorldStateMachine] 流式连接中断', { task: meta.task, receivedChars: raw.length, interruptionReason, reason: String(error?.message || error) });

@@ -36,7 +36,7 @@
     const safeText = (value) => String(value ?? '').trim();
     function cancellationError() { return Object.assign(new Error('用户已终止读取'), { name: 'AbortError' }); }
     function throwIfCancelled(signal) { if (signal?.aborted) throw cancellationError(); }
-    function reportProgress(message, state = 'running', details = '') {
+    function reportProgress(message, state = 'running', details = '', options = {}) {
         const nextMessage = safeText(message);
         const nextDetails = safeText(details);
         // A new initialization begins a fresh, visible progress trail. Keep
@@ -49,7 +49,7 @@
             : Number(operationProgress.startedAt);
         const last = previous.at(-1);
         const step = { state, message: nextMessage, details: nextDetails, at: Date.now(), elapsedMs: Date.now() - startedAt };
-        const steps = last?.message === step.message && last?.details === step.details && last?.state === step.state
+        const steps = last?.message === step.message && (options.replaceCurrent === true || last?.details === step.details) && last?.state === step.state
             ? [...previous.slice(0, -1), step]
             : [...previous, step].slice(-36);
         operationProgress = { ...step, startedAt, steps, chatKey: WSM.Storage?.currentChatKey?.() || '' };

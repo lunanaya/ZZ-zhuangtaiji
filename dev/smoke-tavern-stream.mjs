@@ -20,7 +20,7 @@ const chatModule = {
     },
 };
 const sandbox = {
-    console, URL, TextDecoder, AbortController, setTimeout, clearTimeout, chatModule,
+    console, URL, TextDecoder, AbortController, setTimeout, clearTimeout, setInterval, clearInterval, chatModule,
     getRequestHeaders:() => ({'Content-Type':'application/json','X-CSRF-Token':'test-csrf'}),
     SillyTavern:{getContext:() => ({mainApi:'openai', generateRaw:() => {throw new Error('Must not use non-streaming generateRaw');}})},
     WorldStateMachine:{Settings:{get:() => pluginSettings}},

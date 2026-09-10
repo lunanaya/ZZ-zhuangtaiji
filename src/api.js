@@ -585,6 +585,12 @@
             if (depth && start >= 0) pieces.push(text.slice(start));
         };
     }
+    function sseReasoningText(event) {
+        const eventType = String(event?.type || '');
+        const deltaType = String(event?.delta?.type || '');
+        return contentText(event?.choices?.[0]?.delta?.reasoning_content ?? event?.choices?.[0]?.delta?.reasoning
+            ?? (eventType.includes('reasoning') || eventType.includes('thinking') || /thinking|reasoning/i.test(deltaType) ? event?.delta?.thinking ?? event?.delta : ''));
+    }
     function parseSseResponse(raw, interrupted = false) {
         const chunks = [];
         let finishReason = '';
@@ -605,9 +611,7 @@
                 }
                 const choice = event?.choices?.[0] || {};
                 const eventType = String(event?.type || '');
-                const deltaType = String(event?.delta?.type || '');
-                reasoningChars += contentText(choice?.delta?.reasoning_content ?? choice?.delta?.reasoning
-                    ?? (eventType.includes('reasoning') || eventType.includes('thinking') || /thinking|reasoning/i.test(deltaType) ? event?.delta?.thinking ?? event?.delta : '')).length;
+                reasoningChars += sseReasoningText(event).length;
                 const text = sseContent(event);
                 if (text) chunks.push(text);
                 if (choice?.finish_reason) finishReason = String(choice.finish_reason);
@@ -619,13 +623,13 @@
     }
     async function readForwardedResponse(response, streaming, meta = {}) {
         if (!streaming || typeof response?.body?.getReader !== 'function' || typeof TextDecoder === 'undefined') {
-            return { raw: await response.text(), interrupted: false };
+            return { raw: await awaitWithSignal(response.text(), meta.signal), interrupted: false };
         }
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         const rawChunks = [], visibleChunks = [];
         let receivedChars = 0, lastReported = 0, lastReportAt = 0;
-        let complete = false, activity = false, receiptSeen = false;
+        let complete = false, receiptSeen = false;
         const sentences = jsonFrames(frame => {
             if (frame.includes('"end"') && parseSentenceLines(frame).end) receiptSeen = true;
         });
@@ -633,12 +637,13 @@
             if (frame === '[DONE]') { complete = true; return; }
             try {
                 const event = JSON.parse(frame);
-                if (event.choices?.length || event.delta || event.output_text || event.error
-                    || /^(response\.|content_block|message_)/.test(String(event.type || ''))) activity = true;
                 if (event.error || event.choices?.some(choice => (choice.index ?? 0) === 0 && choice.finish_reason)
                     || ['response.completed','response.failed','message_stop'].includes(String(event.type || ''))) complete = true;
                 const text = sseContent(event);
                 if (text) meta.onVisible?.(text.length);
+                const reasoning = sseReasoningText(event);
+                if (reasoning) meta.onReasoning?.(reasoning.length);
+                if (text || reasoning) meta.onActivity?.(text ? 'text' : 'reasoning');
                 if (meta.jsonContract === 'sentences') {
                     if (text) { visibleChunks.push(text); sentences(text); }
                 }
@@ -659,28 +664,27 @@
         };
         try {
             while (true) {
-                const { value, done } = await reader.read();
+                const { value, done } = await awaitWithSignal(reader.read(), meta.signal);
                 if (done) break;
                 const text = decoder.decode(value, { stream: true });
                 meta.onPacket?.(text.length);
                 rawChunks.push(text); receivedChars += text.length;
-                activity = false; receiptSeen = false;
+                receiptSeen = false;
                 const fragments = text.split('\n');
                 for (let i = 0; i < fragments.length; i++) {
                     consumeFragment(fragments[i]);
                     if (i < fragments.length - 1) { prefix = ''; lineMode = 'prefix'; eventFrames = jsonFrames(consumeEvent); }
                 }
-                if (activity && typeof meta.onActivity === 'function') meta.onActivity();
                 // Validate the full protocol only when a new complete receipt
                 // arrives, never on every token or on an SSE id containing "end".
                 if (!complete && receiptSeen && parseSentenceLines(visibleChunks.join('')).end) complete = true;
                 if (complete) {
-                    void reader.cancel().catch(() => {});
                     return { raw:rawChunks.join(''), interrupted: false };
                 }
                 if (receivedChars - lastReported >= 1000 && Date.now() - lastReportAt >= 250) {
                     lastReported = receivedChars; lastReportAt = Date.now();
-                    WSM.Engine?.reportProgress?.('正在流式接收响应', 'running', `任务 ${meta.task || 'unknown'} · 已接收约 ${receivedChars} 字 · 仍是同一次 API`);
+                    if (meta.reportProgress) meta.reportProgress();
+                    else WSM.Engine?.reportProgress?.('正在流式接收响应', 'running', `任务 ${meta.task || 'unknown'} · 已接收约 ${receivedChars} 字 · 仍是同一次 API`);
                 }
             }
             rawChunks.push(decoder.decode());
@@ -689,8 +693,12 @@
             const raw = rawChunks.join('');
             if (!raw.trim()) throw error;
             const interruptionReason = typeof meta.interruptionReason === 'function' ? meta.interruptionReason() : 'upstream';
+            if (interruptionReason === 'cancelled') throw error;
             console.warn('[WorldStateMachine] 流式连接中断', { task: meta.task, receivedChars: raw.length, interruptionReason, reason: String(error?.message || error) });
             return { raw, interrupted: true, interruptionReason };
+        } finally {
+            // Do not depend on fetch abort propagation or await a hung cancel.
+            try { Promise.resolve(reader.cancel()).catch(() => {}); } catch (_) { /* already closed */ }
         }
     }
     function providerResponseError(data) {
@@ -833,11 +841,17 @@
         eventSource.on(eventName, handler);
         return () => eventSource.removeListener?.(eventName, handler);
     }
-    function attemptSignal(parentSignal, timeoutMs) {
+    function attemptSignal(parentSignal, timeoutMs, streaming = false) {
         const controller = new AbortController();
         let abortReason = '';
+        let timeoutKind = '';
         let timer;
+        const startedAt = Date.now();
+        const firstTextTimeoutMs = Math.min(timeoutMs, 180000);
+        const idleTimeoutMs = Math.min(timeoutMs, 60000);
+        let textSeen = false, lastActivityAt = null;
         const abort = () => {
+            if (controller.signal.aborted) return;
             abortReason = 'cancelled';
             controller.abort();
         };
@@ -848,16 +862,29 @@
         else parentSignal?.addEventListener?.('abort', abort, { once: true });
         const armTimeout = () => {
             window.clearTimeout(timer);
+            if (controller.signal.aborted) return;
+            const deadlines = [{at:startedAt + timeoutMs, kind:'total'}];
+            if (streaming && !textSeen) deadlines.push({at:startedAt + firstTextTimeoutMs, kind:'first_text'});
+            if (streaming && lastActivityAt !== null) deadlines.push({at:lastActivityAt + idleTimeoutMs, kind:'idle'});
+            const deadline = deadlines.reduce((a,b) => a.at <= b.at ? a : b);
             timer = window.setTimeout(() => {
                 abortReason = 'timeout';
+                timeoutKind = deadline.kind;
                 controller.abort();
-            }, timeoutMs);
+            }, Math.max(0, deadline.at - Date.now()));
         };
         armTimeout();
         return {
             signal: controller.signal,
             reason: () => abortReason || 'upstream',
-            touch: () => { if (!controller.signal.aborted) armTimeout(); },
+            timeoutKind: () => timeoutKind,
+            firstTextTimeoutMs, idleTimeoutMs,
+            touch: kind => {
+                if (controller.signal.aborted) return;
+                lastActivityAt = Date.now();
+                if (kind === 'text') textSeen = true;
+                armTimeout();
+            },
             cleanup() {
                 window.clearTimeout(timer);
                 parentSignal?.removeEventListener?.('abort', abort);
@@ -992,6 +1019,7 @@
         const diagnostic = {startedAt:requestStartedAt, task:/^[A-Z_]+$/.test(meta.task) ? meta.task : 'OTHER',
             route:'pending', inputChars:meta.inputChars, maxTokens, stream:options.stream === true,
             firstPacketMs:null, firstTextMs:null, receivedChars:0, streamedTextChars:0,
+            lastPacketMs:null, lastActivityMs:null, timeoutKind:'', timeoutMs,
             visibleChars:null, reasoningChars:null, outputTokens:null, reasoningTokens:null,
             httpStatus:null, finishReason:'', ended:null, interrupted:false, failure:'', outcome:'running', durationMs:null};
         requestDiagnostics.push(diagnostic);
@@ -1038,7 +1066,18 @@
                 : null;
             diagnostic.route = useTavern ? (tavernBody ? 'tavern-stream' : 'tavern-native') : 'independent';
             if (useTavern && !tavernBody) return finish(await completeViaTavern(messages, requestSettings, options.signal, timeoutMs, meta, options.singleAttempt === true, options.jsonContract));
-            const attempt = attemptSignal(options.signal, timeoutMs);
+            const attempt = attemptSignal(options.signal, timeoutMs, options.stream === true);
+            if (options.stream === true) Object.assign(diagnostic, {firstTextTimeoutMs:attempt.firstTextTimeoutMs, idleTimeoutMs:attempt.idleTimeoutMs});
+            const reportStreamProgress = () => {
+                const elapsed = Date.now() - requestStartedAt;
+                const silence = elapsed - (diagnostic.lastActivityMs ?? 0);
+                const title = diagnostic.firstTextMs !== null ? '正在接收正文'
+                    : diagnostic.reasoningChars > 0 ? '模型正在推理，尚未输出正文'
+                    : diagnostic.httpStatus === null ? '正在等待 API 响应' : '已连接，等待模型正文';
+                WSM.Engine?.reportProgress?.(title, 'running',
+                    `任务 ${meta.task} · 已等待 ${Math.floor(elapsed/1000)} 秒 · 正文 ${diagnostic.streamedTextChars} 字 / 推理 ${diagnostic.reasoningChars || 0} 字 · ${Math.floor(silence/1000)} 秒无新增内容 · ${diagnostic.firstTextMs === null ? `首正文上限 ${Math.round(attempt.firstTextTimeoutMs/1000)} 秒 · ` : ''}总上限 ${Math.round(timeoutMs/1000)} 秒 · 同一次 API`, {replaceCurrent:true});
+            };
+            const progressTimer = options.stream === true ? window.setInterval(reportStreamProgress, 1000) : null;
             let response;
             let raw;
             let streamInterrupted = false;
@@ -1072,16 +1111,18 @@
                     delete proxyBody.proxy_password;
                 }
                 meta.model = proxyBody.model;
-                const proxyHeaders = await requestHeaders();
+                const proxyHeaders = await awaitWithSignal(requestHeaders(), attempt.signal);
                 attempt.signal.throwIfAborted();
-                response = await fetch('/api/backends/chat-completions/generate', {
+                response = await awaitWithSignal(fetch('/api/backends/chat-completions/generate', {
                     method: 'POST', headers: proxyHeaders, body: JSON.stringify(proxyBody), signal: attempt.signal,
-                });
+                }), attempt.signal);
                 diagnostic.httpStatus = response.status;
                 const forwarded = await readForwardedResponse(response, options.stream === true, { ...meta,
-                    onPacket:chars => { diagnostic.firstPacketMs ??= Date.now()-requestStartedAt; diagnostic.receivedChars += chars; },
-                    onVisible:chars => { diagnostic.firstTextMs ??= Date.now()-requestStartedAt; diagnostic.streamedTextChars += chars; },
-                    jsonContract: options.jsonContract, interruptionReason: attempt.reason, onActivity: attempt.touch });
+                    onPacket:chars => { diagnostic.lastPacketMs = Date.now()-requestStartedAt; diagnostic.firstPacketMs ??= diagnostic.lastPacketMs; diagnostic.receivedChars += chars; },
+                    onVisible:chars => { diagnostic.firstTextMs ??= Date.now()-requestStartedAt; diagnostic.streamedTextChars += chars; diagnostic.visibleChars = diagnostic.streamedTextChars; },
+                    onReasoning:chars => { diagnostic.reasoningChars = (diagnostic.reasoningChars || 0) + chars; },
+                    jsonContract: options.jsonContract, signal:attempt.signal, reportProgress:reportStreamProgress,
+                    interruptionReason: attempt.reason, onActivity:kind => { diagnostic.lastActivityMs = Date.now()-requestStartedAt; attempt.touch(kind); } });
                 raw = forwarded.raw;
                 streamInterrupted = forwarded.interrupted;
                 diagnostic.interrupted = streamInterrupted;
@@ -1090,10 +1131,20 @@
                 if (error?.name === 'AbortError') {
                     const reason = attempt.reason();
                     if (reason === 'cancelled') throw new Error(`任务 ${meta.task} 已由用户取消`);
-                    if (reason === 'timeout') throw new Error(`任务 ${meta.task} 请求超时：等待模型首条正文或后续数据超过 ${Math.round(timeoutMs / 1000)} 秒`);
+                    if (reason === 'timeout') {
+                        const detail = attempt.timeoutKind() === 'first_text' ? `${Math.round(attempt.firstTextTimeoutMs/1000)} 秒内未收到首条正文`
+                            : attempt.timeoutKind() === 'idle' ? `连续 ${Math.round(attempt.idleTimeoutMs/1000)} 秒没有新增正文或推理`
+                            : `单次请求达到 ${Math.round(timeoutMs/1000)} 秒总上限`;
+                        throw new Error(`任务 ${meta.task} 请求超时：${detail}；本次请求已停止，不会自动重试`);
+                    }
                 }
                 throw error;
-            } finally { attempt.cleanup(); }
+            } finally {
+                diagnostic.timeoutKind = attempt.timeoutKind();
+                if (diagnostic.timeoutKind) diagnostic.failure = 'timeout';
+                if (progressTimer !== null) window.clearInterval(progressTimer);
+                attempt.cleanup();
+            }
             if (!response.ok) throw new Error(`Planner API 后端转发失败 ${response.status}: ${raw.slice(0, 500)}`);
             let data;
             try { data = JSON.parse(raw); }
@@ -1126,14 +1177,17 @@
                     const recovered = extractJson(visibleOutput || raw, { jsonContract: options.jsonContract });
                     if (options.jsonContract === 'sentences' && recovered.factStream) recovered.factStream.end = false;
                     WSM.Engine?.reportProgress?.(
-                        streamInterrupted ? '流式结束标记缺失，已安全接收' : '模型输出到达上限，已安全抢救',
+                        streamInterrupted ? diagnostic.timeoutKind ? '流式等待超时，已保留完整记录' : '流式结束标记缺失，已安全接收' : '模型输出到达上限，已安全抢救',
                         'running',
                         `任务 ${meta.task} · 只保留闭合的JSON模块 · 可见输出 ${visibleOutput.length} 字 · 未额外请求API`,
                     );
                     return finish(recovered);
                 } catch (_recoveryError) {
                     if (streamInterrupted) {
-                        const interruptionLabel = meta.interruptionReason === 'timeout' ? '本地等待超时' : meta.interruptionReason === 'cancelled' ? '用户取消' : '上游或反代断流';
+                        const interruptionLabel = meta.interruptionReason === 'timeout'
+                            ? diagnostic.timeoutKind === 'first_text' ? '首条正文等待超时'
+                                : diagnostic.timeoutKind === 'idle' ? '连续无新增正文或推理，等待超时' : '单次请求总时限已到，等待超时'
+                            : meta.interruptionReason === 'cancelled' ? '用户取消' : '上游或反代断流';
                         throw new Error(`任务 ${meta.task} ${interruptionLabel}；已收到正文 ${visibleChars} 字，推理 ${data.reasoningChars || 0} 字，但尚未形成一个可安全保存的完整JSON模块；本批未写入`);
                     }
                     if (meta.task === 'SOURCE_READ_SEQUENTIAL_BATCH') throw new Error(`任务 ${meta.task} 接口明确报告输出预算耗尽；上限 ${maxTokens} Tokens，正文 ${visibleChars} 字，推理 ${data.reasoningChars || 0} 字，且未形成可安全保存的完整JSON模块；本批未写入。${requestIdentity}`);

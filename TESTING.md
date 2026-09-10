@@ -257,6 +257,12 @@ Mock服务器终端应依次看到：
 6. 测试切换聊天，确认不同聊天状态隔离。
 7. 最后再用于正式聊天。
 
+## 流式卡住回归（0.16.87）
+
+运行 `node dev/smoke-stream-watchdog.mjs`：使用虚拟时钟与模拟流验证不响应取消的 fetch/read、持续推理无正文、空 choices 心跳、60秒停流、300秒总上限、实时诊断与进度、部分完整句保留、取消和后续任务锁释放。无真实 API 调用。
+
+同时运行 `smoke-stream-completion.mjs`、`smoke-stream-performance.mjs`、`smoke-read-diagnostics.mjs`、`smoke-api.mjs`、`smoke-tavern-stream.mjs`、`smoke-plain-memory.mjs` 与 `smoke-reading-popup.mjs`，检查流式结束、解析复杂度、诊断隐私、两条请求路线、初始化保存与弹窗。
+
 ## 6. 常见问题
 
 - **测试连接失败**：检查地址是否包含 `/v1` 或完整 `/chat/completions`，并查看浏览器控制台的CORS错误。

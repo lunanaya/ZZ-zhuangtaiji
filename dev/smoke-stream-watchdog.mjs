@@ -1,0 +1,131 @@
+import assert from 'node:assert/strict';
+
+const nativeNow = Date.now;
+let now = 1000, id = 0, calls = 0, transport;
+const timers = new Map(), intervals = new Map(), progress = [];
+Date.now = () => now;
+globalThis.window = {
+    setTimeout(fn, ms) { const key = ++id; timers.set(key, {fn, at:now + ms}); return key; },
+    clearTimeout(key) { timers.delete(key); },
+    setInterval(fn) { const key = ++id; intervals.set(key, fn); return key; },
+    clearInterval(key) { intervals.delete(key); },
+    getRequestHeaders: () => ({}),
+    WorldStateMachine: {
+        Settings: {get: () => ({useTavernApi:false, endpoint:'https://example.invalid/v1', maxTokens:16384})},
+        Engine: {reportProgress: (...args) => progress.push(args)},
+    },
+};
+await import('../src/api.js');
+const api = window.WorldStateMachine.Api;
+const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
+async function advance(ms) {
+    const target = now + ms;
+    while (true) {
+        const due = [...timers].filter(([,t]) => t.at <= target).sort((a,b) => a[1].at - b[1].at)[0];
+        if (!due) break;
+        now = due[1].at; timers.delete(due[0]); due[1].fn(); await flush();
+    }
+    now = target; await flush();
+}
+const packet = value => new TextEncoder().encode(`data: ${JSON.stringify(value)}\n\n`);
+const text = value => ({choices:[{delta:{content:value}}]});
+const thinking = value => ({choices:[{delta:{reasoning_content:value}}]});
+const sentence = '{"module":"world","text":"城门已经关闭"}\n';
+function streamFetch() {
+    globalThis.fetch = async (_url, options) => {
+        calls++;
+        let controller;
+        transport = {signal:options.signal, cancels:0};
+        const body = new ReadableStream({
+            start(value) { controller = value; },
+            cancel() { transport.cancels++; return new Promise(() => {}); },
+        });
+        transport.emit = value => controller.enqueue(packet(value));
+        // Deliberately ignore AbortSignal. Local timeout must release read().
+        return new Response(body);
+    };
+}
+async function start(signal) {
+    let settled = false;
+    const promise = api.withCallBudget(1, 'watchdog', () => api.complete('test', {task:'PLAIN_MEMORY_READ'},
+        {stream:true, singleAttempt:true, jsonContract:'sentences', timeoutMs:300000, signal}))
+        .then(value => { settled = true; return {value}; }, error => { settled = true; return {error}; });
+    await flush();
+    return {promise, settled:() => settled};
+}
+const row = () => api.getDiagnostics().requests.at(-1);
+function released() {
+    assert.equal(timers.size, 0, 'deadline timer removed');
+    assert.equal(intervals.size, 0, 'progress timer removed');
+}
+
+try {
+    // Silent fetch must be bounded even when the implementation ignores abort.
+    globalThis.fetch = (_url, options) => { calls++; transport = {signal:options.signal}; return new Promise(() => {}); };
+    let run = await start();
+    await advance(72000);
+    assert.equal(run.settled(), false, 'a 72-second first-text delay remains allowed');
+    for (const fn of intervals.values()) fn();
+    assert.match(progress.at(-1)[2], /已等待 72 秒/);
+    await advance(108000);
+    assert.match((await run.promise).error.message, /180 秒内未收到首条正文/);
+    assert.equal(row().timeoutKind, 'first_text');
+    assert.equal(transport.signal.aborted, true);
+    released();
+
+    // Reasoning keeps the idle deadline alive but cannot extend first text.
+    streamFetch(); run = await start();
+    for (let i = 0; i < 6; i++) { transport.emit(thinking('推理中')); await flush(); await advance(29000); }
+    assert.equal(row().reasoningChars, 18, 'reasoning counts are live before completion');
+    assert.equal(row().firstTextMs, null);
+    for (const fn of intervals.values()) fn();
+    assert.match(progress.at(-1)[0], /模型正在推理/);
+    await advance(6000);
+    assert.match((await run.promise).error.message, /首条正文等待超时/);
+    assert.equal(row().failure, 'timeout');
+    assert.equal(row().timeoutKind, 'first_text');
+    assert.equal(transport.cancels, 1, 'hung cancellation must not block settlement');
+    released();
+
+    // Empty choice envelopes do not reset idle; complete records survive.
+    streamFetch(); run = await start();
+    transport.emit(text(sentence)); await flush();
+    const activityAt = row().lastActivityMs;
+    for (let i = 0; i < 5; i++) {
+        await advance(10000); transport.emit({choices:[{delta:{}, index:0}], type:'response.in_progress'}); await flush();
+    }
+    assert.equal(row().lastActivityMs, activityAt);
+    assert.equal(row().visibleChars, sentence.length);
+    await advance(10000);
+    const partial = (await run.promise).value;
+    assert.equal(partial.factStream.end, false);
+    assert.equal(partial.factStream.facts.length, 1);
+    assert.equal(row().timeoutKind, 'idle');
+    assert.equal(row().outcome, 'partial');
+    released();
+
+    // Even real text arriving forever cannot extend the fixed total limit.
+    streamFetch(); run = await start();
+    for (let i = 0; i < 10; i++) { transport.emit(text(sentence)); await flush(); await advance(29000); }
+    assert.equal(run.settled(), false);
+    await advance(10000);
+    assert.equal((await run.promise).value.factStream.end, false);
+    assert.equal(row().timeoutKind, 'total');
+    released();
+
+    // User cancellation propagates immediately, without returning partial data.
+    streamFetch(); const abort = new AbortController(); run = await start(abort.signal);
+    transport.emit(text(sentence)); await flush(); abort.abort(); await flush();
+    assert.match((await run.promise).error.message, /用户取消/);
+    assert.equal(row().outcome, 'cancelled');
+    released();
+
+    // A subsequent request succeeds: the operation budget is not left locked.
+    streamFetch(); run = await start();
+    transport.emit(text(sentence + '{"end":true}')); await flush();
+    assert.equal((await run.promise).value.factStream.end, true);
+    assert.equal(row().timeoutKind, '');
+    released();
+    assert.equal(calls, 6, 'exactly one transport call per operation; no retries');
+    console.log('PASS stream watchdog: silent fetch, reasoning-only, empty packets, idle recovery, total limit, live progress, cancel and lock release. Real API calls: 0.');
+} finally { Date.now = nativeNow; }

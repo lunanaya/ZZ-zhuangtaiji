@@ -101,7 +101,8 @@ assert.equal(state.memory.worldbook.length,2);
 const prompts=[];
 W.Api={complete:async(system,payload)=>{prompts.push({system,payload});return{factStream:{facts:[],end:true}};}};
 for(const task of ['PLAIN_MEMORY_READ','PLAIN_MEMORY_REASON','PLAIN_MEMORY_SETTLE','PLAIN_MEMORY_ORGANIZE'])await P._test.request('测试',{task,memory:state.memory});
-for(const {system} of prompts){
+assert.doesNotMatch(prompts[0].system,/新活动的生成独立于空栏检查/,'first pass extracts source facts before simulation');
+for(const {system} of prompts.slice(1)){
     assert.match(system,/新活动的生成独立于空栏检查/);
     assert.match(system,/衰退依据世界内的变化/);
     assert.match(system,/同一正文重复读取不能重新抽签/);

@@ -71,7 +71,7 @@ let saved = W.Storage.load();
 assert.deepEqual(W.WorldbookMemory.originals(saved).map(entry=>entry.key),['A::1','A::2','A::3'],'manual subset must not erase other selected source backups');
 assert.deepEqual(saved.memory.characters,['医师擅长针灸']);
 assert.equal(W.WorldbookSemantic.hasRead(saved,selected[1]),true);
-assert.deepEqual(keys(W.WorldbookMemory.forRead(saved,await source())),['A::1','A::3'],'only completed entries are skipped on the next normal read');
+assert.deepEqual(keys(W.WorldbookMemory.forRead(saved,await source())),['A::1','A::2','A::3'],'completed records stay available to plugin reasoning');
 assert.equal(calls,1);
 
 W.Api.complete = async()=>{calls++;config.entryOverrides['A::1']=false;return {factStream:{facts:[{module:'world',text:'不应写入'}],patches:[],end:true}};};

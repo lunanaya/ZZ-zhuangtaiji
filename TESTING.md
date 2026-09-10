@@ -257,6 +257,12 @@ Mock服务器终端应依次看到：
 6. 测试切换聊天，确认不同聊天状态隔离。
 7. 最后再用于正式聊天。
 
+## 世界书原文与两步读取回归（0.16.89）
+
+运行 `node dev/smoke-worldbook-grounding.mjs`：通过 Context → PlainMemory → Engine → Api → 模拟 fetch 检查实际发送的请求。预先给世界书写入已读回执后，两步请求仍须含全部选中原文，包括长条目的末尾条件、全局挂载、手动额外书和旧选择中新增开启的条目；关闭且未手选的条目不发送。第二步须同时收到第一步保存的栏目与压缩补充，第一步不含填满栏目或持续世界演化要求，正文注入仅保留整理内容。诊断条数与字数须与输入一致。无真实API调用。
+
+配合 `smoke-worldbook-merged-read.mjs`、`smoke-worldbook-selection.mjs`、`smoke-worldbook-scope.mjs`、`smoke-worldbook-semantic.mjs`、`smoke-plain-memory.mjs`、`smoke-objective-framing.mjs`、`smoke-flowing-world.mjs` 与 `smoke-read-diagnostics.mjs` 检查选择、原文可见性、分阶段规则与诊断隐私。需要 cheerio 的测试可在酒馆扩展目录运行，或将 NODE_PATH 指向 SillyTavern/node_modules。模拟测试验证请求和状态处理，不证明真实模型能无损压缩任意资料。
+
 ## 世界书选择回归（0.16.88）
 
 运行 `node dev/smoke-worldbook-selection.mjs`，验证旧空列表恢复、已开启条目默认勾选、明确全部取消、关闭条目手动加入、额外未挂载书、切换角色隔离、拆解子集保留其他原文备份、完成回执与拆解中改变选择不覆盖状态。测试只用模拟API。

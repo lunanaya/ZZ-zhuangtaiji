@@ -85,7 +85,7 @@
         injection: '显示当前真正会发送给正文模型的全部注入；设置中未勾选的模块不会出现。小铅笔修改会覆盖下一次正文生成，结算后恢复自动合成。',
         sources: '显示最近一次推演实际读到的角色卡、Persona、酒馆正文和世界书；未列出的世界书没有进入 Planner。',
         worldbookEmpty: '本轮没有可显示的规则命中。若来源应当存在但编译失败，将明确显示 RULE_COMPILE_FAILED。',
-        worldbook: '世界书先拆解压缩，关键内容归栏，其余设定再次压缩后留在补充；原文只作本地备份。注入位置在设置的“注入模块”中调整。',
+        worldbook: '首次读取自动拆解选中世界书：可归栏内容进入对应栏目，其余设定压缩留在补充。插件读取时始终可见选中原文；正文AI使用栏目与压缩补充。注入位置在设置的“注入模块”中调整。',
     };
     const worldbookSectionId = (key) => `worldbookEntry:${encodeURIComponent(String(key || ''))}`;
     const isWorldbookSection = (id) => String(id || '').startsWith('worldbookEntry:');
@@ -668,7 +668,7 @@
             const originals = WSM.WorldbookMemory?.originals(state) || [];
             const supplement = WSM.PlainMemory.rows(state, 'worldbook');
             const config = WSM.Settings.get().injectionModules?.worldbook;
-            return `<section class="wsm-board"><h4>已接管 ${originals.length} 条世界书</h4><p>${config?.enabled === false ? '世界书补充注入已关闭。' : '先拆解压缩，关键内容进入对应栏目；其余设定再次压缩后保留在这里。原文仅作本地备份，不发给正文 AI。'}</p><button data-action="worldbook-settings">选择世界书 / 拆解条目</button>${!originals.length ? '<p>这里统计已读取并保存的原文备份；当前挂载与待拆解条目请打开选择列表查看。</p>' : ''}</section>
+            return `<section class="wsm-board"><h4>已接管 ${originals.length} 条世界书</h4><p>${config?.enabled === false ? '世界书补充注入已关闭。' : '首次读取自动将选中世界书拆解到对应栏目，其余设定压缩保留在这里。插件读取时始终可见选中原文；正文 AI 接收栏目与压缩补充，原文保留本地备份。'}</p><button data-action="worldbook-settings">选择世界书 / 拆解条目</button>${!originals.length ? '<p>这里统计已读取并保存的原文备份；当前挂载与待拆解条目请打开选择列表查看。</p>' : ''}</section>
                 ${supplement.map(row => `<article class="wsm-memory-card"><p>${escape(row)}</p></article>`).join('')}
                 ${originals.map(entry => {
                     const read = WSM.WorldbookSemantic?.hasRead(state,entry);
@@ -1229,7 +1229,7 @@
                     <label class="wsm-check" hidden><input id="wsm-block-on-planner-error" type="checkbox">兼容旧设置</label>
                 </section>
                 <section class="wsm-settings-section" data-settings-section="source">
-                    <p class="wsm-settings-help">初始化固定两步：第一步拆解压缩当前启用或绑定的世界书，结合角色卡和正文将关键内容归栏；第二步将剩余补充再次压缩，并使用压缩结果推理；最多 2 次 API。下方只调整正文读取范围，不裁剪世界书。</p>
+                    <p class="wsm-settings-help">初始化固定两步：第一步自动读取全部选中世界书，结合角色卡和正文整理已有设定，可归栏内容进入栏目，其余压缩留在世界书补充；第二步结合原书与已读内容核对、推理补全。默认选中挂载书的开启条目，可在“世界书”页增减。最多 2 次 API。下方只调整正文读取范围，不裁剪世界书。</p>
                     <label>聊天总结标签（留空读取全文）<input id="wsm-summary-tag" type="text" maxlength="64" placeholder="meow_FM"></label>
                     <p class="wsm-settings-help">填写标签名后采用混合读取：最近若干层读取可见正文，更早楼层只读取该总结标签；留空则全部读取正文。</p>
                     <div class="wsm-grid"><label>普通轮次扫描最近楼层数（0=全部）<input id="wsm-recent-messages" type="number" min="0" max="200"></label><label>其中最近全文楼层数<input id="wsm-recent-full-text-messages" type="number" min="1" max="20"></label></div>
@@ -1237,7 +1237,7 @@
                 </section>
                 <section class="wsm-settings-section" data-settings-section="worldbook">
                     <p class="wsm-settings-help">默认拆解当前角色、聊天、Persona 与全局挂载世界书中开启的条目。可逐本或逐条取消，也可手动加入关闭的条目、额外选择未挂载的世界书；不会改动酒馆原书开关。</p>
-                    <p class="wsm-settings-help">勾选立即保存，选择和刷新列表不调用 AI。正常读取会处理尚未完成或已修改的条目；“立即拆解”会用 1 次 API 重新检查全部已选条目。取消选择停止后续拆解，已归栏的记忆可在对应栏目编辑。</p>
+                    <p class="wsm-settings-help">勾选立即保存，选择和刷新列表不调用 AI。首次读取自动带入全部已选世界书：第一步读取拆解并归栏，第二步结合已读内容推理补全。原文始终对插件读取 AI 可见；正文 AI 接收归栏内容与压缩补充。“立即拆解”是可选的单独读取，使用 1 次 API。</p>
                     <small id="wsm-worldbook-selection-status">打开此页查看当前挂载与条目。</small>
                     <div class="wsm-worldbook-compiler-tools"><button type="button" data-action="refresh-worldbook-entries" data-worldbook-mutating>刷新列表</button><button type="button" data-action="reset-worldbook-selection" data-worldbook-mutating>恢复默认选择</button><button type="button" data-action="compile-worldbook-entries" data-worldbook-mutating>立即拆解已选条目 · 1 次 API</button><button type="button" id="wsm-worldbook-cancel" data-action="cancel-worldbook-read" hidden>取消拆解</button></div>
                     <small id="wsm-worldbook-compiler-status"></small>

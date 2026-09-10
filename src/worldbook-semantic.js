@@ -3,11 +3,11 @@
     const W = window.WorldStateMachine = window.WorldStateMachine || {};
     const text = value => String(value ?? '').trim();
     const POSITIONS = { before_character: 0, after_character: 1, before_author: 2, after_author: 3 };
-    // Old receipts only confirmed extraction; reread once under the semantic
-    // compression contract before relying on them as compressed material.
-    const fingerprint = entry => `logic-v1:${W.Facts.hash(entry.content)}`;
+    // Receipts label the current compression contract for the picker; they
+    // never authorize hiding selected originals from plugin readers.
+    const fingerprint = entry => `logic-v2:${W.Facts.hash(entry.content)}`;
     const COMPRESSION = `世界书处理流程：先逐条理解完整设定，把叙述改写成AI可直接执行的简洁逻辑，再分配主归属。删除重复表述与修辞，合并同义设定；主体、关系方向、触发前提、行为、后果、否定、例外、时间和知识边界必须保留。不能靠截断、删掉独有条件或原文符号替换来冒充语义压缩，不输出思考过程。
-分配依据是重要性和当前用途，不是能否找到栏目。直接影响当前判断、行动与人物一致性的关键规则、当前状态、主要身份与能力、关键关系、秘密边界、地理及资源约束，压缩后放入对应memory栏目。同一事实只保留一份。其余仍有价值的背景、次要细节、低频设定，即使属于人物、地图或规则，也先留在memory.worldbook中，用“主题｜条件：…｜逻辑：…｜例外：…”或更自然的紧凑短句表达；只写实际需要的项。关键限制不能降为低频背景而丢失作用。
+分配依据是内容归属：人物、地图、规则、关系、认知边界、资源等能自然归入memory栏目的设定，整理后放入对应栏目；不按当前出场、关键词、重要性或使用频率删掉其他设定。其余无法自然归栏的世界观、背景和细节合并压缩到memory.worldbook。栏目与worldbook合起来必须覆盖原书全部独有信息，同一事实只保留一份。可以精简措辞、合并重复，不能删掉未归栏的内容来缩短结果；条件、否定、例外、数量、时间、适用范围和关系方向不变。不要求每条展示来源、证据链或逐级溯源，只输出便于AI使用的简洁内容。
 随后对worldbook的剩余设定再次合并压缩，去掉已由其他栏目承担的重复内容，保留其独有信息及必要关联。正文只接收栏目中的关键内容与压缩后的补充，原书不作为兜底注入。没有固定字数、字数上限、压缩比例或每栏条数，不凑栏目、不编造逻辑；简短且不可再缩的原子规则无需改写凑比例。旧记忆里过长的世界书段落也按此流程压缩；移动时用before删除旧条，不留完整原文副本。`;
     function hasRead(state, entry) { return state.runtime?.worldbookRead?.[entry.key] === fingerprint(entry); }
     function markRead(state, source) {

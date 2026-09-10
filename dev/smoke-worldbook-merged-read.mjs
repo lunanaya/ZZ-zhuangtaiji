@@ -29,16 +29,17 @@ let truncate=false, emptySupplement=false;
 globalThis.fetch=async (_url,options)=>{
     const body=JSON.parse(options.body), input=JSON.parse(body.messages[1].content);
     calls.push(input);
-    if (input.task==='PLAIN_MEMORY_READ' || truncate) assert.equal(input.source.worldbooks[0].entries[0].text,raw,'only unfinished extraction receives full original');
-    else {
-        assert.deepEqual(input.source.worldbooks,[],'reasoning consumes compressed memory, not the original book');
-        assert.ok(!JSON.stringify(input).includes(raw),'no original hidden elsewhere in the second request');
+    assert.equal(input.source.worldbooks[0].entries[0].text,raw,'both plugin phases receive the full original, even after a read receipt');
+    if (input.task==='PLAIN_MEMORY_READ') {
+        assert.match(body.messages[0].content,/只整理来源已经给出的事实和设定/);
+        assert.doesNotMatch(body.messages[0].content,/所有栏目必须读取并填写|持续世界演化|空栏补全是最后/);
+        assert.equal(input.localState,undefined,'first pass receives sources rather than simulation context');
     }
     assert.equal(input.source.character.description,source.character.description);
     assert.deepEqual(input.source.chat,source.chat.map(row=>({role:row.role,text:row.content})));
     let rows;
     if(input.task==='PLAIN_MEMORY_READ') {
-        assert.match(body.messages[0].content,/本次为第一步事实读取/);
+        assert.match(body.messages[0].content,/这是初始化第一步/);
         rows=[{module:'characters',text:'陆衡｜身份：医师，擅长针灸｜位置：东港｜状态：正在出诊'},
             {module:'map',text:'北境 > 青石城'},
             {module:'worldRules',text:'不得进入内院，除非持有令牌。'},
@@ -47,7 +48,7 @@ globalThis.fetch=async (_url,options)=>{
         assert.equal(input.task,'PLAIN_MEMORY_REASON','no standalone worldbook/third call');
         assert.ok(input.memory.characters[0].includes('东港'),'second request consumes first results');
         assert.match(body.messages[0].content,/对剩余补充再次压缩/);
-        assert.match(body.messages[0].content,/分配依据是重要性和当前用途/);
+        assert.match(body.messages[0].content,/分配依据是内容归属/);
         assert.ok(!input.missingModules.includes('worldbook'));
         rows=input.missingModules.map(module=>({module,text:module==='world'?'旅人｜位置：青石城':`${W.PlainMemory.LABELS[module]}：示例有效内容`}));
         if(!emptySupplement) rows.push({module:'worldbook',before:'地方典故仅作背景。',text:'地方典故：背景参考。'});
@@ -66,7 +67,7 @@ assert.equal(W.WorldbookMemory.fallback(state).length,0,'merged read suppresses 
 assert.ok(!W.Injection.compose(state).includes(raw));
 assert.ok(state.memory.worldbook.every(row=>!row.includes('医师')&&!row.includes('不得')));
 assert.deepEqual(state.memory.worldbook,['地方典故：背景参考。'],'second pass replaces the first compression, without keeping both');
-assert.deepEqual(W.PlainMemory._test.compactSource(source,state).worldbooks,[],'later unchanged reads also omit original');
+assert.equal(W.PlainMemory._test.compactSource(source,state).worldbooks[0].entries[0].text,raw,'completed receipts never hide sources from later plugin reads');
 const changedSource=structuredClone(source);
 changedSource.worldbooks[0].entries[0].content+='新限制：夜间闭馆。';
 assert.equal(W.PlainMemory._test.compactSource(changedSource,state).worldbooks.length,1,'changed source must be decomposed again');

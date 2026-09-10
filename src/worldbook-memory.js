@@ -96,8 +96,9 @@
     }
     function forRead(state, source) {
         return {...source,worldbooks:(source?.worldbooks || []).map(book => ({...book,
-            entries:(book.entries || []).filter((entry,index) => (entry.enabled !== false || entry.selectedForRead === true)
-                && !W.WorldbookSemantic?.hasRead(state,{...entry,key:key(book.name,entry,index)}))
+            // Receipts describe previous work, not permission to hide sources
+            // from the plugin. Story injection is handled separately.
+            entries:(book.entries || []).filter(entry => entry.enabled !== false || entry.selectedForRead === true)
         })).filter(book => book.entries.length)};
     }
     W.WorldbookMemory = {entries, retain, restoreSource, originals, fallback, forRead, transmission, _test:{expand, verify}};

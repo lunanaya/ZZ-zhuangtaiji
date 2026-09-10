@@ -269,7 +269,8 @@
         }
         // A removed legacy picker left enabled=true with no selected keys.
         // Restore mounted/enabled defaults in that case, without modifying settings.
-        if (config.enabled === true && config.entryKeys?.length) return entry.enabled !== false && config.entryKeys.includes(entry.key);
+        if (config.enabled === true && config.entryKeys?.length && config.knownEntryKeys?.includes(entry.key)
+            && !config.entryKeys.includes(entry.key)) return false;
         return entry.enabled !== false;
     }
     function editableWorldbookSelection(config, entries = []) {

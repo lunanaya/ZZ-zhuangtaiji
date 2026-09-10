@@ -56,13 +56,13 @@ assert.equal(state.memory.worldbook.length,2,'misplaced old content moves out of
 assert.equal(W.WorldbookMemory.fallback(state).length,0,'successfully read originals stop circulating');
 assert.ok(W.WorldbookSemantic.hasRead(state,entry),'read marker survives storage');
 const rawSource={worldbooks:[{name:entry.bookName,entries:[entry,long]}]};
-assert.deepEqual(W.WorldbookMemory.forRead(state,rawSource).worldbooks,[],'completed compression prevents repeat original input');
+assert.deepEqual(W.WorldbookMemory.forRead(state,rawSource).worldbooks,rawSource.worldbooks,'plugin still sees original sources after compression');
 const legacyState=structuredClone(state);
 legacyState.runtime.worldbookRead[entry.key]=W.Facts.hash(entry.content);
-assert.equal(W.WorldbookMemory.forRead(legacyState,rawSource).worldbooks[0].entries.length,1,'legacy extraction must be compressed once under the new contract');
+assert.equal(W.WorldbookMemory.forRead(legacyState,rawSource).worldbooks[0].entries.length,2,'legacy receipts do not suppress plugin sources');
 const changedSource=structuredClone(rawSource);
 changedSource.worldbooks[0].entries[1].content+='新增地点：西港。';
-assert.deepEqual(W.WorldbookMemory.forRead(state,changedSource).worldbooks[0].entries.map(row=>row.key),[long.key],'only a changed entry is read again');
+assert.deepEqual(W.WorldbookMemory.forRead(state,changedSource).worldbooks[0].entries.map(row=>row.key),[entry.key,long.key],'changed and unchanged sources remain available for contextual reasoning');
 assert.ok(W.PlainMemory.canInitialize({...state,initialized:false}),'reading worldbooks first must not prevent later chat initialization');
 const prompts=W.PlainMemory.composeByDepth(state);
 assert.ok(prompts.worldbook.includes('星砂：朔日发光'));

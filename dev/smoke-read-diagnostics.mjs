@@ -25,7 +25,7 @@ globalThis.fetch=async()=>{
     })}};
 };
 try {
-    const result=await complete('PRIVATE_INSTRUCTION',{task:'PLAIN_MEMORY_READ',source:'PRIVATE_SOURCE'},
+    const result=await complete('PRIVATE_INSTRUCTION',{task:'PLAIN_MEMORY_READ',source:{worldbooks:[{name:'PRIVATE_BOOK',entries:[{text:'PRIVATE_SOURCE'}]}]}},
         {singleAttempt:true,stream:true,jsonContract:'sentences'});
     assert.equal(result.factStream.end,true);
     const row=api.getDiagnostics().requests[0];
@@ -33,6 +33,9 @@ try {
     assert.equal(row.firstTextMs,80,'heartbeat and reasoning are not visible text');
     assert.equal(row.durationMs,120);
     assert.equal(row.reasoningChars,'PRIVATE_REASONING'.length);
+    assert.equal(row.worldbookBooks,1);
+    assert.equal(row.worldbookEntries,1);
+    assert.equal(row.worldbookChars,'PRIVATE_SOURCE'.length);
     assert.equal(row.route,'independent');
     assert.equal(row.ended,true);
     assert.equal(calls,1);

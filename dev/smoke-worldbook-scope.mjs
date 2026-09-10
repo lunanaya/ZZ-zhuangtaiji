@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 globalThis.window = globalThis;
 globalThis.WorldStateMachine = {};
-const settings = {worldbookCompiler:{enabled:true,entryKeys:['A::1','B::1','B::2']}};
+const settings = {worldbookCompiler:{enabled:true,entryKeys:['A::1','B::1','B::2'],knownEntryKeys:['A::1','B::1','B::2','B::3']}};
 const books = {
     A:{entries:{1:{uid:1,content:'A ONLY'}}},
     B:{entries:{1:{uid:1,content:'B SELECTED'},2:{uid:2,content:'B DISABLED',disable:true},3:{uid:3,content:'B UNSELECTED'}}},

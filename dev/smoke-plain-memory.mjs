@@ -122,6 +122,11 @@ globalThis.fetch = async (url, options) => {
     assert.equal(body.response_format,undefined);
     assert.doesNotMatch(body.messages[0].content,/STATE_GC|truthStatus|priority|moduleDecisions/);
     assert.equal(body.max_tokens,6000,'sentence requests respect the configured output allowance');
+    if (input.task === 'PLAIN_MEMORY_READ') {
+        assert.match(body.messages[0].content,/只整理来源已经给出的事实和设定/);
+        assert.match(body.messages[0].content,/没有依据的栏目可以暂空/);
+        assert.doesNotMatch(body.messages[0].content,/所有栏目必须读取并填写|持续世界演化/);
+    } else {
     assert.match(body.messages[0].content,/正文已写的地点必须落到对应人物概况和活动记录/);
     assert.match(body.messages[0].content,/推演阶段才.*标明“推测”/);
     assert.match(body.messages[0].content,/所有栏目必须读取并填写，不允许空栏目/);
@@ -130,6 +135,7 @@ globalThis.fetch = async (url, options) => {
     assert.match(body.messages[0].content,/全栏目客观记录规则/);
     assert.match(body.messages[0].content,/不能因旧条未变就KEEP错误解释/);
     assert.doesNotMatch(body.messages[0].content,/可保持空栏|不要求凑满栏目|列为空不表示资料读取失败/);
+    }
     if (mode === 'stale') await new Promise(resolve => { delayedResolve = resolve; });
     if (mode === 'fail-second' && input.task === 'PLAIN_MEMORY_REASON') return new Response('{"error":{"message":"simulated provider failure"}}',{status:500});
     let rows;

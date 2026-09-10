@@ -1016,10 +1016,17 @@
             maxTokens,
         };
         const requestStartedAt = Date.now();
+        const inputWorldbooks = Array.isArray(payload?.source?.worldbooks) ? payload.source.worldbooks
+            : Array.isArray(payload?.worldbooks) ? payload.worldbooks : [];
+        const inputWorldbookEntries = inputWorldbooks.flatMap(book => Array.isArray(book.entries) ? book.entries : [book]);
         const diagnostic = {startedAt:requestStartedAt, task:/^[A-Z_]+$/.test(meta.task) ? meta.task : 'OTHER',
             route:'pending', inputChars:meta.inputChars, maxTokens, stream:options.stream === true,
             firstPacketMs:null, firstTextMs:null, receivedChars:0, streamedTextChars:0,
             lastPacketMs:null, lastActivityMs:null, timeoutKind:'', timeoutMs,
+            worldbookBooks:new Set(inputWorldbooks.filter(book => !Array.isArray(book.entries) || book.entries.length)
+                .map(book => book.name ?? book.book)).size,
+            worldbookEntries:inputWorldbookEntries.length,
+            worldbookChars:inputWorldbookEntries.reduce((sum,entry) => sum + String(entry.text ?? entry.content ?? '').length,0),
             visibleChars:null, reasoningChars:null, outputTokens:null, reasoningTokens:null,
             httpStatus:null, finishReason:'', ended:null, interrupted:false, failure:'', outcome:'running', durationMs:null};
         requestDiagnostics.push(diagnostic);
@@ -1075,7 +1082,7 @@
                     : diagnostic.reasoningChars > 0 ? '模型正在推理，尚未输出正文'
                     : diagnostic.httpStatus === null ? '正在等待 API 响应' : '已连接，等待模型正文';
                 WSM.Engine?.reportProgress?.(title, 'running',
-                    `任务 ${meta.task} · 已等待 ${Math.floor(elapsed/1000)} 秒 · 正文 ${diagnostic.streamedTextChars} 字 / 推理 ${diagnostic.reasoningChars || 0} 字 · ${Math.floor(silence/1000)} 秒无新增内容 · ${diagnostic.firstTextMs === null ? `首正文上限 ${Math.round(attempt.firstTextTimeoutMs/1000)} 秒 · ` : ''}总上限 ${Math.round(timeoutMs/1000)} 秒 · 同一次 API`, {replaceCurrent:true});
+                    `任务 ${meta.task} · 输入世界书 ${diagnostic.worldbookEntries} 条 / ${diagnostic.worldbookChars} 字 · 已等待 ${Math.floor(elapsed/1000)} 秒 · 正文 ${diagnostic.streamedTextChars} 字 / 推理 ${diagnostic.reasoningChars || 0} 字 · ${Math.floor(silence/1000)} 秒无新增内容 · ${diagnostic.firstTextMs === null ? `首正文上限 ${Math.round(attempt.firstTextTimeoutMs/1000)} 秒 · ` : ''}总上限 ${Math.round(timeoutMs/1000)} 秒 · 同一次 API`, {replaceCurrent:true});
             };
             const progressTimer = options.stream === true ? window.setInterval(reportStreamProgress, 1000) : null;
             let response;

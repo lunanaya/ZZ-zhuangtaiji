@@ -584,12 +584,12 @@
             while (true) {
                 const { value, done } = await reader.read();
                 if (done) break;
-                if (typeof meta.onActivity === 'function') meta.onActivity();
                 raw += decoder.decode(value, { stream: true });
                 // A completion marker ends this response even when a proxy
                 // keeps its HTTP connection open. Never scan a partial line.
                 let lineEnd;
                 let complete = false;
+                let activity = false;
                 while ((lineEnd = raw.indexOf('\n', scanned)) >= 0) {
                     const line = raw.slice(scanned, lineEnd).trim();
                     scanned = lineEnd + 1;
@@ -598,9 +598,22 @@
                     if (data === '[DONE]') { complete = true; continue; }
                     try {
                         const event = JSON.parse(data);
+                        // Transport heartbeats do not mean the model is still
+                        // producing output. Otherwise a stalled stream can wait forever.
+                        if (event.choices?.length || event.delta || event.output_text || event.error
+                            || /^(response\.|content_block|message_)/.test(String(event.type || ''))) activity = true;
                         if (event.error || event.choices?.some(choice => (choice.index ?? 0) === 0 && choice.finish_reason)
                             || ['response.completed','response.failed','message_stop'].includes(String(event?.type || ''))) complete = true;
                     } catch (_) { /* Incomplete or non-JSON event. */ }
+                }
+                if (activity && typeof meta.onActivity === 'function') meta.onActivity();
+                // The sentence protocol has its own explicit receipt. A full,
+                // validated receipt does not need the proxy to close its socket.
+                // Parse complete SSE envelopes first: quoted example text and
+                // truncated JSON must never be mistaken for that receipt.
+                if (!complete && meta.jsonContract === 'sentences' && raw.includes('end')) {
+                    const parsed = /^\s*data:/m.test(raw) ? parseSseResponse(raw) : null;
+                    if (parsed && !providerResponseError(parsed) && parseSentenceLines(responseText(parsed)).end) complete = true;
                 }
                 if (complete) {
                     void reader.cancel().catch(() => {});
@@ -991,7 +1004,7 @@
                 response = await fetch('/api/backends/chat-completions/generate', {
                     method: 'POST', headers: proxyHeaders, body: JSON.stringify(proxyBody), signal: attempt.signal,
                 });
-                const forwarded = await readForwardedResponse(response, options.stream === true, { ...meta, interruptionReason: attempt.reason, onActivity: attempt.touch });
+                const forwarded = await readForwardedResponse(response, options.stream === true, { ...meta, jsonContract: options.jsonContract, interruptionReason: attempt.reason, onActivity: attempt.touch });
                 raw = forwarded.raw;
                 streamInterrupted = forwarded.interrupted;
                 meta.interruptionReason = forwarded.interruptionReason || '';
@@ -1062,7 +1075,10 @@
         } catch (error) {
             if (error?.name === 'AbortError') throw new Error(`任务 ${meta.task} 请求超时或已取消；输入 ${meta.inputChars} 字，本次不会自动重试`);
             const message = String(error?.message || error || '未知网络错误');
-            if (/failed to fetch/i.test(message)) throw new Error(`任务 ${meta.task} 无法连接酒馆后端转发接口；输入 ${meta.inputChars} 字。模型尚未返回响应，本次不会自动重试：${message}`);
+            if (/failed to fetch|load failed|networkerror|network request failed|network connection.*lost/i.test(message)) {
+                console.warn('[WorldStateMachine] 网络请求失败', {task:meta.task, durationMs:Date.now()-requestStartedAt, reason:message});
+                throw new Error(`连接中断，未取得本步可用响应（${message}）。已有状态保留；本次未确认完成，不会自动重试。请检查酒馆连接及 API/反代网络。`);
+            }
             throw error;
         }
     }

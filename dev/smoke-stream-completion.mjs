@@ -42,3 +42,67 @@ globalThis.fetch = async () => new Response(event({ choices: [{ delta: { content
 const lengthRecovered = await run();
 assert.deepEqual(lengthRecovered, { evidence: { canon: [] } }, '输出上限之前已闭合的证据必须安全保留');
 console.log('Stream termination, interruption classification and error propagation tests passed');
+
+const nativeSetTimeout = globalThis.setTimeout;
+let calls = 0;
+const sentenceRun = (signal) => api.withCallBudget(1,'sentence-stream',() => api.complete('test',{task:'PLAIN_MEMORY_READ'}, {stream:true,singleAttempt:true,jsonContract:'sentences',signal}));
+const sentence = '{"module":"characters","text":"张三位于城门"}\n';
+const streamText = content => event({choices:[{delta:{content}}]});
+// The model receipt can arrive across byte chunks without a transport terminator.
+let receiptCancelled = false;
+globalThis.fetch = async () => {
+    calls++;
+    return new Response(new ReadableStream({
+        start(controller) {
+            const bytes=chunk(streamText(sentence+'{"end":true}').trimEnd());
+            for (let offset=0;offset<bytes.length;offset+=7) controller.enqueue(bytes.slice(offset,offset+7));
+        },
+        cancel() { receiptCancelled=true; },
+    }));
+};
+const receiptSignal = new AbortController();
+const watchdog=nativeSetTimeout(()=>receiptSignal.abort(),1000);
+try { assert.equal((await sentenceRun(receiptSignal.signal)).factStream.end,true); }
+finally { clearTimeout(watchdog); }
+assert.equal(receiptCancelled,true,'complete model receipt closes a hanging stream');
+assert.equal(calls,1,'receipt recovery sends no additional request');
+
+// A dropped stream without a receipt saves complete sentences but stays incomplete.
+globalThis.fetch = async () => {
+    calls++;
+    let sent=false;
+    return new Response(new ReadableStream({pull(controller) {
+        if (!sent) { sent=true; controller.enqueue(chunk(streamText(sentence+'{"end":tr'))); }
+        else controller.error(new TypeError('Load failed'));
+    }}));
+};
+const partial=await sentenceRun();
+assert.equal(partial.factStream.end,false);
+assert.equal(partial.factStream.facts.length,1);
+assert.equal(calls,2,'partial network failure is not retried');
+globalThis.fetch = async () => { calls++; throw new TypeError('Load failed'); };
+await assert.rejects(sentenceRun(),/连接中断.*已有状态保留.*不会自动重试/);
+assert.equal(calls,3);
+
+// A quoted end marker in a sentence is not a receipt; ping-only activity cannot
+// keep extending the idle deadline. Fake only the API timer, not stream reads.
+let idleCallback, timerArms=0;
+globalThis.setTimeout = callback => { idleCallback=callback; timerArms++; return 0; };
+globalThis.fetch = async (_url,options) => {
+    calls++;
+    return new Response(new ReadableStream({start(controller) {
+        options.signal.addEventListener('abort',()=>controller.error(Object.assign(new Error('aborted'),{name:'AbortError'})),{once:true});
+        controller.enqueue(chunk(streamText(JSON.stringify({module:'world',text:'示例：{"end":true}'})+'\n')));
+        nativeSetTimeout(()=>{
+            controller.enqueue(chunk(': heartbeat\n\ndata: {"type":"ping"}\n\n'));
+            nativeSetTimeout(()=>idleCallback(),10);
+        },10);
+    }}));
+};
+try {
+    const stalled=await sentenceRun();
+    assert.equal(stalled.factStream.end,false,'quoted end marker must not complete the task');
+    assert.equal(timerArms,2,'one initial timer and one content reset; no ping reset');
+} finally { globalThis.setTimeout=nativeSetTimeout; }
+assert.equal(calls,4);
+console.log('Sentence stream receipt, partial Load failed, idle heartbeats and single-call limits passed. Real API calls: 0.');

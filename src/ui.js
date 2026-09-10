@@ -39,6 +39,9 @@
     let clearReadPending = false;
     let activeMapMode = 'known';
     let activeMapSearch = '';
+    let worldbookCatalogCache = null;
+    let worldbookCatalogRevision = 0;
+    let worldbookReadController = null;
     const dynamicWorldbookSections = new Set();
     const categories = {
         map: { icon: 'map', label: '场景地图', sections: ['map'] },
@@ -665,7 +668,7 @@
             const originals = WSM.WorldbookMemory?.originals(state) || [];
             const supplement = WSM.PlainMemory.rows(state, 'worldbook');
             const config = WSM.Settings.get().injectionModules?.worldbook;
-            return `<section class="wsm-board"><h4>已接管 ${originals.length} 条世界书</h4><p>${config?.enabled === false ? '世界书补充注入已关闭。' : '先拆解压缩，关键内容进入对应栏目；其余设定再次压缩后保留在这里。原文仅作本地备份，不发给正文 AI。'}</p></section>
+            return `<section class="wsm-board"><h4>已接管 ${originals.length} 条世界书</h4><p>${config?.enabled === false ? '世界书补充注入已关闭。' : '先拆解压缩，关键内容进入对应栏目；其余设定再次压缩后保留在这里。原文仅作本地备份，不发给正文 AI。'}</p><button data-action="worldbook-settings">选择世界书 / 拆解条目</button>${!originals.length ? '<p>这里统计已读取并保存的原文备份；当前挂载与待拆解条目请打开选择列表查看。</p>' : ''}</section>
                 ${supplement.map(row => `<article class="wsm-memory-card"><p>${escape(row)}</p></article>`).join('')}
                 ${originals.map(entry => {
                     const read = WSM.WorldbookSemantic?.hasRead(state,entry);
@@ -1095,6 +1098,86 @@
             return `<details class="wsm-prompt-group" ${categoryId === 'world' ? 'open' : ''}><summary>${icon(categories[categoryId].icon)}<span>${categories[categoryId].label}模块</span></summary><div>${fields}</div></details>`;
         }).join('');
     }
+    function renderWorldbookPicker() {
+        const container = $('#wsm-worldbook-compiler-list');
+        if (!container || !worldbookCatalogCache) return;
+        const catalog = worldbookCatalogCache;
+        const config = WSM.Settings.get().worldbookCompiler || {};
+        const busy = !!worldbookReadController;
+        const mounted = new Set(catalog.mountedNames);
+        const exclusions = new Set(config.excludedBookNames || []);
+        const entries = catalog.books.flatMap(book => book.entries);
+        const state = WSM.Storage.load();
+        const selectedCount = entries.filter(entry => WSM.Context.isWorldbookEntrySelected(entry,config)).length;
+        const expanded = new Set([...container.querySelectorAll('details[open]')].map(node => node.dataset.worldbookGroup));
+        const initial = !container.querySelector('details');
+        container.innerHTML = catalog.books.map(book => `<details class="wsm-injection-group wsm-worldbook-book-group" data-worldbook-group="${escape(book.name)}" ${initial || expanded.has(book.name) ? 'open' : ''}>
+            <summary><span><b>${escape(book.name)}</b><small>${mounted.has(book.name) ? '当前挂载' : '额外选择'} · ${book.entries.filter(entry => WSM.Context.isWorldbookEntrySelected(entry,config)).length} / ${book.entries.length} 条参与拆解</small></span></summary>
+            <label class="wsm-check"><input type="checkbox" data-worldbook-book-choice value="${escape(book.name)}" ${exclusions.has(book.name) ? '' : 'checked'} ${busy ? 'disabled' : ''}>拆解这本世界书</label>
+            ${!mounted.has(book.name) ? `<button type="button" data-action="remove-extra-worldbook" data-book-name="${escape(book.name)}" ${busy ? 'disabled' : ''}>移除额外选择</button>` : ''}
+            ${book.entries.map(entry => `<label class="wsm-worldbook-entry-preview"><input type="checkbox" data-worldbook-entry-choice value="${escape(entry.key)}" ${WSM.Context.isWorldbookEntrySelected(entry,config) ? 'checked' : ''} ${busy || exclusions.has(book.name) ? 'disabled' : ''}><span><b>${escape(entry.comment || entry.keys?.join('、') || `条目 ${entry.id}`)}</b><small>${entry.enabled === false ? '原条目已关闭，可手动勾选拆解' : '原条目已开启'} · ${WSM.WorldbookSemantic?.hasRead(state,entry) ? '已拆解' : '待拆解'}</small><small>${escape(String(entry.content || '').slice(0,140))}</small></span></label>`).join('') || '<p>这本世界书没有非空条目。</p>'}
+        </details>`).join('') || '<p>当前没有挂载的世界书。可在下方选择额外世界书，也可在酒馆挂载后刷新列表。</p>';
+        const status = $('#wsm-worldbook-selection-status');
+        status.textContent = `当前挂载 ${catalog.mountedNames.length} 本 · 选择拆解 ${selectedCount} 条${catalog.diagnostics.failedNames.length ? ` · 读取失败：${catalog.diagnostics.failedNames.join('、')}` : ''}`;
+        const extra = $('#wsm-extra-worldbook');
+        const previous = extra.value;
+        const candidates = catalog.availableNames.filter(name => !mounted.has(name) && !(config.extraBookNames || []).includes(name));
+        extra.innerHTML = '<option value="">选择要额外拆解的世界书</option>' + candidates.map(name => `<option value="${escape(name)}">${escape(name)}</option>`).join('');
+        if (candidates.includes(previous)) extra.value = previous;
+        extra.disabled = busy;
+        root.querySelectorAll('[data-worldbook-mutating]').forEach(button => { button.disabled = busy; });
+        $('#wsm-worldbook-cancel').hidden = !busy;
+    }
+    async function refreshWorldbookPicker() {
+        const revision = ++worldbookCatalogRevision;
+        const chatKey = WSM.Storage.currentChatKey();
+        const status = $('#wsm-worldbook-selection-status');
+        status.textContent = '正在读取当前挂载、条目开关及可选世界书…';
+        try {
+            const catalog = await WSM.Context.worldbookCatalog();
+            if (revision !== worldbookCatalogRevision || chatKey !== WSM.Storage.currentChatKey()) return;
+            worldbookCatalogCache = {...catalog,chatKey};
+            renderWorldbookPicker();
+        } catch (error) {
+            if (revision !== worldbookCatalogRevision) return;
+            worldbookCatalogCache = null;
+            $('#wsm-worldbook-compiler-list').textContent = '';
+            status.textContent = `读取世界书列表失败：${error.message}`;
+        }
+    }
+    function changeWorldbookSelection(change) {
+        if (worldbookReadController) return;
+        if (!worldbookCatalogCache || worldbookCatalogCache.chatKey !== WSM.Storage.currentChatKey()) { void refreshWorldbookPicker(); return; }
+        const entries = worldbookCatalogCache?.books.flatMap(book => book.entries) || [];
+        const config = WSM.Context.editableWorldbookSelection(WSM.Settings.get().worldbookCompiler,entries);
+        change(config);
+        WSM.Settings.update({worldbookCompiler:WSM.WorldbookCompiler.normalizeConfig(config)});
+        renderWorldbookPicker();
+    }
+    async function compileSelectedWorldbooks() {
+        if (worldbookReadController) return;
+        if (WSM.Settings.get().enabled === false) throw new Error('请先开启状态机');
+        const status = $('#wsm-worldbook-compiler-status');
+        const controller = new AbortController();
+        worldbookReadController = controller;
+        renderWorldbookPicker();
+        status.textContent = '正在核对已选世界书…';
+        try {
+            const current = await WSM.Context.selectedWorldbooks();
+            if (controller.signal.aborted) throw new Error('拆解已取消');
+            if (current.diagnostics.failedNames.length) throw new Error(`无法读取：${current.diagnostics.failedNames.join('、')}`);
+            const entries = current.books.flatMap(book => book.entries);
+            if (!entries.length) throw new Error('请至少勾选一条世界书条目');
+            const result = await WSM.WorldbookSemantic.compile(entries,{signal:controller.signal, progress:message => {status.textContent = message;}});
+            status.textContent = `已拆解 ${result.count} 条，更新 ${result.changed} 项内容（1 次 API）`;
+            WSM.Engine?.reportProgress?.('世界书拆解完成','success',status.textContent);
+            render();
+        } catch (error) {
+            status.textContent = `拆解未完成：${error.message}`;
+            WSM.Engine?.reportProgress?.('世界书拆解未完成',controller.signal.aborted ? 'cancelled' : 'error',status.textContent);
+        }
+        finally { worldbookReadController = null; await refreshWorldbookPicker(); }
+    }
     function modalHtml() {
         const tabs = Object.entries(sectionMap).map(([id, [label]]) => `<button class="wsm-tab" data-tab="${id}">${label}</button>`).join('');
         const categoryButtons = Object.entries(categories).map(([id, item]) => `<button class="wsm-category-button" data-category-select="${id}"><span>${icon(item.icon)}</span><b>${item.label}</b></button>`).join('');
@@ -1116,7 +1199,7 @@
                 </div>
             </div></div>
             <div id="wsm-settings-modal" class="wsm-submodal" hidden><div class="wsm-dialog"><header><b>世界状态机设置</b><button class="wsm-icon-button" data-action="close-settings" aria-label="关闭">${icon('close')}</button></header>
-                <nav class="wsm-settings-tabs"><button data-settings-tab="api">${icon('plug')}<span>API</span></button><button data-settings-tab="source">${icon('clipboard')}<span>分解正文</span></button><button data-settings-tab="pacing">${icon('process')}<span>剧情节奏</span></button><button data-settings-tab="dice">${icon('event')}<span>骰子</span></button><button data-settings-tab="injection">${icon('send')}<span>注入模块</span></button><button data-settings-tab="prompts">${icon('brain')}<span>内置提示词</span></button></nav>
+                <nav class="wsm-settings-tabs"><button data-settings-tab="api">${icon('plug')}<span>API</span></button><button data-settings-tab="source">${icon('clipboard')}<span>分解正文</span></button><button data-settings-tab="worldbook">${icon('note')}<span>世界书</span></button><button data-settings-tab="pacing">${icon('process')}<span>剧情节奏</span></button><button data-settings-tab="dice">${icon('event')}<span>骰子</span></button><button data-settings-tab="injection">${icon('send')}<span>注入模块</span></button><button data-settings-tab="prompts">${icon('brain')}<span>内置提示词</span></button></nav>
                 <section class="wsm-settings-section" data-settings-section="api">
                     <label class="wsm-check"><input id="wsm-use-tavern-api" type="checkbox">使用酒馆默认 API（当前连接与模型）</label>
                     <p class="wsm-settings-help">启用后无需另填地址、模型或 Key，状态机直接跟随酒馆主界面当前使用的 API；请求只包含状态机所需内容。</p>
@@ -1151,6 +1234,15 @@
                     <p class="wsm-settings-help">填写标签名后采用混合读取：最近若干层读取可见正文，更早楼层只读取该总结标签；留空则全部读取正文。</p>
                     <div class="wsm-grid"><label>普通轮次扫描最近楼层数（0=全部）<input id="wsm-recent-messages" type="number" min="0" max="200"></label><label>其中最近全文楼层数<input id="wsm-recent-full-text-messages" type="number" min="1" max="20"></label></div>
                     <section class="wsm-rollback-panel"><b>${icon('clipboard')}<span>近层正文、远层总结</span></b><p>默认最近 5 层读取可见原文；5 层之外只读取 meow_FM（或你填写的标签），没有标签的旧楼层会跳过。这个范围用于完整初始化；普通轮次只读取刚生成的最新正文和完整旧状态。</p><small>正文一生成完成便在后台读取。重 roll 会回滚旧候选对应的状态，再读取当前新候选；发送下一条消息不会等待状态 API。</small></section>
+                </section>
+                <section class="wsm-settings-section" data-settings-section="worldbook">
+                    <p class="wsm-settings-help">默认拆解当前角色、聊天、Persona 与全局挂载世界书中开启的条目。可逐本或逐条取消，也可手动加入关闭的条目、额外选择未挂载的世界书；不会改动酒馆原书开关。</p>
+                    <p class="wsm-settings-help">勾选立即保存，选择和刷新列表不调用 AI。正常读取会处理尚未完成或已修改的条目；“立即拆解”会用 1 次 API 重新检查全部已选条目。取消选择停止后续拆解，已归栏的记忆可在对应栏目编辑。</p>
+                    <small id="wsm-worldbook-selection-status">打开此页查看当前挂载与条目。</small>
+                    <div class="wsm-worldbook-compiler-tools"><button type="button" data-action="refresh-worldbook-entries" data-worldbook-mutating>刷新列表</button><button type="button" data-action="reset-worldbook-selection" data-worldbook-mutating>恢复默认选择</button><button type="button" data-action="compile-worldbook-entries" data-worldbook-mutating>立即拆解已选条目 · 1 次 API</button><button type="button" id="wsm-worldbook-cancel" data-action="cancel-worldbook-read" hidden>取消拆解</button></div>
+                    <small id="wsm-worldbook-compiler-status"></small>
+                    <label>额外拆解未挂载的世界书<select id="wsm-extra-worldbook"><option value="">选择世界书</option></select></label><button type="button" data-action="add-extra-worldbook" data-worldbook-mutating>添加到拆解列表</button>
+                    <div id="wsm-worldbook-compiler-list"></div>
                 </section>
                 <section class="wsm-settings-section" data-settings-section="pacing">
                     <p class="wsm-settings-help">控制正文模型每轮允许推进的最大幅度。关闭时保持正文模型原有节奏；该功能不会替模型规划剧情，也不会改变既定事实。</p>
@@ -1345,6 +1437,7 @@
         syncPacingFields();
         syncTypographyFields();
         $('#wsm-settings-modal').hidden = false;
+        if (activeSettingsTab === 'worldbook') void refreshWorldbookPicker();
     }
     function typographyFromForm() {
         return {
@@ -1531,7 +1624,30 @@
             return true;
         } finally { clearReadPending = false; }
     }
-    async function handleAction(action) {
+    async function handleAction(action, actionElement) {
+        if (action === 'worldbook-settings') { activeSettingsTab = 'worldbook'; fillSettings(); return; }
+        if (action === 'refresh-worldbook-entries') { await refreshWorldbookPicker(); return; }
+        if (action === 'compile-worldbook-entries') { await compileSelectedWorldbooks(); return; }
+        if (action === 'cancel-worldbook-read') { worldbookReadController?.abort(); return; }
+        if (action === 'reset-worldbook-selection') {
+            changeWorldbookSelection(config => { config.extraBookNames=[]; config.excludedBookNames=[]; config.entryOverrides={}; });
+            await refreshWorldbookPicker(); return;
+        }
+        if (action === 'add-extra-worldbook') {
+            const name = $('#wsm-extra-worldbook').value;
+            if (!name || !worldbookCatalogCache?.availableNames.includes(name)) return;
+            changeWorldbookSelection(config => {
+                config.extraBookNames=[...new Set([...config.extraBookNames,name])];
+                config.excludedBookNames=config.excludedBookNames.filter(value => value !== name);
+            });
+            await refreshWorldbookPicker(); return;
+        }
+        if (action === 'remove-extra-worldbook') {
+            const name = actionElement?.dataset.bookName;
+            if (!name) return;
+            changeWorldbookSelection(config => { config.extraBookNames=config.extraBookNames.filter(value => value !== name); });
+            await refreshWorldbookPicker(); return;
+        }
         if (action === 'show-read-diagnostics' || action === 'copy-read-diagnostics') {
             const report = WSM.Api.getDiagnostics?.() || {requests:[],validations:[]};
             const output = JSON.stringify(report,null,2);
@@ -1840,7 +1956,7 @@
                 return;
             }
             const settingsTab = target.closest('[data-settings-tab]')?.dataset.settingsTab;
-            if (settingsTab) { consume(); activeSettingsTab = settingsTab; renderSettingsTabs(); return; }
+            if (settingsTab) { consume(); activeSettingsTab = settingsTab; renderSettingsTabs(); if (settingsTab === 'worldbook') await refreshWorldbookPicker(); return; }
             const mapModeButton = target.closest('[data-map-mode]');
             if (mapModeButton) { consume(); activeMapMode = mapModeButton.dataset.mapMode === 'all' ? 'all' : 'known'; render(); return; }
             const tab = target.closest('[data-tab]');
@@ -1848,9 +1964,21 @@
             const apiProfileId = target.closest('[data-api-profile-id]')?.dataset.apiProfileId;
             if (apiProfileId) { consume(); switchApiProfile(apiProfileId); return; }
             const action = target.closest('[data-action]')?.dataset.action;
-            if (action) { consume(); await handleAction(action); return; }
+            if (action) { consume(); await handleAction(action, target.closest('[data-action]')); return; }
         }, true);
         root.addEventListener('change', (event) => {
+            if (event.target?.matches?.('[data-worldbook-entry-choice]')) {
+                changeWorldbookSelection(config => { config.entryOverrides[event.target.value] = event.target.checked; });
+                return;
+            }
+            if (event.target?.matches?.('[data-worldbook-book-choice]')) {
+                changeWorldbookSelection(config => {
+                    const names = new Set(config.excludedBookNames);
+                    if (event.target.checked) names.delete(event.target.value); else names.add(event.target.value);
+                    config.excludedBookNames=[...names];
+                });
+                return;
+            }
             if (event.target?.id === 'wsm-map-search') { activeMapSearch = event.target.value || ''; render(); return; }
             if (event.target?.id === 'wsm-enabled') {
                 const enabled = event.target.checked;
@@ -1909,6 +2037,7 @@
         // rendered. Only this compact status row needs to change here.
         window.addEventListener('wsm-operation-progress', (event) => {
             if (!$('#wsm-modal')?.hidden) renderOperationStatus(event.detail || WSM.Engine?.getProgress?.() || {});
+            if (worldbookReadController && event.detail?.state === 'running') $('#wsm-worldbook-compiler-status').textContent = `${event.detail.message} · ${event.detail.details || ''}`;
         });
     }
     function renderMapForTest(state) {

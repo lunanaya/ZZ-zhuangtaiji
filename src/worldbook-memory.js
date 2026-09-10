@@ -4,10 +4,11 @@
     const text = value => String(value ?? '').trim();
     const key = (name, entry, index) => text(entry.key) || `${encodeURIComponent(name)}::${encodeURIComponent(entry.id ?? index)}`;
     function entries(source) {
-        return (source?.worldbooks || []).flatMap(book => (book.entries || []).filter(entry => entry.enabled !== false && text(entry.content)).map((entry, index) => ({
+        return (source?.worldbooks || []).flatMap(book => (book.entries || []).filter(entry => (entry.enabled !== false || entry.selectedForRead === true) && text(entry.content)).map((entry, index) => ({
             key:key(book.name, entry, index), bookName:text(book.name), title:text(entry.comment || entry.name || entry.title),
             content:text(entry.content), keys:Array.isArray(entry.keys) ? entry.keys.map(text).filter(Boolean) : [],
             constant:entry.constant === true,
+            enabled:entry.enabled !== false,
         })));
     }
     function originals(state) { return Object.values(state?.runtime?.worldbookSources || {}).filter(entry => entry?.key && text(entry.content)); }
@@ -82,8 +83,8 @@
         return true;
     }
     async function restoreSource(state, source) {
-        // Only current mounted, enabled sources may enter the reader. Historical
-        // selections, source summaries and retained originals are not mounts.
+        // Context resolves current mounts and explicit extra selections.
+        // Historical summaries and retained originals never expand that scope.
         const diagnostics = source.worldbookDiagnostics || {};
         return {...source, worldbookDiagnostics:{...diagnostics,
             retainedNames:[], recoveryFailures:[], unavailableNames:diagnostics.failedNames || []}};
@@ -95,7 +96,7 @@
     }
     function forRead(state, source) {
         return {...source,worldbooks:(source?.worldbooks || []).map(book => ({...book,
-            entries:(book.entries || []).filter((entry,index) => entry.enabled !== false
+            entries:(book.entries || []).filter((entry,index) => (entry.enabled !== false || entry.selectedForRead === true)
                 && !W.WorldbookSemantic?.hasRead(state,{...entry,key:key(book.name,entry,index)}))
         })).filter(book => book.entries.length)};
     }

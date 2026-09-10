@@ -127,7 +127,7 @@ for (const [nativeEntries,selected,expected] of [
     if(selected) assert.ok(!livePayload.characterLore.some(row=>row.content===rawEntry.content),'managed originals never reach native story prompts');
 }
 W.Context.listWorldbookEntries=async()=>[];
-await assert.rejects(W.WorldbookSemantic.compile([entry]),/没有已勾选且开启/,'stale picker entries cannot reach API after unmount');
+await assert.rejects(W.WorldbookSemantic.compile([entry]),/没有选中可拆解/,'stale picker entries cannot reach API after unmount');
 delete W.Context.listWorldbookEntries;
 const html=W.UI._test.renderSectionForTest(W.Storage.load(),'worldbook');
 assert.ok(html.includes('已拆解压缩'));

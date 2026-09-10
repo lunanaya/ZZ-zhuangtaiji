@@ -23,6 +23,10 @@
             knownBookNames: [...new Set((Array.isArray(raw.knownBookNames) ? raw.knownBookNames : []).map(text).filter(Boolean))],
             entryKeys: [...new Set((Array.isArray(raw.entryKeys) ? raw.entryKeys : []).map(String).filter((key) => key && key !== 'undefined'))],
             knownEntryKeys: [...new Set((Array.isArray(raw.knownEntryKeys) ? raw.knownEntryKeys : []).map(String).filter((key) => key && key !== 'undefined'))],
+            selectionVersion: raw.selectionVersion === 1 ? 1 : 0,
+            extraBookNames: [...new Set((Array.isArray(raw.extraBookNames) ? raw.extraBookNames : []).map(text).filter(Boolean))],
+            excludedBookNames: [...new Set((Array.isArray(raw.excludedBookNames) ? raw.excludedBookNames : []).map(text).filter(Boolean))],
+            entryOverrides: Object.fromEntries(Object.entries(raw.entryOverrides || {}).filter(([key,value]) => key && typeof value === 'boolean')),
             budget: Math.max(120, Math.min(2000, Math.round(Number(raw.budget) || 500))),
             contextMessages: Math.max(2, Math.min(30, Math.round(Number(raw.contextMessages) || 8))),
             injectionPosition: ['before_character','after_character','before_author','after_author'].includes(raw.injectionPosition) ? raw.injectionPosition : 'after_character',
@@ -41,7 +45,8 @@
         if (!payload || typeof payload !== 'object') return 0;
         const state = WSM.Storage?.load?.();
         const selected = WSM.WorldbookSemantic
-            ? new Set((WSM.WorldbookMemory?.originals(state) || []).filter(entry => !config.enabled || config.entryKeys.includes(entry.key)).map(entry => entry.key))
+            ? new Set((WSM.WorldbookMemory?.originals(state) || []).filter(entry => WSM.Context.isWorldbookEntrySelected
+                ? WSM.Context.isWorldbookEntrySelected(entry,config) : !config.enabled || config.entryKeys.includes(entry.key)).map(entry => entry.key))
             : new Set(config.enabled ? config.entryKeys.map(String) : []);
         let removed = 0;
         for (const key of ['globalLore','characterLore','chatLore','personaLore']) {
@@ -910,9 +915,12 @@
         if (WSM.WorldbookSemantic) {
             const config = normalizeConfig(configValue);
             const selected = new Set(config.entryKeys);
-            const entries = (options.entries || await resolveSelectedEntries(config)).filter(entry => entry.enabled !== false && selected.has(entry.key) && entry.content);
+            const available = options.entries || (WSM.Context.selectedWorldbooks
+                ? (await WSM.Context.selectedWorldbooks()).books.flatMap(book => book.entries) : await resolveSelectedEntries(config));
+            const entries = available.filter(entry => entry.content && (WSM.Context.isWorldbookEntrySelected
+                ? WSM.Context.isWorldbookEntrySelected(entry,config) : entry.enabled !== false && selected.has(entry.key)));
             if (!entries.length) throw new Error('请至少勾选一条当前可读取的世界书条目');
-            const result = await WSM.WorldbookSemantic.compile(entries, {progress:message => {
+            const result = await WSM.WorldbookSemantic.compile(entries, {signal:options.signal, progress:message => {
                 lastStatus = {state:'compiling',message,at:Date.now()};
                 options.progress?.(message);
             }});

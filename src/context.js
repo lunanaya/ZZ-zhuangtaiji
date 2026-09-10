@@ -261,6 +261,41 @@
             (ctx?.powerUserSettings ?? ctx?.power_user ?? window.power_user)?.persona_description_lorebook];
         return unique(candidates.flatMap(nameCandidates));
     }
+    function isWorldbookEntrySelected(entry, config = WSM.Settings.get().worldbookCompiler || {}) {
+        if ((config.excludedBookNames || []).includes(entry.bookName)) return false;
+        if (config.selectionVersion === 1) {
+            const override = config.entryOverrides?.[entry.key];
+            return typeof override === 'boolean' ? override : entry.enabled !== false;
+        }
+        // A removed legacy picker left enabled=true with no selected keys.
+        // Restore mounted/enabled defaults in that case, without modifying settings.
+        if (config.enabled === true && config.entryKeys?.length) return entry.enabled !== false && config.entryKeys.includes(entry.key);
+        return entry.enabled !== false;
+    }
+    function editableWorldbookSelection(config, entries = []) {
+        if (config?.selectionVersion === 1) return {...config, entryOverrides:{...config.entryOverrides}};
+        const entryOverrides = {};
+        if (config?.enabled === true && config.entryKeys?.length) {
+            for (const key of config.knownEntryKeys || []) if (!config.entryKeys.includes(key)) entryOverrides[key] = false;
+            for (const entry of entries) {
+                const selected = isWorldbookEntrySelected(entry, config);
+                if (selected !== (entry.enabled !== false)) entryOverrides[entry.key] = selected;
+            }
+        }
+        return {...config, selectionVersion:1, extraBookNames:[], excludedBookNames:[], entryOverrides};
+    }
+    async function requestedWorldNames(ctx = context(), options = {}) {
+        const mounted = await enabledWorldNames(ctx);
+        const config = WSM.Settings.get().worldbookCompiler || {};
+        return unique([...mounted, ...(config.selectionVersion === 1 ? config.extraBookNames || [] : [])])
+            .filter(name => options.includeExcluded === true || !(config.excludedBookNames || []).includes(name));
+    }
+    async function listWorldbookNames(ctx = context()) {
+        if (typeof ctx?.getWorldInfoNames === 'function') return unique(await ctx.getWorldInfoNames());
+        const module = await loadWorldInfoModule();
+        if (Array.isArray(module?.world_names)) return unique(module.world_names);
+        return unique([...await enabledWorldNames(ctx), ...nameCandidates(window.world_names)]);
+    }
     function hasBookData(data) {
         return Array.isArray(data) || !!(data && [data.entries, data.data?.entries, data.world?.entries,
             data.data?.world?.entries, data.worldInfo?.entries, data.worldInfoData?.entries, data.world_info?.entries]
@@ -288,6 +323,14 @@
     }
     async function readWorldbook(name, ctx = context(), options = {}) {
         const attempts = [];
+        if (typeof ctx?.loadWorldInfo === 'function') {
+            try {
+                const data = await ctx.loadWorldInfo(name);
+                const entries = normalizeEntries(data, options);
+                attempts.push(`context.loadWorldInfo：${entries.length} 条`);
+                if (hasBookData(data)) return {name, entries:keyedEntries(name,entries), source:'context.loadWorldInfo', attempts};
+            } catch (error) { attempts.push(`context.loadWorldInfo：${text(error?.message || error)}`); }
+        }
         try {
             if (typeof ctx?.getWorldInfo === 'function') {
                 const data = await ctx.getWorldInfo(name);
@@ -326,7 +369,7 @@
         return { name, entries: [], source: 'unreadable', attempts };
     }
     async function worldbooks(ctx = context(), options = {}) {
-        const requestedNames = await enabledWorldNames(ctx);
+        const requestedNames = await requestedWorldNames(ctx, options);
         const books = await Promise.all(requestedNames.map((name) => readWorldbook(name, ctx, options)));
         // ST mounts the imported book through extensions.world. An embedded
         // export snapshot is not a mount, including after the user unlinks it.
@@ -358,8 +401,9 @@
         };
     }
     async function listWorldbookEntries(options = {}, ctx = context()) {
+        if (options.selected === true) return (await selectedWorldbooks(ctx)).books.flatMap(book => book.entries);
         if (options?.bookName) {
-            if (!(await enabledWorldNames(ctx)).includes(text(options.bookName))) return [];
+            if (!(await requestedWorldNames(ctx, {includeExcluded:true})).includes(text(options.bookName))) return [];
             const book = await readWorldbook(options.bookName, ctx, { includeDisabled: options.includeDisabled === true });
             return book.entries.map((entry, index) => ({ ...entry, key: worldbookEntryKey(book.name, entry.id || index), bookName: book.name, bookSource: book.source }));
         }
@@ -369,6 +413,20 @@
             bookName: book.name,
             bookSource: book.source,
         })));
+    }
+    async function selectedWorldbooks(ctx = context()) {
+        const result = await worldbooks(ctx, {includeDisabled:true});
+        result.diagnostics.availableEntryCounts = {...result.diagnostics.entryCounts};
+        result.books = result.books.map(book => ({...book, entries:book.entries
+            .filter(entry => isWorldbookEntrySelected(entry)).map(entry => ({...entry, selectedForRead:true}))}));
+        result.diagnostics.entryCounts = Object.fromEntries(result.books.map(book => [book.name,book.entries.length]));
+        return result;
+    }
+    async function worldbookCatalog(ctx = context()) {
+        const [mountedNames, availableNames, result] = await Promise.all([
+            enabledWorldNames(ctx), listWorldbookNames(ctx), worldbooks(ctx, {includeDisabled:true, includeExcluded:true}),
+        ]);
+        return {...result, mountedNames, availableNames:unique([...availableNames,...mountedNames,...result.diagnostics.requestedNames])};
     }
     async function listEnabledWorldNames(ctx = context()) { return enabledWorldNames(ctx); }
     async function buildSource(options = {}) {
@@ -395,16 +453,7 @@
         }).filter(Boolean);
         const rawChat = Array.isArray(ctx?.chat) ? ctx.chat : [];
         const hiddenMessages = rawChat.filter((message) => message?.is_system === true).length;
-        const worldbookResult = await worldbooks(ctx);
-        const config = settings.worldbookCompiler;
-        if (config?.enabled === true) {
-            // Selection is a filter, never a mount request. Keep saved checkboxes
-            // for other cards and disabled entries without adding them to input.
-            const selected = new Set(config.entryKeys || []);
-            worldbookResult.books = worldbookResult.books.map(book => ({...book,
-                entries:book.entries.filter(entry => selected.has(entry.key))}));
-            worldbookResult.diagnostics.entryCounts = Object.fromEntries(worldbookResult.books.map(book => [book.name, book.entries.length]));
-        }
+        const worldbookResult = await selectedWorldbooks(ctx);
         const source = {
             identities: identityNames(ctx),
             character: compactCharacter(currentCharacter(ctx)),
@@ -469,5 +518,5 @@
         for (let i = 0; i < raw.length; i += 1) hash = Math.imul(hash ^ raw.charCodeAt(i), 16777619);
         return (hash >>> 0).toString(16);
     }
-    WSM.Context = { context, chat, normalizeMessage, normalizeMessages, messagesByIds, latestUserMessage, latestAssistantMessage, meowMessage, recentFullTextMessage, summaryContent, normalizeSummaryTag, identityNames, buildSource, sourceFingerprint, readWorldbook, listWorldbookEntries, listEnabledWorldNames, worldbookEntryKey, _test: { normalizeEntries, normalizeMessage, normalizeMessages, visibleMessageContent, meowFMContent, summaryContent, normalizeSummaryTag, recentFullTextMessage } };
+    WSM.Context = { context, chat, normalizeMessage, normalizeMessages, messagesByIds, latestUserMessage, latestAssistantMessage, meowMessage, recentFullTextMessage, summaryContent, normalizeSummaryTag, identityNames, buildSource, sourceFingerprint, readWorldbook, listWorldbookEntries, listEnabledWorldNames, worldbookEntryKey, selectedWorldbooks, worldbookCatalog, isWorldbookEntrySelected, editableWorldbookSelection, _test: { normalizeEntries, normalizeMessage, normalizeMessages, visibleMessageContent, meowFMContent, summaryContent, normalizeSummaryTag, recentFullTextMessage } };
 })();

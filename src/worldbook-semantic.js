@@ -24,13 +24,23 @@
     async function read(start, entries, options = {}) {
         const chatKey = W.Storage.currentChatKey();
         const chat = JSON.stringify(W.Context.context()?.chat || []);
-        const selected = new Set(entries.filter(entry => entry.enabled !== false).map(entry => entry.key));
+        const selectionSnapshot = JSON.stringify(W.Settings.get().worldbookCompiler || {});
+        const selected = new Set(entries.map(entry => entry.key));
         // A caller's cached picker is not authority for mounts or entry switches.
-        if (W.Context.listWorldbookEntries) entries = await W.Context.listWorldbookEntries();
+        let currentSource;
+        if (W.Context.selectedWorldbooks) {
+            const current = await W.Context.selectedWorldbooks();
+            if (current.diagnostics.failedNames.length) throw new Error(`世界书读取失败：${current.diagnostics.failedNames.join('、')}`);
+            currentSource = {worldbooks:current.books};
+            entries = current.books.flatMap(book => book.entries);
+        } else if (W.Context.listWorldbookEntries) entries = await W.Context.listWorldbookEntries();
         const config = W.Settings.get().worldbookCompiler;
-        entries = entries.filter(entry => entry.enabled !== false && selected.has(entry.key)
-            && (config?.enabled !== true || config.entryKeys?.includes(entry.key)));
-        if (!entries.length) throw new Error('当前挂载的世界书中没有已勾选且开启的条目');
+        entries = entries.filter(entry => selected.has(entry.key) && (W.Context.isWorldbookEntrySelected
+            ? W.Context.isWorldbookEntrySelected(entry,config)
+            : entry.enabled !== false && (config?.enabled !== true || config.entryKeys?.includes(entry.key))));
+        if (!entries.length) throw new Error('没有选中可拆解的世界书条目，请在设置 → 世界书中选择');
+        if (options.signal?.aborted) throw new Error('读取已取消');
+        if (selectionSnapshot !== JSON.stringify(W.Settings.get().worldbookCompiler || {})) throw new Error('世界书选择在读取期间已变化，请重新拆解');
         const lockedModules = W.PlainMemory.MODULES.filter(module => start.lockedPaths.some(path => path === 'memory' || path === `memory.${module}` || path.startsWith(`memory.${module}.`)));
         options.progress?.(`正在读取 ${entries.length} 条世界书并分流到栏目（API 1/1）`);
         const response = await W.Api.complete(
@@ -46,6 +56,7 @@
             || W.Storage.load().revision !== start.revision || JSON.stringify(W.Context.context()?.chat || []) !== chat) {
             throw new Error('聊天或状态在读取期间已变化，结果未覆盖新状态');
         }
+        if (selectionSnapshot !== JSON.stringify(W.Settings.get().worldbookCompiler || {})) throw new Error('世界书选择在读取期间已变化，本次结果未写入');
         if (!response?.factStream?.end) throw new Error('世界书读取响应未完整结束，旧状态保留；本次不自动重试');
         const records = [...(response.factStream.facts || []),...(response.factStream.patches || [])];
         if (records.some(row => row.module === 'planner')) throw new Error('世界书读取返回了任务外的推演内容，旧状态保留');
@@ -57,7 +68,7 @@
             if (!books.has(entry.bookName)) books.set(entry.bookName,{name:entry.bookName,entries:[]});
             books.get(entry.bookName).entries.push(entry);
         });
-        W.WorldbookMemory.retain(state,{worldbooks:[...books.values()]});
+        W.WorldbookMemory.retain(state,currentSource || {worldbooks:[...books.values()]});
         markRead(state,entries);
         delete state.runtime.finalInjectionOverride;
         state.planner.turnKey = '';

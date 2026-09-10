@@ -92,7 +92,10 @@ assert.equal(W.WorldbookMemory.fallback(state).length,0,'truncation must not sen
 const pending={globalLore:[{world:'世界观',uid:0,content:raw}],characterLore:[],chatLore:[],personaLore:[]};
 assert.equal(W.WorldbookCompiler.filterNativeWorldbookEntries(pending),1,'unfinished extraction also suppresses managed native originals');
 const $=parseHtml(W.UI._test.modalHtml());
-assert.equal($('[data-settings-tab="worldbook"],[data-settings-section="worldbook"],[data-action*="compile-worldbook"]').length,0);
+assert.equal($('[data-settings-tab="worldbook"]').length,1);
+assert.equal($('[data-settings-section="worldbook"]').length,1);
+assert.equal($('[data-action="compile-worldbook-entries"]').length,1);
+assert.equal($('[data-action="add-extra-worldbook"]').length,1);
 assert.equal($('[data-settings-section="injection"] #wsm-worldbook-injection-position option').length,4);
 assert.equal($('[data-category-select="worldbook"]').text().trim(),'世界书补充');
 const ui=await readFile(new URL('../src/ui.js',import.meta.url),'utf8');

@@ -29,8 +29,10 @@
                 0: { uid: 'public-scene', comment: '公共场景与旁观者反应', content: '在公共交通工具或公共场所中，可感知的争执或打闹可能引起附近人物短暂注意，但不得自动升级为围观或冲突。' },
                 1: { uid: 'character-boundary', comment: '人物知识与行为边界', content: '人物只能根据亲眼所见、亲耳所闻和已经获知的信息行动，不得读取他人内心或后台状态。' },
                 2: { uid: 'private-scene', comment: '私人场景规则', content: '私人空间中没有合理进入渠道时，不得凭空出现第三人。' },
+                3: { uid: 'disabled-example', comment: '关闭条目示例', content: '此条目默认不拆解，用户可以手动加入。', disable: true },
             } },
             '现代都市规则': { entries: { 0: { uid: 'city-basics', comment: '城市基础规则', content: '交通、距离和时间消耗应符合现代城市常识。' } } },
+            '额外世界书示例': { entries: { 0: { uid: 'extra-rule', comment: '额外规则', content: '此书未挂载，仅在用户额外选择后参与拆解。' } } },
         };
         if (!localStorage.getItem('wsm_worldbook_compiler_cache_v1')) localStorage.setItem('wsm_worldbook_compiler_cache_v1', JSON.stringify({
             [previewCompilerKeys[0]]:{sourceHash:'preview-1',compiledAt:Date.now(),compiled:{key:previewCompilerKeys[0],bookName:'分析世界书',label:'公共场景与旁观者反应',core:['公共场景反应必须符合实际感知条件'],triggers:['公共或半公共场景中出现可感知行为'],rules:['普通互动不得自动升级为围观、投诉或冲突'],background:[]}},
@@ -106,7 +108,7 @@
             characters:[{name:'夏以昼',data:{name:'夏以昼',description:'预览角色'}}], characterId:0,
             name1:'林知夏',name2:'夏以昼',
             chat:[{is_user:true,name:'林知夏',mes:'你下午还要出门吗？',send_date:'u2'},{is_user:false,name:'夏以昼',mes:'他将文件合上，却没有立刻回答。',send_date:'a1'}],
-            persona:'预览用 Persona', getWorldInfo:async(name)=>previewWorldbooks[name] || {entries:{}}, saveChat:async()=>{}, saveSettingsDebounced:()=>{}, setExtensionPrompt:async()=>{}
+            persona:'预览用 Persona', getWorldInfoNames:()=>Object.keys(previewWorldbooks), getWorldInfo:async(name)=>previewWorldbooks[name] || {entries:{}}, saveChat:async()=>{}, saveSettingsDebounced:()=>{}, setExtensionPrompt:async()=>{}
         };
         window.SillyTavern={getContext:()=>context};
         window.confirm=()=>true;

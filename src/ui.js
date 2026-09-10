@@ -1105,7 +1105,7 @@
                     <button id="wsm-read-current" data-action="read-current">读取当前聊天</button><button id="wsm-read-previous" data-action="read-previous">读取上一轮正文</button><button id="wsm-clear-read" data-action="clear-read">清空读取</button><button data-action="organize">整理状态</button><button data-action="settings">设置</button>
                 </div></header>
                 <div class="wsm-scroll-page">
-                    <div class="wsm-read-progress-region"><section id="wsm-operation-status" class="wsm-operation-status" role="status" aria-live="polite"><div class="wsm-operation-current"><b></b><small></small></div><div class="wsm-operation-steps" aria-label="读取步骤"></div></section><small id="wsm-read-floor" class="wsm-read-floor" aria-live="polite"></small></div>
+                    <div class="wsm-read-progress-region"><section id="wsm-operation-status" class="wsm-operation-status" role="status" aria-live="polite"><div class="wsm-operation-current"><b></b><small></small></div><div class="wsm-operation-steps" aria-label="读取步骤"></div></section><small id="wsm-read-floor" class="wsm-read-floor" aria-live="polite"></small><details id="wsm-read-diagnostics"><summary data-action="show-read-diagnostics">读取诊断</summary><button type="button" data-action="copy-read-diagnostics">复制读取诊断</button><small id="wsm-diagnostic-copy-status">仅记录本页面最近 6 次请求的耗时和计数；不含密钥、地址或聊天原文。刷新后重新记录。</small><textarea id="wsm-diagnostic-text" aria-label="读取诊断，可手动复制" rows="6" readonly style="width:100%;box-sizing:border-box"></textarea></details></div>
                     <nav class="wsm-category-bar">${categoryButtons}</nav>
                     <div class="wsm-body"><nav class="wsm-tabs">${tabs}</nav><main class="wsm-main">
                         <div class="wsm-section-heading"><div id="wsm-section-title"></div><div class="wsm-view-toolbar"><button class="wsm-icon-button wsm-pencil-only" data-action="toggle-edit" aria-label="编辑当前栏目" title="编辑当前栏目">${icon('edit')}</button></div></div>
@@ -1231,7 +1231,7 @@
     function renderOperationStatus(progress = WSM.Engine?.getProgress?.() || {}, state = WSM.Storage.load()) {
         if (WSM.PlainMemory?.isPlain(state) && state.runtime?.plainReadIncomplete && !['running','cancelled'].includes(progress.state) && !/^智能整理/.test(progress.message || '')) {
             const legacyReceipt = /等待完整结束回执/.test(state.planner?.error || '');
-            progress = {...progress, state:'error', message:'有效句子已保存，本次未完整确认', details:legacyReceipt
+            progress = {...progress, state:'error', message:'本次读取已结束，已保存内容仍有待修正项', details:legacyReceipt
                 ? '本次请求已结束。旧版未区分结束标记缺失与旧句替换校验失败，无法仅凭旧提示确定原因；不会继续等待或自动重试。'
                 : state.planner?.error || '本次已结束，现有内容保留。'};
         }
@@ -1532,6 +1532,25 @@
         } finally { clearReadPending = false; }
     }
     async function handleAction(action) {
+        if (action === 'show-read-diagnostics' || action === 'copy-read-diagnostics') {
+            const report = WSM.Api.getDiagnostics?.() || {requests:[],validations:[]};
+            const output = JSON.stringify(report,null,2);
+            const textarea = $('#wsm-diagnostic-text');
+            textarea.value = output;
+            const status = $('#wsm-diagnostic-copy-status');
+            if (!report.requests.length) status.textContent = '本页面尚无请求记录；下次正常读取后再复制，无需清空记忆。';
+            if (action === 'copy-read-diagnostics') {
+                try {
+                    if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+                    await navigator.clipboard.writeText(output);
+                    status.textContent = report.requests.length ? '已复制读取诊断。' : '已复制；本页面尚无请求记录。';
+                } catch (_) {
+                    textarea.focus(); textarea.select();
+                    status.textContent = '浏览器不允许自动复制，请长按或手动复制下方已选中的诊断。';
+                }
+            }
+            return;
+        }
         if (action === 'close') close();
         if (action === 'organize') $('#wsm-organize-modal').hidden = false;
         if (action === 'close-organize') $('#wsm-organize-modal').hidden = true;
@@ -1808,6 +1827,7 @@
             if (summary && root.contains(summary) && summary.parentElement instanceof HTMLDetailsElement) {
                 consume();
                 summary.parentElement.open = !summary.parentElement.open;
+                if (summary.parentElement.open && summary.dataset.action === 'show-read-diagnostics') await handleAction('show-read-diagnostics');
                 return;
             }
             const category = target.closest('[data-category-select]')?.dataset.categorySelect;

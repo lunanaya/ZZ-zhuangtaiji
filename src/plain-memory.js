@@ -632,6 +632,8 @@ localState.recentResults是历史结果，不是新待办。结束、撤销或�
                 if (response.complete && !applied.errors.length) WSM.WorldbookSemantic?.markRead(next,source);
                 const missing = missingAfterCleanup(start,next);
                 const complete = phase === 2 && response.complete && !applied.errors.length && !missing.length;
+                WSM.Api.recordValidation?.({phase, complete, ended:response.complete, recordCount:response.records.length,
+                    errorCount:applied.errors.length, replacementErrors:applied.errors.filter(error => error.includes('找不到要替换')).length, missingModules:missing});
                 const issues = [
                     ...(!response.complete ? ['模型未返回有效结束标记（end:true），无法确认输出完整'] : []),
                     ...applied.errors,
@@ -692,6 +694,8 @@ localState.recentResults是历史结果，不是新待办。结束、撤销或�
             const next = applied.state;
             const missing = missingAfterCleanup(start,next);
             const complete = response.complete && !applied.errors.length && !missing.length;
+            WSM.Api.recordValidation?.({phase:0, complete, ended:response.complete, recordCount:response.records.length,
+                errorCount:applied.errors.length, replacementErrors:applied.errors.filter(error => error.includes('找不到要替换')).length, missingModules:missing});
             if (complete) WSM.WorldbookSemantic?.markRead(next,source);
             next.runtime.plainReadIssues = [...applied.errors,...(!response.complete ? ['模型缺少有效结束标记'] : []),...(missing.length ? [`清理后待补栏目：${missing.map(module => LABELS[module]).join('、')}`] : [])];
             if (complete) Object.assign(next.runtime, helpers.readReceiptRuntime(start, receipt));

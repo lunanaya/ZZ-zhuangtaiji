@@ -1,5 +1,10 @@
 # 测试指南
 
+## v0.16.85 可复制读取诊断
+
+- `node dev/smoke-read-diagnostics.mjs` 使用模拟时钟与数据包，区分心跳、推理和首个文字到达时间；检查请求失败也留记录、历史上限 6 条、隐私字段不进入诊断、复制失败有手动文本入口，且不额外请求 API。
+- 回归 `smoke-stream-performance.mjs`、`smoke-stream-completion.mjs`、`smoke-plain-memory.mjs`：增量处理量保持线性，结束/断流行为和初始化两次、正文更新一次的调用上限不变。均为模拟请求，不代表线上实际速度。
+
 ## v0.16.84 世界书来源隔离
 
 - `node dev/smoke-worldbook-scope.mjs`：A/B 切卡、明确全局多选、聊天及 Persona 挂载、未挂载书不可查询、关闭/未勾选条目不进来源、全部关闭不复活旧缓存、内嵌旧书隔离和勾选记录不变。

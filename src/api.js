@@ -4,6 +4,20 @@
     let activeCallBudget = null;
     let scriptModulePromise = null;
     let chatModulePromise = null;
+    const requestDiagnostics = [];
+    const validationDiagnostics = [];
+    const diagnosticNumber = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+    function getDiagnostics() {
+        return {version:String(WSM.version || ''), capturedAt:new Date().toISOString(),
+            requests:requestDiagnostics.map(row => ({...row, durationMs:row.durationMs ?? Date.now()-row.startedAt})),
+            validations:validationDiagnostics.map(row => ({...row, missingModules:[...row.missingModules]}))};
+    }
+    function recordValidation({phase, complete, ended, recordCount, errorCount, replacementErrors, missingModules}) {
+        validationDiagnostics.push({phase:Number(phase), complete:!!complete, ended:!!ended,
+            recordCount:Number(recordCount), errorCount:Number(errorCount), replacementErrors:Number(replacementErrors),
+            missingModules:(missingModules || []).filter(key => /^[a-zA-Z]+$/.test(key)), at:Date.now()});
+        if (validationDiagnostics.length > 6) validationDiagnostics.shift();
+    }
 
     async function prepareTavernStreamBody(context, messages, settings, chatModule = null) {
         if (context?.mainApi !== 'openai') return null;
@@ -623,8 +637,9 @@
                     || /^(response\.|content_block|message_)/.test(String(event.type || ''))) activity = true;
                 if (event.error || event.choices?.some(choice => (choice.index ?? 0) === 0 && choice.finish_reason)
                     || ['response.completed','response.failed','message_stop'].includes(String(event.type || ''))) complete = true;
+                const text = sseContent(event);
+                if (text) meta.onVisible?.(text.length);
                 if (meta.jsonContract === 'sentences') {
-                    const text = sseContent(event);
                     if (text) { visibleChunks.push(text); sentences(text); }
                 }
             } catch (_) { /* Only a complete, valid SSE envelope supplies text. */ }
@@ -647,6 +662,7 @@
                 const { value, done } = await reader.read();
                 if (done) break;
                 const text = decoder.decode(value, { stream: true });
+                meta.onPacket?.(text.length);
                 rawChunks.push(text); receivedChars += text.length;
                 activity = false; receiptSeen = false;
                 const fragments = text.split('\n');
@@ -973,6 +989,18 @@
             maxTokens,
         };
         const requestStartedAt = Date.now();
+        const diagnostic = {startedAt:requestStartedAt, task:/^[A-Z_]+$/.test(meta.task) ? meta.task : 'OTHER',
+            route:'pending', inputChars:meta.inputChars, maxTokens, stream:options.stream === true,
+            firstPacketMs:null, firstTextMs:null, receivedChars:0, streamedTextChars:0,
+            visibleChars:null, reasoningChars:null, outputTokens:null, reasoningTokens:null,
+            httpStatus:null, finishReason:'', ended:null, interrupted:false, failure:'', outcome:'running', durationMs:null};
+        requestDiagnostics.push(diagnostic);
+        if (requestDiagnostics.length > 6) requestDiagnostics.shift();
+        const finish = value => {
+            diagnostic.ended = value?.factStream ? value.factStream.end === true : null;
+            diagnostic.outcome = diagnostic.ended === false ? 'partial' : 'received';
+            return value;
+        };
         const requestIdentity = `运行 v${WSM.version || '未知'} · 请求 ${new Date(requestStartedAt).toISOString()} · 配置 ${settings.maxTokens ?? 9000} / 本次 ${maxTokens} Tokens`;
         const headers = { 'Content-Type': 'application/json' };
         if (settings.apiKey) headers.Authorization = `Bearer ${settings.apiKey}`;
@@ -1008,7 +1036,8 @@
             const tavernBody = useTavern && options.stream === true
                 ? await prepareTavernStreamBody(window.SillyTavern?.getContext?.(), messages, requestSettings)
                 : null;
-            if (useTavern && !tavernBody) return await completeViaTavern(messages, requestSettings, options.signal, timeoutMs, meta, options.singleAttempt === true, options.jsonContract);
+            diagnostic.route = useTavern ? (tavernBody ? 'tavern-stream' : 'tavern-native') : 'independent';
+            if (useTavern && !tavernBody) return finish(await completeViaTavern(messages, requestSettings, options.signal, timeoutMs, meta, options.singleAttempt === true, options.jsonContract));
             const attempt = attemptSignal(options.signal, timeoutMs);
             let response;
             let raw;
@@ -1048,9 +1077,14 @@
                 response = await fetch('/api/backends/chat-completions/generate', {
                     method: 'POST', headers: proxyHeaders, body: JSON.stringify(proxyBody), signal: attempt.signal,
                 });
-                const forwarded = await readForwardedResponse(response, options.stream === true, { ...meta, jsonContract: options.jsonContract, interruptionReason: attempt.reason, onActivity: attempt.touch });
+                diagnostic.httpStatus = response.status;
+                const forwarded = await readForwardedResponse(response, options.stream === true, { ...meta,
+                    onPacket:chars => { diagnostic.firstPacketMs ??= Date.now()-requestStartedAt; diagnostic.receivedChars += chars; },
+                    onVisible:chars => { diagnostic.firstTextMs ??= Date.now()-requestStartedAt; diagnostic.streamedTextChars += chars; },
+                    jsonContract: options.jsonContract, interruptionReason: attempt.reason, onActivity: attempt.touch });
                 raw = forwarded.raw;
                 streamInterrupted = forwarded.interrupted;
+                diagnostic.interrupted = streamInterrupted;
                 meta.interruptionReason = forwarded.interruptionReason || '';
             } catch (error) {
                 if (error?.name === 'AbortError') {
@@ -1066,6 +1100,10 @@
             catch (_) { data = /^\s*data:/m.test(raw) ? parseSseResponse(raw, streamInterrupted) : { output_text: raw }; }
             const finishReason = String(data?.choices?.[0]?.finish_reason || '');
             const visibleChars = responseText(data).length;
+            Object.assign(diagnostic, {visibleChars, reasoningChars:diagnosticNumber(data.reasoningChars),
+                outputTokens:diagnosticNumber(data.usage?.completion_tokens),
+                reasoningTokens:diagnosticNumber(data.usage?.completion_tokens_details?.reasoning_tokens),
+                finishReason:['stop','length','tool_calls','content_filter','max_tokens',''].includes(finishReason) ? finishReason : 'other'});
             console.info('[WorldStateMachine] 请求诊断 ' + JSON.stringify({
                 ...meta, stream: options.stream === true,
                 durationMs: Date.now() - requestStartedAt, finishReason,
@@ -1092,7 +1130,7 @@
                         'running',
                         `任务 ${meta.task} · 只保留闭合的JSON模块 · 可见输出 ${visibleOutput.length} 字 · 未额外请求API`,
                     );
-                    return recovered;
+                    return finish(recovered);
                 } catch (_recoveryError) {
                     if (streamInterrupted) {
                         const interruptionLabel = meta.interruptionReason === 'timeout' ? '本地等待超时' : meta.interruptionReason === 'cancelled' ? '用户取消' : '上游或反代断流';
@@ -1102,7 +1140,7 @@
                 }
             }
             try {
-                return extractJson(visibleOutput || raw, { jsonContract: options.jsonContract });
+                return finish(extractJson(visibleOutput || raw, { jsonContract: options.jsonContract }));
             } catch (error) {
                 const finishReason = String(data?.choices?.[0]?.finish_reason || '');
                 if (/length|max[_\s-]*tokens/i.test(finishReason)) {
@@ -1110,13 +1148,18 @@
                     const repaired = repairContract ? repairTruncatedJson(visibleOutput, repairContract) : null;
                     if (repaired) {
                         WSM.Engine?.reportProgress?.('模型输出到达上限，已安全接收完整证据模块', 'running', `任务 ${meta.task} · 已丢弃尾部未闭合模块 · 本地将合并完整模块并补齐状态结构 · 可见输出 ${visibleOutput.length} 字`);
-                        return repaired;
+                        return finish(repaired);
                     }
                     throw new Error(`任务 ${meta.task} 输出达到上限，未形成完整的${contractLabel(options.jsonContract)}；输入 ${meta.inputChars} 字，输出上限 ${maxTokens} Tokens，可见输出 ${visibleOutput.length} 字`);
                 }
                 throw error;
             }
         } catch (error) {
+            diagnostic.outcome = options.signal?.aborted ? 'cancelled' : 'error';
+            diagnostic.failure = options.signal?.aborted ? 'cancelled'
+                : /超时|timeout/i.test(String(error?.message)) ? 'timeout'
+                : /failed to fetch|load failed|network/i.test(String(error?.message)) ? 'network'
+                : diagnostic.httpStatus >= 400 ? 'http' : 'response_or_validation';
             if (error?.name === 'AbortError') throw new Error(`任务 ${meta.task} 请求超时或已取消；输入 ${meta.inputChars} 字，本次不会自动重试`);
             const message = String(error?.message || error || '未知网络错误');
             if (/failed to fetch|load failed|networkerror|network request failed|network connection.*lost/i.test(message)) {
@@ -1124,7 +1167,7 @@
                 throw new Error(`连接中断，未取得本步可用响应（${message}）。已有状态保留；本次未确认完成，不会自动重试。请检查酒馆连接及 API/反代网络。`);
             }
             throw error;
-        }
+        } finally { diagnostic.durationMs = Date.now()-requestStartedAt; }
     }
     async function listModels(profile = {}) {
         const settings = Object.assign({}, WSM.Settings.get(), profile || {});
@@ -1173,5 +1216,5 @@
             return result?.ok === true;
         });
     }
-    WSM.Api = { complete, test, listModels, withCallBudget, requestHeaders, _test: { prepareTavernStreamBody, outputTokens, quotaTokenBudgets, isQuotaReservationError, consumeCallBudget, extractJson, repairTruncatedJson, parseFactLines, parseLenientJsonObject, parseSseResponse, responseText, providerResponseError, isGptReasoningModel, contractScore } };
+    WSM.Api = { complete, test, listModels, withCallBudget, requestHeaders, getDiagnostics, recordValidation, _test: { prepareTavernStreamBody, outputTokens, quotaTokenBudgets, isQuotaReservationError, consumeCallBudget, extractJson, repairTruncatedJson, parseFactLines, parseLenientJsonObject, parseSseResponse, responseText, providerResponseError, isGptReasoningModel, contractScore } };
 })();

@@ -228,7 +228,7 @@ originalBooksEnabled = false;
 result = await WSM.Engine.settle({force:true,latestOnly:true});
 assert.ok(result);
 assert.equal(requests.length,3,'subsequent reconciliation, fill and simulation share one call');
-assert.ok(requests[2].input.source.worldbooks[0].entries[0].text.includes('守卫核验'),'normal update retains adopted worldbooks after native books close');
+assert.deepEqual(requests[2].input.source.worldbooks,[],'normal update excludes originals after their native books close');
 originalBooksEnabled = true;
 assert.ok(requests[2].input.missingModules.includes('npcActivities'));
 assert.match(result.memory.npcActivities[0],/巡查/);

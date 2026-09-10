@@ -1,0 +1,61 @@
+import assert from 'node:assert/strict';
+globalThis.window = globalThis;
+globalThis.WorldStateMachine = {};
+const settings = {worldbookCompiler:{enabled:true,entryKeys:['A::1','B::1','B::2']}};
+const books = {
+    A:{entries:{1:{uid:1,content:'A ONLY'}}},
+    B:{entries:{1:{uid:1,content:'B SELECTED'},2:{uid:2,content:'B DISABLED',disable:true},3:{uid:3,content:'B UNSELECTED'}}},
+};
+const reads = [];
+const ctx = {characterId:0,characters:[{avatar:'b.png',data:{extensions:{world:'B'},character_book:{name:'A',entries:[{id:1,content:'STALE EMBEDDED'}]}}}],
+    chat:[],chatMetadata:{},extensionSettings:{world_info:{globalSelect:['A']}},
+    getWorldInfo:async name => {reads.push(name);return books[name];}};
+globalThis.SillyTavern = {getContext:()=>ctx};
+globalThis.selected_world_info = [];
+globalThis.world_info = {B:{entries:{2:{uid:2,content:'STALE ENABLED'}}}};
+WorldStateMachine.Settings = {get:()=>settings,update:()=>assert.fail('source reads must not rewrite checkboxes')};
+await import('../src/context.js');
+await import('../src/worldbook-memory.js');
+const W = WorldStateMachine;
+const old = {runtime:{worldbookSources:{'A::1':{key:'A::1',bookName:'A',content:'OLD A'}},sourceSummary:{loadedWorldbooks:['A']}}};
+const originalSelection = structuredClone(settings);
+let source = await W.Context.buildSource({worldbookTakeover:true});
+source = await W.WorldbookMemory.restoreSource(old,source);
+assert.deepEqual(reads,['B'],'old checkboxes, cache, embedded book and stale globals cannot mount A');
+assert.deepEqual(source.worldbooks.map(book=>book.name),['B']);
+assert.deepEqual(W.WorldbookMemory.entries(source).map(entry=>entry.content),['B SELECTED']);
+assert.deepEqual(settings,originalSelection,'disabled and other-card checkboxes survive reads');
+W.WorldbookMemory.retain(old,source);
+assert.deepEqual(W.WorldbookMemory.originals(old).map(entry=>entry.bookName),['B'],'retained raw source is replaced by current scope');
+assert.deepEqual(await W.Context.listWorldbookEntries({bookName:'A',includeDisabled:true}),[]);
+assert.deepEqual(reads,['B'],'explicit catalog lookup cannot read unmounted A');
+globalThis.selected_world_info = ['A','B'];
+source = await W.Context.buildSource({worldbookTakeover:true});
+assert.deepEqual(source.worldbooks.map(book=>book.name),['A','B'],'explicit global selection permits both books without duplicates');
+globalThis.selected_world_info = [];
+books.B.entries[1].disable = true;
+books.B.entries[3].disable = true;
+source = await W.Context.buildSource({worldbookTakeover:true});
+assert.equal(W.WorldbookMemory.entries(source).length,0,'all disabled is a valid empty book, not a cache fallback');
+assert.deepEqual(source.worldbookDiagnostics.failedNames,[]);
+source = await W.WorldbookMemory.restoreSource(old,source);
+W.WorldbookMemory.retain(old,source);
+assert.equal(W.WorldbookMemory.fallback(old).length,0,'disabled retained source is removed');
+settings.worldbookCompiler.enabled = false;
+books.B.entries[1].disable = false;
+books.B.entries[3].disable = false;
+source = await W.Context.buildSource({worldbookTakeover:true});
+assert.deepEqual(W.WorldbookMemory.entries(source).map(entry=>entry.content),['B SELECTED','B UNSELECTED'],'native enabled switches apply when legacy plugin picker is off');
+ctx.characters[0].data.extensions.world = 'A';
+source = await W.Context.buildSource({worldbookTakeover:true});
+assert.deepEqual(source.worldbooks.map(book=>book.name),['A'],'switching back resolves the current card afresh');
+ctx.chatMetadata.world_info = 'B';
+assert.deepEqual(await W.Context.listEnabledWorldNames(),['A','B'],'explicit chat mount is included');
+delete ctx.chatMetadata.world_info;
+ctx.powerUserSettings = {persona_description_lorebook:'B'};
+assert.deepEqual(await W.Context.listEnabledWorldNames(),['A','B'],'explicit persona mount is included');
+delete ctx.powerUserSettings;
+delete ctx.characters[0].data.extensions.world;
+source = await W.Context.buildSource({worldbookTakeover:true});
+assert.deepEqual(source.worldbooks,[],'unlinking a card book must not revive its embedded export snapshot');
+console.log('PASS worldbook scope: current mounts, switches, selection persistence, stale cache and embedded isolation');

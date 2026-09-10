@@ -249,20 +249,22 @@
     }
     async function enabledWorldNames(ctx = context(), character = currentCharacter(ctx)) {
         const settings = ctx?.extensionSettings || window.extension_settings || {};
-        const worldSettings = settings.world_info || settings.worldInfo || {};
         const worldModule = await loadWorldInfoModule();
-        const candidates = [
-            window.selected_world_info,
-            worldModule?.selected_world_info,
-            worldModule?.worldInfo?.selected_world_info,
-            worldModule?.worldInfo?.selectedWorlds,
-            worldSettings.globalSelect,
-            worldSettings.selectedWorlds,
-            worldSettings.selected_world_info,
-            characterBoundWorldNames(settings, character),
-            selectedDomWorldNames(),
-        ];
+        const worldSettings = worldModule?.world_info ?? settings.world_info ?? settings.worldInfo ?? {};
+        // An authoritative empty selection means no global books. Never union
+        // it with stale globals or the previously opened worldbook editor.
+        const globals = worldModule?.selected_world_info ?? window.selected_world_info
+            ?? worldSettings.globalSelect ?? worldSettings.selectedWorlds ?? worldSettings.selected_world_info ?? selectedDomWorldNames();
+        const candidates = [globals,
+            characterBoundWorldNames({world_info:worldSettings}, character),
+            ctx?.chatMetadata?.[worldModule?.METADATA_KEY || 'world_info'],
+            (ctx?.powerUserSettings ?? ctx?.power_user ?? window.power_user)?.persona_description_lorebook];
         return unique(candidates.flatMap(nameCandidates));
+    }
+    function hasBookData(data) {
+        return Array.isArray(data) || !!(data && [data.entries, data.data?.entries, data.world?.entries,
+            data.data?.world?.entries, data.worldInfo?.entries, data.worldInfoData?.entries, data.world_info?.entries]
+            .some(value => value && typeof value === 'object'));
     }
     function normalizeEntries(data, options = {}) {
         const source = Array.isArray(data) ? data : (data?.entries || data?.data?.entries || data?.world?.entries || data?.data?.world?.entries || data?.worldInfo?.entries || data?.worldInfoData?.entries || data?.world_info?.entries || {});
@@ -291,49 +293,45 @@
                 const data = await ctx.getWorldInfo(name);
                 const entries = normalizeEntries(data, options);
                 attempts.push(`context.getWorldInfo：${entries.length} 条`);
-                if (entries.length) return { name, entries: keyedEntries(name, entries), source: 'context.getWorldInfo', attempts };
+                if (hasBookData(data)) return { name, entries: keyedEntries(name, entries), source: 'context.getWorldInfo', attempts };
             }
         } catch (error) { attempts.push(`context.getWorldInfo：${text(error?.message || error)}`); console.debug('[WorldStateMachine] getWorldInfo failed', name, error); }
         try {
             const module = await loadWorldInfoModule();
             if (typeof module?.loadWorldInfo === 'function') {
-                const entries = normalizeEntries(await module.loadWorldInfo(name), options);
+                const data = await module.loadWorldInfo(name);
+                const entries = normalizeEntries(data, options);
                 attempts.push(`world-info module：${entries.length} 条`);
-                if (entries.length) return { name, entries: keyedEntries(name, entries), source: 'world-info module', attempts };
+                if (hasBookData(data)) return { name, entries: keyedEntries(name, entries), source: 'world-info module', attempts };
             }
             const moduleCache = module?.world_info?.[name] || module?.worldInfo?.[name];
             const moduleEntries = normalizeEntries(moduleCache, options);
             attempts.push(`world-info module cache：${moduleEntries.length} 条`);
-            if (moduleEntries.length) return { name, entries: keyedEntries(name, moduleEntries), source: 'world-info module cache', attempts };
+            if (hasBookData(moduleCache)) return { name, entries: keyedEntries(name, moduleEntries), source: 'world-info module cache', attempts };
         } catch (error) { attempts.push(`world-info module：${text(error?.message || error)}`); console.debug('[WorldStateMachine] world-info import failed', name, error); }
         const cached = window.world_info?.[name];
         const cachedEntries = normalizeEntries(cached, options);
         attempts.push(`window cache：${cachedEntries.length} 条`);
-        if (cachedEntries.length) return { name, entries: keyedEntries(name, cachedEntries), source: 'window cache', attempts };
+        if (hasBookData(cached)) return { name, entries: keyedEntries(name, cachedEntries), source: 'window cache', attempts };
         try {
             const headers = await WSM.Api?.requestHeaders?.() || { 'Content-Type': 'application/json' };
             const response = await fetch('/api/worldinfo/get', { method: 'POST', headers, body: JSON.stringify({ name }) });
             if (response.ok) {
-                const entries = normalizeEntries(await response.json(), options);
+                const data = await response.json();
+                const entries = normalizeEntries(data, options);
                 attempts.push(`/api/worldinfo/get：${entries.length} 条`);
-                if (entries.length) return { name, entries: keyedEntries(name, entries), source: '/api/worldinfo/get', attempts };
+                if (hasBookData(data)) return { name, entries: keyedEntries(name, entries), source: '/api/worldinfo/get', attempts };
             }
         } catch (error) { attempts.push(`/api/worldinfo/get：${text(error?.message || error)}`); console.debug('[WorldStateMachine] world-info API failed', name, error); }
         return { name, entries: [], source: 'unreadable', attempts };
     }
-    function embeddedCharacterBook(character = currentCharacter(), options = {}) {
-        const book = (character?.data || character || {})?.character_book;
-        if (!book?.entries) return null;
-        const name = text(book.name) || '角色卡内嵌世界书';
-        return { name, entries: keyedEntries(name, normalizeEntries(book, options)), source: 'character card' };
-    }
     async function worldbooks(ctx = context(), options = {}) {
         const requestedNames = await enabledWorldNames(ctx);
         const books = await Promise.all(requestedNames.map((name) => readWorldbook(name, ctx, options)));
-        const embedded = embeddedCharacterBook(currentCharacter(ctx), options);
-        if (embedded) books.push(embedded);
+        // ST mounts the imported book through extensions.world. An embedded
+        // export snapshot is not a mount, including after the user unlinks it.
         const loadedByName = new Map();
-        books.filter((book) => book.entries.length).forEach((book) => {
+        books.filter((book) => book.source !== 'unreadable').forEach((book) => {
             const normalized = book.entries.map((entry, index) => ({
                 ...entry, key: worldbookEntryKey(book.name, entry.id || index), bookName: book.name,
             }));
@@ -353,7 +351,7 @@
             diagnostics: {
                 requestedNames,
                 loadedNames: loaded.map((book) => book.name),
-                failedNames: unique(books.filter((book) => !book.entries.length).map((book) => book.name)),
+                failedNames: unique(books.filter((book) => book.source === 'unreadable').map((book) => book.name)),
                 entryCounts: Object.fromEntries(loaded.map((book) => [book.name, book.entries.length])),
                 readSources: Object.fromEntries(loaded.map((book) => [book.name, book.source])),
             },
@@ -361,6 +359,7 @@
     }
     async function listWorldbookEntries(options = {}, ctx = context()) {
         if (options?.bookName) {
+            if (!(await enabledWorldNames(ctx)).includes(text(options.bookName))) return [];
             const book = await readWorldbook(options.bookName, ctx, { includeDisabled: options.includeDisabled === true });
             return book.entries.map((entry, index) => ({ ...entry, key: worldbookEntryKey(book.name, entry.id || index), bookName: book.name, bookSource: book.source }));
         }
@@ -397,38 +396,14 @@
         const rawChat = Array.isArray(ctx?.chat) ? ctx.chat : [];
         const hiddenMessages = rawChat.filter((message) => message?.is_system === true).length;
         const worldbookResult = await worldbooks(ctx);
-        let configuredBooks = null;
-        if (settings.worldbookCompiler?.enabled === true && options.worldbookTakeover !== true) {
-            // Compilation membership is independent from the native entry's
-            // enabled flag. Use the all-entry catalog to preserve a disabled
-            // entry's precompile checkbox, while `worldbookResult` below still
-            // contains only enabled originals for runtime source/routing.
-            const compilerEntries = await listWorldbookEntries({ includeDisabled: true }, ctx);
-            const availableNames = unique(compilerEntries.map((entry) => entry.bookName));
-            const knownNames = new Set((settings.worldbookCompiler?.knownBookNames || []).map(text).filter(Boolean));
-            const selectedNames = new Set((settings.worldbookCompiler?.selectedBookNames || []).map(text).filter((name) => availableNames.includes(name)));
-            availableNames.forEach((name) => { if (!knownNames.has(name)) selectedNames.add(name); });
-            configuredBooks = selectedNames;
-            const availableEntryKeys = new Set(compilerEntries.filter((entry) => selectedNames.has(entry.bookName)).map((entry) => entry.key));
-            // Book selection only controls which books appear in the entry
-            // picker. Never turn it into an implicit "select every entry".
-            const entryKeys = (settings.worldbookCompiler?.entryKeys || []).map(String).filter((key) => availableEntryKeys.has(key));
-            const nextCompiler = {
-                ...settings.worldbookCompiler,
-                selectedBookNames: [...selectedNames],
-                knownBookNames: availableNames,
-                entryKeys,
-                knownEntryKeys: compilerEntries.map((entry) => entry.key),
-            };
-            if (JSON.stringify(nextCompiler) !== JSON.stringify(settings.worldbookCompiler)) WSM.Settings.update({ worldbookCompiler: nextCompiler });
-        }
-        if (configuredBooks && options.worldbookTakeover !== true) {
-            worldbookResult.books = worldbookResult.books.filter((book) => configuredBooks.has(book.name));
-            worldbookResult.diagnostics.requestedNames = worldbookResult.diagnostics.requestedNames.filter((name) => configuredBooks.has(name));
-            worldbookResult.diagnostics.loadedNames = worldbookResult.books.map((book) => book.name);
-            worldbookResult.diagnostics.failedNames = worldbookResult.diagnostics.failedNames.filter((name) => configuredBooks.has(name));
-            worldbookResult.diagnostics.entryCounts = Object.fromEntries(worldbookResult.books.map((book) => [book.name, book.entries.length]));
-            worldbookResult.diagnostics.readSources = Object.fromEntries(worldbookResult.books.map((book) => [book.name, book.source]));
+        const config = settings.worldbookCompiler;
+        if (config?.enabled === true) {
+            // Selection is a filter, never a mount request. Keep saved checkboxes
+            // for other cards and disabled entries without adding them to input.
+            const selected = new Set(config.entryKeys || []);
+            worldbookResult.books = worldbookResult.books.map(book => ({...book,
+                entries:book.entries.filter(entry => selected.has(entry.key))}));
+            worldbookResult.diagnostics.entryCounts = Object.fromEntries(worldbookResult.books.map(book => [book.name, book.entries.length]));
         }
         const source = {
             identities: identityNames(ctx),

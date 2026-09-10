@@ -4,7 +4,7 @@
     const text = value => String(value ?? '').trim();
     const key = (name, entry, index) => text(entry.key) || `${encodeURIComponent(name)}::${encodeURIComponent(entry.id ?? index)}`;
     function entries(source) {
-        return (source?.worldbooks || []).flatMap(book => (book.entries || []).filter(entry => text(entry.content)).map((entry, index) => ({
+        return (source?.worldbooks || []).flatMap(book => (book.entries || []).filter(entry => entry.enabled !== false && text(entry.content)).map((entry, index) => ({
             key:key(book.name, entry, index), bookName:text(book.name), title:text(entry.comment || entry.name || entry.title),
             content:text(entry.content), keys:Array.isArray(entry.keys) ? entry.keys.map(text).filter(Boolean) : [],
             constant:entry.constant === true,
@@ -74,7 +74,7 @@
     }
     function retain(state, source) {
         const previous = state.runtime?.worldbookSources || {};
-        const next = {...previous};
+        const next = {};
         entries(source).forEach(entry => { next[entry.key] = entry; });
         if (JSON.stringify(previous) === JSON.stringify(next)) return false;
         state.runtime ||= {};
@@ -82,44 +82,11 @@
         return true;
     }
     async function restoreSource(state, source) {
-        const saved = originals(state);
-        const live = entries(source);
-        const merged = new Map(saved.map(entry => [entry.key, entry]));
-        const selected = new Set(W.Settings.get().worldbookCompiler?.entryKeys || []);
-        const names = new Set([...saved.map(entry => entry.bookName), ...(state.runtime?.sourceSummary?.loadedWorldbooks || [])]);
-        for (const id of selected) {
-            try { names.add(decodeURIComponent(String(id).split('::')[0])); } catch (_) { /* malformed old key */ }
-        }
-        const recoveryFailures = [];
-        // Only restore already-read books or explicitly selected entries. Never
-        // scan every file in the user's library, or enable native worldbooks.
-        for (const name of names) {
-            const legacy = !saved.some(entry => entry.bookName === name) && (state.runtime?.sourceSummary?.loadedWorldbooks || []).includes(name);
-            const missing = saved.some(entry => entry.bookName === name && !live.some(row => row.key === entry.key))
-                || [...selected].some(id => String(id).startsWith(`${encodeURIComponent(name)}::`) && !live.some(row => row.key === id));
-            if (!legacy && !missing) continue;
-            let book;
-            try { book = await W.Context.readWorldbook?.(name, W.Context.context(), {includeDisabled:true}); }
-            catch (_) { /* persisted originals remain available during read failures */ }
-            if (!book?.entries?.length) { recoveryFailures.push(name); continue; }
-            for (const entry of entries({worldbooks:[book]})) {
-                if (legacy || merged.has(entry.key) || selected.has(entry.key)) merged.set(entry.key, entry);
-            }
-        }
-        live.forEach(entry => merged.set(entry.key, entry));
-        const books = new Map();
-        for (const entry of merged.values()) {
-            if (!books.has(entry.bookName)) books.set(entry.bookName, {name:entry.bookName, entries:[], source:'当前原书或本聊天已接管原文'});
-            books.get(entry.bookName).entries.push({...entry, comment:entry.title});
-        }
-        const worldbooks = [...books.values()];
-        const unavailableNames = [...names].filter(name => !books.has(name));
+        // Only current mounted, enabled sources may enter the reader. Historical
+        // selections, source summaries and retained originals are not mounts.
         const diagnostics = source.worldbookDiagnostics || {};
-        return {...source, worldbooks, worldbookDiagnostics:{...diagnostics,
-            loadedNames:worldbooks.map(book => book.name),
-            entryCounts:Object.fromEntries(worldbooks.map(book => [book.name, book.entries.length])),
-            retainedNames:[...new Set(saved.map(entry => entry.bookName))], recoveryFailures, unavailableNames,
-        }};
+        return {...source, worldbookDiagnostics:{...diagnostics,
+            retainedNames:[], recoveryFailures:[], unavailableNames:diagnostics.failedNames || []}};
     }
     function fallback(state, delivered = []) {
         const result = [];

@@ -1,5 +1,12 @@
 # 测试指南
 
+## v0.16.84 世界书来源隔离
+
+- `node dev/smoke-worldbook-scope.mjs`：A/B 切卡、明确全局多选、聊天及 Persona 挂载、未挂载书不可查询、关闭/未勾选条目不进来源、全部关闭不复活旧缓存、内嵌旧书隔离和勾选记录不变。
+- 回归 `smoke-worldbook-entries.mjs`、`smoke-worldbook-memory.mjs`、`smoke-worldbook-semantic.mjs`、`smoke-worldbook-merged-read.mjs`、`smoke-plain-memory.mjs`：原文缓存替换、生成时原生条目开关、过期选择拒绝、两步合并读取和聊天隔离。全部使用模拟资料/API，没有调用真实付费 API。
+- 旧原文接管测试按新要求改为“不恢复关闭或未挂载来源”；旧的无关补充强制注入断言同步到既有按相关性发送行为（旧版本也不满足原断言）。
+- `smoke-worldbook-independent.mjs` 仍使用更早的提示词、段落返回与 `fallbackCount` 合约，目前失败；本次未改这些合约。当前合并读取由上述 semantic/merged-read 测试覆盖。上传目录运行 merged-read 时需要现有 SillyTavern 的 `cheerio` 依赖，可设置 `NODE_PATH` 指向其 `node_modules`。
+
 ## v0.16.83 流式性能回归
 
 - `node dev/smoke-stream-performance.mjs`：模拟 1000/2000 个含 backend 标识的小数据包，统计实际 JSON 解析次数和字符量，验证增长近似线性、无句子丢失、进度刷新节流。

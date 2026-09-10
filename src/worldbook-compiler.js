@@ -41,7 +41,8 @@
         if (!payload || typeof payload !== 'object') return 0;
         const state = WSM.Storage?.load?.();
         const selected = WSM.WorldbookSemantic
-            ? new Set((WSM.WorldbookMemory?.originals(state) || []).filter(entry => WSM.WorldbookSemantic.hasRead(state,entry)).map(entry => entry.key))
+            ? new Set((WSM.WorldbookMemory?.originals(state) || []).filter(entry => WSM.WorldbookSemantic.hasRead(state,entry)
+                && (!config.enabled || config.entryKeys.includes(entry.key))).map(entry => entry.key))
             : new Set(config.enabled ? config.entryKeys.map(String) : []);
         let removed = 0;
         for (const key of ['globalLore','characterLore','chatLore','personaLore']) {
@@ -910,7 +911,7 @@
         if (WSM.WorldbookSemantic) {
             const config = normalizeConfig(configValue);
             const selected = new Set(config.entryKeys);
-            const entries = (options.entries || await resolveSelectedEntries(config, {includeDisabled:true})).filter(entry => selected.has(entry.key) && entry.content);
+            const entries = (options.entries || await resolveSelectedEntries(config)).filter(entry => entry.enabled !== false && selected.has(entry.key) && entry.content);
             if (!entries.length) throw new Error('请至少勾选一条当前可读取的世界书条目');
             const result = await WSM.WorldbookSemantic.compile(entries, {progress:message => {
                 lastStatus = {state:'compiling',message,at:Date.now()};
@@ -925,8 +926,8 @@
             const explicit = Array.isArray(options.entries) ? options.entries : null;
             const selected = new Set(config.entryKeys);
             const entries = explicit
-                ? explicit.filter((entry) => selected.has(entry.key) && entry.content)
-                : await resolveSelectedEntries(config, { includeDisabled: true });
+                ? explicit.filter((entry) => entry.enabled !== false && selected.has(entry.key) && entry.content)
+                : await resolveSelectedEntries(config);
             if (!entries.length) throw new Error('请至少勾选一条当前可读取的世界书条目');
             await ensureCompiled(config, entries, { force: options.force === true });
             if (WSM.WorldbookMemory && sourceChatKey && sourceChatKey === WSM.Storage.currentChatKey()) {

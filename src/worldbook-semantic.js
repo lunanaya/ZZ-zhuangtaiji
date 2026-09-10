@@ -19,6 +19,13 @@
     async function read(start, entries, options = {}) {
         const chatKey = W.Storage.currentChatKey();
         const chat = JSON.stringify(W.Context.context()?.chat || []);
+        const selected = new Set(entries.filter(entry => entry.enabled !== false).map(entry => entry.key));
+        // A caller's cached picker is not authority for mounts or entry switches.
+        if (W.Context.listWorldbookEntries) entries = await W.Context.listWorldbookEntries();
+        const config = W.Settings.get().worldbookCompiler;
+        entries = entries.filter(entry => entry.enabled !== false && selected.has(entry.key)
+            && (config?.enabled !== true || config.entryKeys?.includes(entry.key)));
+        if (!entries.length) throw new Error('当前挂载的世界书中没有已勾选且开启的条目');
         const lockedModules = W.PlainMemory.MODULES.filter(module => start.lockedPaths.some(path => path === 'memory' || path === `memory.${module}` || path.startsWith(`memory.${module}.`)));
         options.progress?.(`正在读取 ${entries.length} 条世界书并分流到栏目（API 1/1）`);
         const response = await W.Api.complete(
@@ -49,13 +56,13 @@
         markRead(state,entries);
         delete state.runtime.finalInjectionOverride;
         state.planner.turnKey = '';
-        return {state,changed:applied.changed};
+        return {state,changed:applied.changed,count:entries.length};
     }
     async function compile(entries, options = {}) {
         const applied = await W.Api.withCallBudget(1, 'worldbook-read', () => read(W.Storage.load(), entries, options));
         await W.Storage.save(applied.state,'worldbook-read',{snapshot:true});
         await W.Engine?.syncRegisteredPrompt?.();
-        return {count:entries.length,changed:applied.changed};
+        return {count:applied.count,changed:applied.changed};
     }
     let eventSource = null;
     let eventName = '';
@@ -72,7 +79,25 @@
             }
         }
         if (W.Settings.get().enabled === false) return;
-        const content = W.PlainMemory.composeByDepth(W.Storage.load()).worldbook;
+        const state = W.Storage.load();
+        // ST has already loaded the current mounts. Use that live payload to
+        // gate unread originals without another file read or API request.
+        const live = new Map();
+        for (const group of ['globalLore','characterLore','chatLore','personaLore']) {
+            for (const entry of payload[group] || []) {
+                if ([true,1,'true','1'].includes(entry.disable) || [true,1,'true','1'].includes(entry.disabled)
+                    || [false,0,'false','0'].includes(entry.enabled)) continue;
+                const key = W.Context.worldbookEntryKey?.(entry.world,entry.uid ?? entry.id)
+                    || `${encodeURIComponent(entry.world)}::${encodeURIComponent(entry.uid ?? entry.id)}`;
+                live.set(key,entry);
+            }
+        }
+        const config = W.Settings.get().worldbookCompiler;
+        state.runtime.worldbookSources = Object.fromEntries(W.WorldbookMemory.originals(state)
+            .filter(entry => live.has(entry.key) && text(live.get(entry.key).content) === text(entry.content)
+                && (config?.enabled !== true || config.entryKeys?.includes(entry.key)))
+            .map(entry => [entry.key,entry]));
+        const content = W.PlainMemory.composeByDepth(state).worldbook;
         if (!text(content)) return;
         const position = W.Settings.get().worldbookCompiler?.injectionPosition || 'after_character';
         let noteActive = true;

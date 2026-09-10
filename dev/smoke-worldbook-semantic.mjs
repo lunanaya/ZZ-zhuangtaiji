@@ -97,6 +97,29 @@ active='b';
 assert.equal(W.WorldbookMemory.originals(W.Storage.load()).length,0);
 assert.ok(!W.PlainMemory.composeByDepth(W.Storage.load()).worldbook);
 active='a';
+// Raw fallback must obey ST's current mounts and switches on every injection,
+// even before the user rereads or the persisted source cache is refreshed.
+const backup=W.Storage.load();
+const rawKey=`${encodeURIComponent('B')}::9`;
+const rawEntry={key:rawKey,bookName:'B',content:'ONLY LIVE ENABLED SOURCE'};
+backup.runtime.worldbookSources[rawKey]=rawEntry;
+settings.worldbookCompiler.entryKeys.push(rawKey);
+await W.Storage.save(backup,'raw-fixture',{snapshot:false});
+for (const [nativeEntries,selected,expected] of [
+    [[],true,false],
+    [[{world:'B',uid:9,content:rawEntry.content,disable:true}],true,false],
+    [[{world:'B',uid:9,content:rawEntry.content,disable:false}],false,false],
+    [[{world:'B',uid:9,content:rawEntry.content,disable:false}],true,true],
+]) {
+    settings.worldbookCompiler.entryKeys=settings.worldbookCompiler.entryKeys.filter(key=>key!==rawKey);
+    if(selected) settings.worldbookCompiler.entryKeys.push(rawKey);
+    const livePayload={globalLore:[],characterLore:nativeEntries,chatLore:[],personaLore:[]};
+    await W.WorldbookSemantic._test.injectNative(livePayload);
+    assert.equal(livePayload.chatLore.some(row=>row.content.includes(rawEntry.content)),expected);
+}
+W.Context.listWorldbookEntries=async()=>[];
+await assert.rejects(W.WorldbookSemantic.compile([entry]),/没有已勾选且开启/,'stale picker entries cannot reach API after unmount');
+delete W.Context.listWorldbookEntries;
 const html=W.UI._test.renderSectionForTest(W.Storage.load(),'worldbook');
 assert.ok(html.includes('已读取归栏'));
 assert.ok(!/覆盖已通过|待核对|引用覆盖/.test(html));

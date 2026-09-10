@@ -506,7 +506,7 @@ triggers简写“事项｜条件：…｜影响：…”，未展开的扣子可
         assertCurrent(start, signal, initialChat);
         if (WSM.WorldbookMemory) source = await WSM.WorldbookMemory.restoreSource(start, source);
         assertCurrent(start, signal, initialChat);
-        if (source.worldbookDiagnostics?.unavailableNames?.length) throw new Error(`此前交给插件的世界书无法恢复：${source.worldbookDiagnostics.unavailableNames.join('、')}；请恢复对应原书后重读，不能把来源丢失当成没有设定`);
+        if (source.worldbookDiagnostics?.unavailableNames?.length) throw new Error(`当前挂载的世界书读取失败：${source.worldbookDiagnostics.unavailableNames.join('、')}；请检查对应原书后重读`);
         if (WSM.WorldbookMemory?.retain(start, source)) {
             start = await WSM.Storage.save(start, 'worldbook-takeover', {snapshot:false});
             await helpers.setStatePrompts(start);

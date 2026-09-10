@@ -398,7 +398,7 @@
         const hiddenMessages = rawChat.filter((message) => message?.is_system === true).length;
         const worldbookResult = await worldbooks(ctx);
         let configuredBooks = null;
-        if (settings.worldbookCompiler?.enabled === true) {
+        if (settings.worldbookCompiler?.enabled === true && options.worldbookTakeover !== true) {
             // Compilation membership is independent from the native entry's
             // enabled flag. Use the all-entry catalog to preserve a disabled
             // entry's precompile checkbox, while `worldbookResult` below still
@@ -422,7 +422,7 @@
             };
             if (JSON.stringify(nextCompiler) !== JSON.stringify(settings.worldbookCompiler)) WSM.Settings.update({ worldbookCompiler: nextCompiler });
         }
-        if (configuredBooks) {
+        if (configuredBooks && options.worldbookTakeover !== true) {
             worldbookResult.books = worldbookResult.books.filter((book) => configuredBooks.has(book.name));
             worldbookResult.diagnostics.requestedNames = worldbookResult.diagnostics.requestedNames.filter((name) => configuredBooks.has(name));
             worldbookResult.diagnostics.loadedNames = worldbookResult.books.map((book) => book.name);

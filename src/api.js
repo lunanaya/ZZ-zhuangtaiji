@@ -3,6 +3,36 @@
     const WSM = window.WorldStateMachine = window.WorldStateMachine || {};
     let activeCallBudget = null;
     let scriptModulePromise = null;
+    let chatModulePromise = null;
+
+    async function prepareTavernStreamBody(context, messages, settings, chatModule = null) {
+        if (context?.mainApi !== 'openai') return null;
+        if (!chatModule) {
+            if (!chatModulePromise) chatModulePromise = import('/scripts/openai.js').catch((error) => {
+                chatModulePromise = null;
+                throw error;
+            });
+            chatModule = await chatModulePromise;
+        }
+        // Reuse the active connection, including its proxy/auth settings.
+        // generateRaw always disables streaming for quiet requests.
+        // Other native wire formats retain their existing adapter.
+        if (!['openai', 'custom'].includes(chatModule.oai_settings?.chat_completion_source)) return null;
+        const localSettings = {
+            ...chatModule.oai_settings,
+            openai_max_tokens: settings.maxTokens,
+            reasoning_effort: settings.taskReasoningEffort || chatModule.oai_settings.reasoning_effort,
+            show_thoughts: false,
+        };
+        const model = chatModule.getChatCompletionModel(localSettings);
+        const { generate_data } = await chatModule.createGenerationParameters(localSettings, model, 'quiet', messages);
+        generate_data.stream = true;
+        // Internal JSONL must not inherit chat stop strings or tools.
+        delete generate_data.stop;
+        delete generate_data.tools;
+        delete generate_data.tool_choice;
+        return generate_data;
+    }
 
     async function requestHeaders() {
         if (typeof window.getRequestHeaders === 'function') return window.getRequestHeaders();
@@ -16,7 +46,7 @@
     }
 
     async function withCallBudget(maxCalls, label, operation) {
-        if (activeCallBudget) return operation(activeCallBudget);
+        if (activeCallBudget) throw new Error('已有 API 任务正在执行，请等待完成后再操作；未发送额外请求');
         const budget = { label: String(label || 'operation'), max: Math.max(0, Math.floor(Number(maxCalls) || 0)), used: 0 };
         activeCallBudget = budget;
         try { return await operation(budget); }
@@ -268,8 +298,63 @@
         }
         return null;
     }
+    function parseSentenceLines(value) {
+        const facts = [];
+        let ended = false;
+        let invalid = false;
+        const checked = new Set();
+        const add = (row) => {
+            if (Array.isArray(row)) { row.forEach(add); return; }
+            if (!row || typeof row !== 'object') { invalid = true; return; }
+            if (row.factStream) { add(row.factStream.facts || []); if (row.factStream.end) add({end:true}); return; }
+            if (row.end === true && !row.facts && !row.records && !row.memory) { ended = true; (Array.isArray(row.checkedModules) ? row.checkedModules : []).forEach(key => checked.add(key)); return; }
+            if (ended) { invalid = true; ended = false; }
+            if (Array.isArray(row.facts) || Array.isArray(row.records)) { add(row.facts || row.records); if (row.end === true) add({end:true}); return; }
+            if (row.memory && typeof row.memory === 'object') {
+                for (const [module, rows] of Object.entries(row.memory)) for (const text of Array.isArray(rows) ? rows : []) add({module,text});
+                if (row.end === true) add({end:true});
+                return;
+            }
+            if (typeof row.module !== 'string' || typeof row.text !== 'string' || (row.before !== undefined && typeof row.before !== 'string')) { invalid = true; return; }
+            // Extra provider fields never enter persistence. Only the complete
+            // sentence and an optional exact replacement locator are accepted.
+            facts.push({module:row.module, text:row.text, ...(row.before !== undefined ? {before:row.before} : {})});
+        };
+        if (value && typeof value === 'object') add(value);
+        else {
+            const input = String(value || '').replace(/<think(?:ing)?\b[\s\S]*?<\/think(?:ing)?>/gi, '').replace(/```(?:jsonl|ndjson|json)?/gi, '').trim();
+            let cursor = 0;
+            while (cursor < input.length) {
+                if (/\s/.test(input[cursor])) { cursor++; continue; }
+                if (!['{','['].includes(input[cursor])) { invalid = true; cursor++; continue; }
+                const start = cursor;
+                const stack = [];
+                let quoted = false, escaped = false, closed = false;
+                for (; cursor < input.length; cursor++) {
+                    const ch = input[cursor];
+                    if (quoted) { if (escaped) escaped = false; else if (ch === '\\') escaped = true; else if (ch === '"') quoted = false; continue; }
+                    if (ch === '"') quoted = true;
+                    else if (ch === '{') stack.push('}');
+                    else if (ch === '[') stack.push(']');
+                    else if (ch === '}' || ch === ']') {
+                        if (stack.pop() !== ch) { invalid = true; break; }
+                        if (!stack.length) { closed = true; break; }
+                    }
+                }
+                if (!closed) { invalid = true; break; } // Never mine nested objects from a broken tail.
+                try { add(JSON.parse(input.slice(start, cursor + 1))); } catch (_) { invalid = true; }
+                cursor++;
+            }
+        }
+        return {facts, patches:[], end:ended && !invalid, checkedModules:[...checked], invalid};
+    }
     function extractJson(value, options = {}) {
         const contract = String(options.jsonContract || '');
+        if (contract === 'sentences') {
+            const factStream = parseSentenceLines(value);
+            if (!factStream.facts.length && !factStream.end) throw new Error('模型没有返回完整的事实句子；旧状态已保留');
+            return {factStream};
+        }
         if (contract === 'facts') {
             const factStream = parseFactLines(value);
             if (factStream.facts.length || factStream.patches.length || factStream.end || factStream.maxCheckpoint > 0) return { factStream };
@@ -774,7 +859,7 @@
             // JSONL fact streams must remain ordinary text. Wrapping them in a
             // root-object schema recreates the giant-JSON failure mode that the
             // stream transport is specifically designed to avoid.
-            const useStructuredGeneration = !['evidence', 'delta', 'facts'].includes(jsonContract);
+            const useStructuredGeneration = !['evidence', 'delta', 'facts', 'sentences'].includes(jsonContract);
             const firstAttempt = singleAttempt
                 ? { content: await tavernAttempt(context, messages, settings, signal, timeoutMs, useStructuredGeneration, jsonContract), maxTokens: effectiveMaxTokens }
                 : await tavernAttemptWithQuotaBackoff(context, messages, settings, signal, timeoutMs, useStructuredGeneration, { ...meta, jsonContract });
@@ -862,7 +947,11 @@
             delete body.temperature;
         }
         try {
-            if (settings.useTavernApi !== false && options.forceExternal !== true) return await completeViaTavern(messages, requestSettings, options.signal, timeoutMs, meta, options.singleAttempt === true, options.jsonContract);
+            const useTavern = settings.useTavernApi !== false && options.forceExternal !== true;
+            const tavernBody = useTavern && options.stream === true
+                ? await prepareTavernStreamBody(window.SillyTavern?.getContext?.(), messages, requestSettings)
+                : null;
+            if (useTavern && !tavernBody) return await completeViaTavern(messages, requestSettings, options.signal, timeoutMs, meta, options.singleAttempt === true, options.jsonContract);
             const attempt = attemptSignal(options.signal, timeoutMs);
             let response;
             let raw;
@@ -875,7 +964,7 @@
                 // Never retry by falling back to a direct request: the proxy may
                 // already have reached the provider and a fallback could charge
                 // the user twice.
-                const proxyBody = {
+                const proxyBody = tavernBody || {
                     ...body,
                     chat_completion_source: 'openai',
                     reverse_proxy: endpointBase(settings.endpoint),
@@ -885,7 +974,7 @@
                 // delta. The prompt already defines the exact envelope and the
                 // local parser validates/repairs complete JSON boundaries. This
                 // is substantially faster and avoids Gemini's schema-state 400.
-                if (body.reasoning_effort) {
+                if (!tavernBody && body.reasoning_effort) {
                     // ST's OpenAI branch drops reasoning_effort for aliases
                     // outside its official-model allowlist. Its supported
                     // custom adapter forwards these fields to the SAME endpoint.
@@ -896,7 +985,9 @@
                     delete proxyBody.reverse_proxy;
                     delete proxyBody.proxy_password;
                 }
+                meta.model = proxyBody.model;
                 const proxyHeaders = await requestHeaders();
+                attempt.signal.throwIfAborted();
                 response = await fetch('/api/backends/chat-completions/generate', {
                     method: 'POST', headers: proxyHeaders, body: JSON.stringify(proxyBody), signal: attempt.signal,
                 });
@@ -919,7 +1010,7 @@
             const finishReason = String(data?.choices?.[0]?.finish_reason || '');
             const visibleChars = responseText(data).length;
             console.info('[WorldStateMachine] 请求诊断 ' + JSON.stringify({
-                ...meta, model: settings.model, stream: options.stream === true,
+                ...meta, stream: options.stream === true,
                 durationMs: Date.now() - requestStartedAt, finishReason,
                 visibleChars, reasoningChars: data.reasoningChars || 0,
                 outputTokens: data.usage?.completion_tokens ?? null,
@@ -938,6 +1029,7 @@
             if (streamInterrupted || budgetExhausted) {
                 try {
                     const recovered = extractJson(visibleOutput || raw, { jsonContract: options.jsonContract });
+                    if (options.jsonContract === 'sentences' && recovered.factStream) recovered.factStream.end = false;
                     WSM.Engine?.reportProgress?.(
                         streamInterrupted ? '流式结束标记缺失，已安全接收' : '模型输出到达上限，已安全抢救',
                         'running',
@@ -1017,9 +1109,9 @@
     }
     async function test(options = {}) {
         return withCallBudget(1, 'connection-test', async () => {
-            const result = await complete('只输出 {"ok":true}', { task: 'connection_test' }, { ...options, singleAttempt: true });
+            const result = await complete('只输出 {"ok":true}', { task: 'connection_test' }, { stream: true, ...options, singleAttempt: true });
             return result?.ok === true;
         });
     }
-    WSM.Api = { complete, test, listModels, withCallBudget, requestHeaders, _test: { outputTokens, quotaTokenBudgets, isQuotaReservationError, consumeCallBudget, extractJson, repairTruncatedJson, parseFactLines, parseLenientJsonObject, parseSseResponse, responseText, providerResponseError, isGptReasoningModel, contractScore } };
+    WSM.Api = { complete, test, listModels, withCallBudget, requestHeaders, _test: { prepareTavernStreamBody, outputTokens, quotaTokenBudgets, isQuotaReservationError, consumeCallBudget, extractJson, repairTruncatedJson, parseFactLines, parseLenientJsonObject, parseSseResponse, responseText, providerResponseError, isGptReasoningModel, contractScore } };
 })();

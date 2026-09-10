@@ -1,0 +1,87 @@
+import assert from 'node:assert/strict';
+import {createRequire} from 'node:module';
+import {readFile} from 'node:fs/promises';
+const {load:parseHtml} = createRequire(import.meta.url)('cheerio');
+globalThis.window=globalThis;
+globalThis.WorldStateMachine={};
+globalThis.CustomEvent=class {constructor(type,options){this.type=type;this.detail=options?.detail;}};
+globalThis.dispatchEvent=()=>{};
+globalThis.addEventListener=()=>{};
+const data=new Map();
+globalThis.localStorage={getItem:key=>data.get(key),setItem:(key,value)=>data.set(key,value),removeItem:key=>data.delete(key)};
+const chats={a:{},b:{}};
+let active='a';
+const registered=new Map();
+const context=()=>({chatId:active,characterId:0,name1:'旅人',name2:'陆衡',chatMetadata:chats[active],chat:[{is_user:true,mes:'我在青石城。'}],saveChat:async()=>{},setExtensionPrompt:(id,value)=>registered.set(id,value)});
+globalThis.SillyTavern={getContext:context};
+globalThis.getRequestHeaders=()=>({'Content-Type':'application/json'});
+for(const module of ['defaults','facts','storage','state-logic','worldbook-memory','plain-memory','worldbook-semantic','api']) await import(`../src/${module}.js`);
+const W=WorldStateMachine;
+const settings={enabled:true,useTavernApi:false,endpoint:'https://mock.invalid/v1',model:'test',maxTokens:9000,injectionModules:structuredClone(W.Defaults.INJECTION_MODULES),worldbookCompiler:{enabled:false,entryKeys:[],injectionPosition:'after_character'}};
+W.Settings={get:()=>settings};
+const raw='青石城位于北境。陆衡是医师，擅长针灸。不得进入内院，除非持有令牌。'+ '地方典故仅作背景。'.repeat(1100);
+const book={name:'世界观',entries:[{key:`${encodeURIComponent('世界观')}::0`,id:0,comment:'设定',content:raw}]};
+const source={character:{name:'陆衡',description:'陆衡原本在青石城行医。'},persona:'旅人',worldbooks:[book],chat:[{role:'assistant',content:'陆衡已经搬到东港，正在出诊。'}]};
+W.Context={context,identityNames:()=>({user:'旅人',char:'陆衡'}),buildSource:async options=>{assert.equal(options.worldbookTakeover,true);return structuredClone(source);},latestUserMessage:()=>({id:'u1',content:'陆衡现在在哪里？'}),latestAssistantMessage:()=>null};
+for(const module of ['worldbook-compiler','injection','engine','ui']) await import(`../src/${module}.js`);
+const calls=[];
+let truncate=false, emptySupplement=false;
+globalThis.fetch=async (_url,options)=>{
+    const body=JSON.parse(options.body), input=JSON.parse(body.messages[1].content);
+    calls.push(input);
+    assert.equal(input.source.worldbooks[0].entries[0].text,raw,'both requests receive full original book, including its tail');
+    assert.equal(input.source.character.description,source.character.description);
+    assert.deepEqual(input.source.chat,source.chat.map(row=>({role:row.role,text:row.content})));
+    let rows;
+    if(input.task==='PLAIN_MEMORY_READ') {
+        assert.match(body.messages[0].content,/本次为第一步事实读取/);
+        rows=[{module:'characters',text:'陆衡｜身份：医师，擅长针灸｜位置：东港｜状态：正在出诊'},
+            {module:'map',text:'北境 > 青石城'},
+            {module:'worldRules',text:'不得进入内院，除非持有令牌。'},
+            ...(!emptySupplement?[{module:'worldbook',text:'地方典故仅作背景。'}]:[])];
+    } else {
+        assert.equal(input.task,'PLAIN_MEMORY_REASON','no standalone worldbook/third call');
+        assert.ok(input.memory.characters[0].includes('东港'),'second request consumes first results');
+        assert.match(body.messages[0].content,/结合完整原始source与第一步memory/);
+        assert.ok(!input.missingModules.includes('worldbook'));
+        rows=input.missingModules.map(module=>({module,text:module==='world'?'旅人｜位置：青石城':`${W.PlainMemory.LABELS[module]}：示例有效内容`}));
+    }
+    const output=rows.map(row=>JSON.stringify(row)).join('\n')+(truncate?'\n{"module":"map","text":"unfinished':'\n{"end":true}');
+    return new Response(`data: ${JSON.stringify({choices:[{delta:{content:output},finish_reason:'stop'}]})}\n\ndata: [DONE]\n\n`,{headers:{'Content-Type':'text/event-stream'}});
+};
+const realBudget=W.Api.withCallBudget;
+W.Api.withCallBudget=(max,label,fn)=>{assert.equal(max,2,'retired three-step option must not raise budget');return realBudget(max,label,fn);};
+await W.Engine.plan({initialize:true,separateWorldbookRead:true});
+assert.deepEqual(calls.map(input=>input.task),['PLAIN_MEMORY_READ','PLAIN_MEMORY_REASON']);
+let state=W.Storage.load();
+assert.equal(state.runtime.plainReadIncomplete,false);
+assert.ok(W.WorldbookSemantic.hasRead(state,W.WorldbookMemory.originals(state)[0]));
+assert.equal(W.WorldbookMemory.fallback(state).length,0,'merged read suppresses original fallback');
+assert.ok(!W.Injection.compose(state).includes(raw));
+assert.ok(state.memory.worldbook.every(row=>!row.includes('医师')&&!row.includes('不得')));
+const native={globalLore:[{world:'世界观',uid:0,key:['青石城'],content:raw}],characterLore:[],chatLore:[],personaLore:[]};
+assert.equal(W.WorldbookCompiler._test.filterNativeWorldbookEntries(native),1,'merged read suppresses native duplicate without old compiler selection');
+assert.equal(native.globalLore.length,0);
+active='b';
+assert.equal(W.WorldbookMemory.originals(W.Storage.load()).length,0);
+active='a';
+await W.Storage.clearAll();calls.length=0;emptySupplement=true;
+await W.Engine.plan({initialize:true});
+assert.equal(calls.length,2);
+state=W.Storage.load();
+assert.equal(state.runtime.plainReadIncomplete,false,'empty residual background is valid');
+assert.deepEqual(state.memory.worldbook,[]);
+await W.Storage.clearAll();calls.length=0;truncate=true;
+await W.Engine.plan({initialize:true});
+assert.equal(calls.length,2,'truncation never adds a retry');
+state=W.Storage.load();
+assert.equal(state.runtime.plainReadIncomplete,true);
+assert.equal(Object.keys(state.runtime.worldbookRead||{}).length,0,'unfinished responses do not mark originals read');
+assert.ok(W.WorldbookMemory.fallback(state).length);
+const $=parseHtml(W.UI._test.modalHtml());
+assert.equal($('[data-settings-tab="worldbook"],[data-settings-section="worldbook"],[data-action*="compile-worldbook"]').length,0);
+assert.equal($('[data-settings-section="injection"] #wsm-worldbook-injection-position option').length,4);
+assert.equal($('[data-category-select="worldbook"]').text().trim(),'世界书补充');
+const ui=await readFile(new URL('../src/ui.js',import.meta.url),'utf8');
+assert.doesNotMatch(ui,/mountExternalWorldbookButton|renderWorldbookCompilerSettings|separateWorldbookRead/);
+console.log('PASS merged read: two real API/parser stages, full long sources, first-state carry, optional supplement, no native duplicate, truncation and merged UI');

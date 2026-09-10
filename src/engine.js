@@ -11,6 +11,7 @@
     let settlingController = null;
     let postGenerationQueue = Promise.resolve();
     let activeReadController = null;
+    let organizingPromise = null;
     let bound = false;
     let settingsBound = false;
     let knownChatMirror = [];
@@ -41,7 +42,7 @@
         // A new initialization begins a fresh, visible progress trail. Keep
         // previous stages of the active run so the user can see exactly where
         // source reading reached before it completed or failed.
-        const startsRead = /正在读取酒馆资料|正在推理并增量更新本轮状态/.test(nextMessage);
+        const startsRead = /正在读取酒馆资料|正在推理并增量更新本轮状态|正在准备读取当前聊天|正在智能整理状态|正文结算、栏目补全与世界推演/.test(nextMessage);
         const previous = startsRead ? [] : (operationProgress.steps || []);
         const startedAt = startsRead || !Number(operationProgress.startedAt)
             ? Date.now()
@@ -81,6 +82,10 @@
         return activeMessages.some((message) => safeText(message?.id) === lastUserId);
     }
     function syncIdentities(state, names = WSM.Context?.identityNames?.() || { user: '<USER>', char: '' }) {
+        if (WSM.PlainMemory?.isPlain(state)) {
+            state.identities.user = safeText(names.user || state.identities.user);
+            return state;
+        }
         const next = state;
         const previousUserName = safeText(next?.identities?.user);
         const userName = safeText(names?.user) || '<USER>';
@@ -191,7 +196,7 @@
         delete clone.lockedPaths;
         const technicalKeys = new Set([
             'basis', 'sourceRefs', 'consumers', 'delivery', 'dependencyFactIds',
-            'updatedRevision', 'checkedRevision', 'auditOrigin', 'originRef',
+            'updatedRevision', 'updatedTurn', 'checkedRevision', 'auditOrigin', 'originRef',
         ]);
         const compact = (value) => {
             if (Array.isArray(value)) return value.map(compact).filter((item) => item !== undefined);
@@ -301,9 +306,9 @@
         delete next.runtime;
         delete next.planner;
         ['worldRules','factAnchors','organizations','characters','npcActivities','relationships','knowledge','schedules','tasks','triggers','threads','processes','causalEffects','timeline'].forEach((module) => {
-            (next[module] || []).forEach((item) => { if (item && typeof item === 'object') delete item.updatedRevision; });
+            (next[module] || []).forEach((item) => { if (item && typeof item === 'object') { delete item.updatedRevision; delete item.updatedTurn; } });
         });
-        if (next.progression && typeof next.progression === 'object') delete next.progression.updatedRevision;
+        if (next.progression && typeof next.progression === 'object') { delete next.progression.updatedRevision; delete next.progression.updatedTurn; }
         return next;
     }
     function summarizeSource(source) {
@@ -863,6 +868,11 @@
             const progress = safeText(task.progress);
             return { ...task, status: 'active', progress: `${progress}${progress ? '；' : ''}完成条件尚未全部核验` };
         });
+        STATE_COLLECTION_KEYS.forEach((module) => {
+            const previous = new Map((base?.[module] || []).map((item) => [collectionIdentity(module, item), item]));
+            next[module] = (next[module] || []).map((item) => WSM.Storage.preserveMemoryTouch(previous.get(collectionIdentity(module, item)), item));
+        });
+        if (next.progression) next.progression = WSM.Storage.preserveMemoryTouch(base?.progression, next.progression);
         return next;
     }
     function applyHistoryLedger(base, changes = []) {
@@ -3844,6 +3854,7 @@
         };
     }
     async function setPrompt(content) {
+        WSM.WorldbookSemantic?.install?.();
         const ctx = WSM.Context.context();
         const setter = typeof ctx?.setExtensionPrompt === 'function' ? ctx.setExtensionPrompt.bind(ctx) : (typeof window.setExtensionPrompt === 'function' ? window.setExtensionPrompt.bind(window) : null);
         if (!setter) return;
@@ -3853,17 +3864,27 @@
     async function setStatePrompts(state, plan = {}, moduleInjections = {}) {
         return setPrompt(WSM.Injection.composeByDepth(syncIdentities(state), plan, moduleInjections));
     }
-    async function syncRegisteredPrompt() {
+    let pendingMemoryDelivery = null;
+    async function syncRegisteredPrompt(options = {}) {
         const settings = WSM.Settings.get();
         if (!settings.enabled) return setPrompt('');
         const loaded = WSM.Storage.load();
         const oldUserName = safeText(loaded?.identities?.user);
         let state = syncIdentities(loaded);
         if (oldUserName !== state.identities.user) state = await WSM.Storage.save(state, 'identity-sync', { snapshot: false });
-        const hasUsableState = state.initialized || !!safeText(state.planner?.injection);
+        const hasUsableState = state.initialized || !!safeText(state.planner?.injection) || (WSM.WorldbookMemory?.originals(state).length || 0) > 0;
         if (!hasUsableState) return setPrompt('');
         state.planner.injection = WSM.Injection.compose(state, state.planner?.plan || {}, state.planner?.moduleInjections || {});
-        return setStatePrompts(state, state.planner?.plan || {}, state.planner?.moduleInjections || {});
+        const prompts = WSM.Injection.composeByDepth(state, state.planner?.plan || {}, state.planner?.moduleInjections || {});
+        const chatKey = WSM.Storage.currentChatKey();
+        const userKey = assistantKey(WSM.Context.latestUserMessage());
+        await setPrompt(prompts);
+        if (options.captureDelivery && chatKey === WSM.Storage.currentChatKey() && userKey === assistantKey(WSM.Context.latestUserMessage())) {
+            pendingMemoryDelivery = {
+                chatKey, userKey,
+                items: WSM.Injection.createDeliveryReceipt?.(state, prompts) || [],
+            };
+        }
     }
     async function setEnabled(enabled = WSM.Settings.get().enabled !== false) {
         if (enabled) return syncRegisteredPrompt();
@@ -3911,6 +3932,9 @@
             reportProgress('读取当前聊天失败', 'error', error);
             return { error };
         }
+        if (WSM.PlainMemory) return WSM.PlainMemory.runPlan(options, {
+            turnKey, summarizeSource, reportProgress, setStatePrompts,
+        });
         // During SillyTavern's generation interceptor the newly submitted user
         // floor is guaranteed to be in the supplied `chat`, but some builds do
         // not publish it through getContext().chat until after interceptors run.
@@ -4322,7 +4346,26 @@
             return current.planner;
         }
     }
+    async function organizeState() {
+        if (organizingPromise) return organizingPromise;
+        if (WSM.Settings.get().enabled === false) throw new Error('状态机总开关已关闭');
+        if (planningPromise || settlingPromise) throw new Error('请等待当前读取完成后再整理；未调用 API');
+        const controller = new AbortController();
+        activeReadController = controller;
+        const operation = WSM.Api.withCallBudget(1, 'organize-state', () => WSM.PlainMemory.organize({signal:controller.signal}, {reportProgress, setStatePrompts}));
+        organizingPromise = operation;
+        try { return await operation; }
+        catch (error) {
+            reportProgress('智能整理未完成', controller.signal.aborted ? 'cancelled' : 'error', safeText(error.message));
+            throw error;
+        } finally {
+            if (organizingPromise === operation) organizingPromise = null;
+            if (activeReadController === controller) activeReadController = null;
+            reportProgress(operationProgress.message, operationProgress.state, operationProgress.details);
+        }
+    }
     async function ensurePlan(options = {}) {
+        if (organizingPromise) throw new Error('请等待智能整理完成后再读取；未调用 API');
         const requestedChatKey = WSM.Storage.currentChatKey();
         const requestedIntent = options.initialize === true || options.readFullChat === true ? 'full-read' : 'turn-plan';
         if (planningPromise) {
@@ -4332,18 +4375,19 @@
             catch (_error) { /* Start the requested chat operation below. */ }
             if (WSM.Storage.currentChatKey() !== requestedChatKey) return { cancelled: true };
         }
+        if (requestedIntent === 'full-read' && WSM.PlainMemory && !WSM.PlainMemory.canInitialize(WSM.Storage.load())) {
+            throw new Error('已有状态或已执行过初始化；请用读取上一轮正文更新。如需重建，先清空读取');
+        }
         const interactiveRead = options.interactiveRead === true;
         const controller = new AbortController();
         planningController = controller;
         planningChatKey = requestedChatKey;
         planningIntent = requestedIntent;
         if (interactiveRead) activeReadController = controller;
-        // Billing contract: a full initialization uses at most two model
-        // calls (fact extraction, then adjudication/recovery). Ordinary turns
-        // retain their single-call budget.
+        // Worldbooks, cards and chat share one read, followed by one reasoning call.
         const fullRead = options.initialize === true || options.readFullChat === true;
         const maximumCalls = fullRead ? 2 : ORDINARY_TURN_CALL_BUDGET;
-        const runPromise = WSM.Api.withCallBudget(maximumCalls, fullRead ? 'two-call-fact-then-reason' : 'pre-generation-reasoning', () => plan({
+        const runPromise = WSM.Api.withCallBudget(maximumCalls, fullRead ? 'initialize-fact-then-reason' : 'pre-generation-reasoning', () => plan({
             ...options, signal: controller?.signal || options.signal,
         }));
         const wrappedPromise = runPromise.finally(() => {
@@ -4371,7 +4415,8 @@
             await setPrompt('');
             return;
         }
-        if (!WSM.Storage.load().initialized) {
+        const stateForInjection = WSM.Storage.load();
+        if (!stateForInjection.initialized && !(WSM.WorldbookMemory?.originals(stateForInjection).length > 0)) {
             await setPrompt('');
             return;
         }
@@ -4383,7 +4428,8 @@
             }
             // Use the most recently saved state immediately. The new assistant
             //正文 is reconciled after MESSAGE_RECEIVED, outside this generation.
-            await syncRegisteredPrompt();
+            pendingMemoryDelivery = null;
+            await syncRegisteredPrompt({ captureDelivery: true });
             // WORLD_STATE modules are delivered through separate depth prompts.
             // The interceptor does not mutate chat, avoiding duplicate injection.
         } catch (error) {
@@ -4463,10 +4509,21 @@
     async function settle(options = {}) {
         await deletionRollbackPromise;
         if (WSM.Settings.get().enabled === false) return null;
+        if (WSM.PlainMemory) {
+            const delivery = pendingMemoryDelivery?.chatKey === WSM.Storage.currentChatKey()
+                && pendingMemoryDelivery.userKey === assistantKey(WSM.Context.latestUserMessage()) ? pendingMemoryDelivery : null;
+            return WSM.PlainMemory.settle(options, {
+                needsPreviousBodyRead, previousBodyReceipt, readReceiptRuntime, reportProgress, setStatePrompts,
+                commitDelivery(next) { if (delivery) next.runtime.sentenceDelivery = WSM.PlainMemory.commitDeliveryReceipt(next, delivery.items); },
+                deliveryCommitted() { if (pendingMemoryDelivery === delivery) pendingMemoryDelivery = null; },
+            });
+        }
         const mutationRevision = chatMutationRevision;
         const current = WSM.Storage.load();
         const operationChatKey = current.runtime?.storageChatKey || WSM.Storage.currentChatKey();
         if (!current.initialized) return null;
+        const delivery = pendingMemoryDelivery?.chatKey === operationChatKey
+            && pendingMemoryDelivery.userKey === assistantKey(WSM.Context.latestUserMessage()) ? pendingMemoryDelivery : null;
         const assistant = WSM.Context.latestAssistantMessage();
         const key = assistantKey(assistant);
         const receipt = previousBodyReceipt(assistant);
@@ -4529,7 +4586,7 @@
             const taskPrompt = latestOnly
                 ? `你是“上一轮正文”增量结算器，不是故事续写者。\n${TRUTH_POLICY_PROMPT}\npreState 包含全部既有语义状态，actualAssistantMessage 只包含最新一层正文。逐项对照正文与旧状态，但只返回正文造成的变化：未提及旧项由本地原样保留，严禁重建、枚举或复述整张状态表。更新被正文改变的当前值；正文出现旧状态没有且值得持续保存的新事实时用 create 补建；已完成或被推翻的旧项用 update/replace，只有彻底失效时才 remove。不要规划下一轮、不要推进离屏世界。只输出闭合 JSON：{"stateDelta":{"statePatch":{},"collectionOps":[]},"timelineEntry":{},"actualChanges":[]}。对象模块变化写 statePatch；列表只写 collectionOps，每项含 module、op、id，update 的 value 只写变化字段，由本地合并保留该条目的其他字段；create/replace 的 value 写新条目的完整字段。完整表达全部必要更新，actualChanges 最多6条；没有变化返回空 stateDelta。禁止解释、Markdown、完整状态及第二次调用。`
                 : `${settings.reconcilerPrompt}\n\n${TRUTH_POLICY_PROMPT}\n\n本次结算必须在同一个 JSON 响应内同时完成增量状态结算、到期的离屏生态推进与世界书浓缩缓存更新。先结算 user/assistant 正文；再严格按 npcSchedule 执行一个有界后台 tick：realtime 可结算正文行动，background 只能沿既存 motives、currentGoals、routine、npcActivities、tasks、processes 或已成立因果继续，carry 必须保持。允许完全无变化，禁止给离屏人物凭空安排新目标、巧合或重大事件。用 npcUpdates 报告本次真正检查结果。除 stateDelta、timelineEntry、actualChanges、npcUpdates 字段外，返回 worldbookEntries 数组；每项沿用输入 worldbookRules 的 key，并只依据本轮 user/assistant 实际正文修正 core、triggers、rules、background。没有变化的状态模块和世界书条目必须省略，禁止为了显得完整而复述。不得要求第二次调用。`;
-            const result = await WSM.Api.complete(taskPrompt, payload, latestOnly
+            const result = await WSM.Api.complete(`${taskPrompt}\n记忆维护补充：正文再次提及已有目标、日程或下一步，不代表事项发生变化。复述、换一种措辞、后台复查均 KEEP，不输出更新；只有时间、地点、参与者、承诺、完成状态、前置条件等实际改变才更新。不得把本轮提醒写成新的任务或进展。`, payload, latestOnly
                 // Full old state is input; only changed fields are output.
                 // Allow reasoning plus a complete delta within the user's budget.
                 ? { singleAttempt: true, maxTokens: 9000, timeoutMs: 180000, jsonContract: 'delta', stream: true, reasoningEffort: 'low', omitJailbreak: true, signal: options.signal }
@@ -4560,6 +4617,7 @@
             // only. Once that assistant response has been reconciled, resume
             // normal state-derived composition.
             delete next.runtime.finalInjectionOverride;
+            if (delivery && WSM.Injection.commitDeliveryReceipt) next.runtime.memoryDelivery = WSM.Injection.commitDeliveryReceipt(current, delivery.items);
             next.planner.injection = WSM.Injection.compose(next, next.planner?.plan || {}, next.planner?.moduleInjections || {});
             if (settledResult.timelineEntry?.summary) {
                 next.timeline = Array.isArray(next.timeline) ? next.timeline : [];
@@ -4591,6 +4649,7 @@
             const saved = await WSM.Storage.save(next, latestOnly ? (options.background ? 'post-generation-read' : 'manual-read-previous-body') : 'reconcile', latestOnly
                 ? { snapshot: true, snapshotKind: 'generation', snapshotTurnKey: `${options.background ? 'post' : 'manual'}:${key}`, snapshotReadReceipt: receipt }
                 : { snapshot: false });
+            if (pendingMemoryDelivery === delivery) pendingMemoryDelivery = null;
             const successDetails = latestOnly
                 ? `第 ${receipt.floor || '?'} 层助手正文已写入 REV ${saved.revision} · 只读正文 · API 1/1`
                 : `已读取最新助手正文并更新至 REV ${saved.revision} · 最近 ${settleSource?.tavernTextContext?.recentFullTextMessages || 5} 层正文 + 更早总结 · 本轮 API 1 次`;
@@ -4610,6 +4669,7 @@
         }
     }
     async function ensureSettle(options = {}) {
+        if (organizingPromise) throw new Error('请等待智能整理完成后再读取正文；未调用 API');
         if (settlingPromise) return settlingPromise;
         const controller = new AbortController();
         settlingController = controller;
@@ -4686,6 +4746,7 @@
         // state read after the visible正文 was already finished. The manifest
         // generate_interceptor below is the single authoritative turn hook.
         if (events.CHAT_CHANGED) source.on(events.CHAT_CHANGED, () => {
+            pendingMemoryDelivery = null;
             planningController?.abort();
             settlingController?.abort();
             if (activeReadController && !activeReadController.signal.aborted) activeReadController.abort();
@@ -4744,6 +4805,7 @@
     async function init() {
         bindSettingsEvents();
         WSM.WorldbookCompiler?.installNativeWorldbookFilter?.();
+        WSM.WorldbookSemantic?.install?.();
         await setPrompt('');
         await WSM.WorldbookCompiler?.setWorldbookPrompts?.({});
         if (!bindEvents()) {
@@ -4754,7 +4816,7 @@
             }, 1000);
         }
     }
-    WSM.Engine = { init, plan: ensurePlan, settle: ensureSettle, readPreviousBody, interceptor, fallbackInjection, reportProgress, resetProgress, getProgress, cancelRead, isReading, setEnabled, syncRegisteredPrompt, refreshGptLocalState, clearRegisteredPrompts, _test: { ordinaryTurnCallPolicy, pendingTurnReads, shouldReuseTurnPlan, interceptorTurnUserMessage, previousBodyReceipt, readFloorHighWater, readReceiptRuntime, compactTurnState, compactPreviousBodyState, deletedAssistantCount, generationBlockReason, plannerAvailable, activeChatAvailable, setPrompt, setStatePrompts, syncIdentities, initializeInSlices, sourceForInitializeSlice, rotateTriggersForNextTurn, completeSourceRecords, compactSourceChronicle, compactGptSourceChronicle, splitCompleteRecords, splitGptCompleteRecords, removeMirroredChatRecords, prepareSourceForStateRequests, buildStateWithinLimit, factsWithRegisteredSources, evidenceFromFactRecords, stateModuleHasContent, normalizeStateResult, normalizeSettlementDelta, normalizeSettlementResult, applyAssistantSceneFacts, normalizeStateCollection, normalizeStateCollections, normalizeGptIdentityAliases, reconcileEntityReferences, auditStateLifecycle, mergeStatePatch, applyStateDelta, applyHistoryLedger, historyChangesFromDelta, mergeCompleteEvidence, mergeAdjudicatedEvidence, supplementMissingEvidenceFromArchive, localEvidenceFromSource, deterministicMeowLedger, ensureDeterministicMeowLedger, sanitizeGptEvidence, sanitizeGptHydratedState, applyGptSceneToState, stateFromEvidence, firstHalfCacheKey, validateEvidenceContract, validateFilledEvidence, normalizeEvidenceFillShapes, completeExplicitlyAuditedEvidence, synthesizeEvidenceAudit, repairFinalFillFromSourceCompile, markIncompleteEvidence, preserveUnreturnedStateModules } };
+    WSM.Engine = { init, organizeState, plan: ensurePlan, settle: ensureSettle, readPreviousBody, interceptor, fallbackInjection, reportProgress, resetProgress, getProgress, cancelRead, isReading, setEnabled, syncRegisteredPrompt, refreshGptLocalState, clearRegisteredPrompts, _test: { ordinaryTurnCallPolicy, pendingTurnReads, shouldReuseTurnPlan, interceptorTurnUserMessage, previousBodyReceipt, readFloorHighWater, readReceiptRuntime, compactTurnState, compactPreviousBodyState, deletedAssistantCount, generationBlockReason, plannerAvailable, activeChatAvailable, setPrompt, setStatePrompts, syncIdentities, initializeInSlices, sourceForInitializeSlice, rotateTriggersForNextTurn, completeSourceRecords, compactSourceChronicle, compactGptSourceChronicle, splitCompleteRecords, splitGptCompleteRecords, removeMirroredChatRecords, prepareSourceForStateRequests, buildStateWithinLimit, factsWithRegisteredSources, evidenceFromFactRecords, stateModuleHasContent, normalizeStateResult, normalizeSettlementDelta, normalizeSettlementResult, applyAssistantSceneFacts, normalizeStateCollection, normalizeStateCollections, normalizeGptIdentityAliases, reconcileEntityReferences, auditStateLifecycle, mergeStatePatch, applyStateDelta, applyHistoryLedger, historyChangesFromDelta, mergeCompleteEvidence, mergeAdjudicatedEvidence, supplementMissingEvidenceFromArchive, localEvidenceFromSource, deterministicMeowLedger, ensureDeterministicMeowLedger, sanitizeGptEvidence, sanitizeGptHydratedState, applyGptSceneToState, stateFromEvidence, firstHalfCacheKey, validateEvidenceContract, validateFilledEvidence, normalizeEvidenceFillShapes, completeExplicitlyAuditedEvidence, synthesizeEvidenceAudit, repairFinalFillFromSourceCompile, markIncompleteEvidence, preserveUnreturnedStateModules } };
     WSM.Engine.readFloor = readFloorHighWater;
     WSM.Engine._test.waitForPostGenerationReads = () => postGenerationQueue;
     WSM.Engine._test.queuePostGenerationRead = queuePostGenerationRead;

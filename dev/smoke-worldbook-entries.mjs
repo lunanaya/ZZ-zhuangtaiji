@@ -60,6 +60,15 @@ assert.equal(source.worldbooks[0].entries[0].comment, '开启条目');
 assert.equal(compilerConfig.entryKeys.includes(allEntries.find((entry) => !entry.enabled).key), true, '原条目禁用不得自动取消其独立的“纳入编译”选择');
 
 const compilePayloads = [];
+const previousCompilerConfig = structuredClone(compilerConfig);
+compilerConfig.selectedBookNames = [];
+compilerConfig.knownBookNames = ['测试世界书'];
+compilerConfig.entryKeys = ['已关闭书::0'];
+const takeoverSource = await WorldStateMachine.Context.buildSource({fullChat:true,preserveFull:true,worldbookTakeover:true});
+assert.equal(takeoverSource.worldbooks[0].entries[0].comment,'开启条目','state extraction is independent from compiler book filtering');
+assert.deepEqual(compilerConfig.entryKeys,['已关闭书::0'],'takeover must not erase prior selections after native books close');
+Object.keys(compilerConfig).forEach(key => { delete compilerConfig[key]; });
+Object.assign(compilerConfig,previousCompilerConfig);
 WorldStateMachine.Api = {
     async withCallBudget(_max, _label, operation) { return operation(); },
     async complete(_prompt, payload) {

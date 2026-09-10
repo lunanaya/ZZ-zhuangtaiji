@@ -25,19 +25,24 @@
             knownEntryKeys: [...new Set((Array.isArray(raw.knownEntryKeys) ? raw.knownEntryKeys : []).map(String).filter((key) => key && key !== 'undefined'))],
             budget: Math.max(120, Math.min(2000, Math.round(Number(raw.budget) || 500))),
             contextMessages: Math.max(2, Math.min(30, Math.round(Number(raw.contextMessages) || 8))),
+            injectionPosition: ['before_character','after_character','before_author','after_author'].includes(raw.injectionPosition) ? raw.injectionPosition : 'after_character',
             failClosed: true,
         };
     }
     function nativeEntryKey(entry) {
-        const explicit = text(entry?.key);
+        const explicit = typeof entry?.key === 'string' ? text(entry.key) : '';
         if (explicit) return explicit;
         const bookName = text(entry?.world || entry?.bookName || entry?.book);
         const entryId = text(entry?.uid ?? entry?.id);
         return bookName && entryId ? `${encodeURIComponent(bookName)}::${encodeURIComponent(entryId)}` : '';
     }
     function filterNativeWorldbookEntries(payload, config = normalizeConfig()) {
-        if (!config.enabled || !config.entryKeys.length || !payload || typeof payload !== 'object') return 0;
-        const selected = new Set(config.entryKeys.map(String));
+        if (WSM.Settings.get().enabled === false) return 0;
+        if (!payload || typeof payload !== 'object') return 0;
+        const state = WSM.Storage?.load?.();
+        const selected = WSM.WorldbookSemantic
+            ? new Set((WSM.WorldbookMemory?.originals(state) || []).filter(entry => WSM.WorldbookSemantic.hasRead(state,entry)).map(entry => entry.key))
+            : new Set(config.enabled ? config.entryKeys.map(String) : []);
         let removed = 0;
         for (const key of ['globalLore','characterLore','chatLore','personaLore']) {
             const entries = payload[key];
@@ -902,6 +907,19 @@
     }
     async function compileConfig(configValue, options = {}) {
         if (WSM.Settings.get().enabled === false) throw new Error('状态机总开关已关闭');
+        if (WSM.WorldbookSemantic) {
+            const config = normalizeConfig(configValue);
+            const selected = new Set(config.entryKeys);
+            const entries = (options.entries || await resolveSelectedEntries(config, {includeDisabled:true})).filter(entry => selected.has(entry.key) && entry.content);
+            if (!entries.length) throw new Error('请至少勾选一条当前可读取的世界书条目');
+            const result = await WSM.WorldbookSemantic.compile(entries, {progress:message => {
+                lastStatus = {state:'compiling',message,at:Date.now()};
+                options.progress?.(message);
+            }});
+            lastStatus = {state:'ready',message:`已读取 ${result.count} 条世界书，更新 ${result.changed} 项栏目内容（API 1/1）`,at:Date.now()};
+            return result;
+        }
+        const sourceChatKey = WSM.Storage?.currentChatKey?.();
         return WSM.Api.withCallBudget(1, 'worldbook-update', async () => {
             const config = normalizeConfig(configValue);
             const explicit = Array.isArray(options.entries) ? options.entries : null;
@@ -911,6 +929,18 @@
                 : await resolveSelectedEntries(config, { includeDisabled: true });
             if (!entries.length) throw new Error('请至少勾选一条当前可读取的世界书条目');
             await ensureCompiled(config, entries, { force: options.force === true });
+            if (WSM.WorldbookMemory && sourceChatKey && sourceChatKey === WSM.Storage.currentChatKey()) {
+                const state = WSM.Storage.load();
+                const books = new Map();
+                for (const entry of entries) {
+                    if (!books.has(entry.bookName)) books.set(entry.bookName, {name:entry.bookName, entries:[]});
+                    books.get(entry.bookName).entries.push(entry);
+                }
+                if (WSM.WorldbookMemory.retain(state, {worldbooks:[...books.values()]})) {
+                    await WSM.Storage.save(state, 'worldbook-takeover', {snapshot:false});
+                    await WSM.Engine?.syncRegisteredPrompt?.();
+                }
+            }
             lastStatus = { state: 'ready', message: `已一次性处理 ${entries.length} 条世界书（API 1/1）`, at: Date.now() };
             return { count: entries.length };
         });

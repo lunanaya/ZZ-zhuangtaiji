@@ -14,6 +14,7 @@
 <body>
     <div class="preview-note"><b>世界状态机 · 离线预览</b><small>本页的人物和世界内容只是界面演示。正式插件初始为空，会从当前 Persona、角色卡、世界书和聊天内容建立状态；本页不会发送真实 API 请求。</small></div>
     <textarea id="send_textarea" hidden></textarea><button id="send_but" type="button" hidden></button>
+    <script src="dev/memory-view-fixture.js"></script>
     <script>
         window.previewSentMessage = '';
         document.getElementById('send_but').addEventListener('click', () => {
@@ -92,6 +93,10 @@
             runtime:{lastSettledMessageId:'a1',lastUserMessageId:'u2',sourceFingerprint:'preview',sourceSummary:{checkedAt:Date.now(),characterCard:true,persona:true,chatMessages:2,chatTotalMessages:2,chatTruncated:false,requestedWorldbooks:['分析世界书','现代都市规则'],loadedWorldbooks:['分析世界书','现代都市规则'],failedWorldbooks:[],worldbookEntryCounts:{'分析世界书':18,'现代都市规则':9},worldbookReadSources:{'分析世界书':'world-info module','现代都市规则':'context.getWorldInfo'}},worldbookInjection:{enabled:true,selectedCount:2,compiledCount:2,routedText:'公共场景中的反应必须符合距离、视线、音量和场所规范；普通互动不得自动升级为围观或冲突。\n人物只能依据亲眼所见、亲耳所闻和已经获知的信息行动，不得读取他人内心或后台状态。',routedChars:83,turnAt:Date.now(),status:{state:'ready',message:'已剔除 2 处原文，注入 83 字',at:Date.now()},delivery:{at:Date.now(),injected:true,fallback:false,removedOriginalOccurrences:2,chars:83},entries:[{key:previewCompilerKeys[0],bookName:'分析世界书',label:'公共场景与旁观者反应',core:['公共场景反应必须符合实际感知条件'],triggers:['公共或半公共场景中出现可感知行为'],rules:['普通互动不得自动升级为围观、投诉或冲突'],background:[]},{key:previewCompilerKeys[1],bookName:'分析世界书',label:'人物知识与行为边界',core:['人物不得读取他人内心或后台状态'],triggers:['人物根据所掌握信息采取行动时'],rules:['只能依据亲眼所见、亲耳所闻和已经获知的信息行动'],background:[]}]}},
             lockedPaths:['knowledge.0.knownBy','tasks.0.deadline']
         };
+        if (!new URLSearchParams(location.search).has('legacy')) {
+            Object.assign(state,{storageFormat:'sentences-v1',memory:window.memoryViewFixture,identities:{user:'林知夏',char:'夏以昼'}});
+            state.planner.notes=['可以继续询问已知的账目异常。','林知夏尚未知道军粮缺口，后台秘密不能直接作为她的发言依据。','是否接受查访必须等待主角决定。'];
+        }
         const metadata = { worldStateMachine:{ state, history:[
             {at:Date.now()-120000,reason:'reconcile',state:{...state,revision:11}},
             {at:Date.now()-300000,reason:'planner',state:{...state,revision:10}}
@@ -108,14 +113,23 @@
         window.toastr={info:console.log,success:console.log,error:console.error};
     </script>
     <script src="src/defaults.js"></script>
+    <script src="src/facts.js"></script>
     <script src="src/settings.js"></script>
     <script src="src/storage.js"></script>
+    <script src="src/state-logic.js"></script>
+    <script src="src/worldbook-memory.js"></script>
+    <script src="src/plain-memory.js"></script>
+    <script src="src/worldbook-semantic.js"></script>
+    <script src="src/memory-view.js"></script>
     <script src="src/context.js"></script>
     <script src="src/api.js"></script>
     <script src="src/worldbook-compiler.js"></script>
     <script src="src/injection.js"></script>
     <script src="src/engine.js"></script>
     <script src="src/ui.js"></script>
-    <script>WorldStateMachine.Engine.init();WorldStateMachine.UI.mount();WorldStateMachine.UI.open();</script>
+    <script>
+        WorldStateMachine.WorldbookMemory.retain(state,{worldbooks:Object.entries(previewWorldbooks).map(([name,book]) => ({name,entries:Object.values(book.entries).map(entry => ({...entry,id:entry.uid}))}))});
+        WorldStateMachine.Engine.init();WorldStateMachine.UI.mount();WorldStateMachine.UI.open();
+    </script>
 </body>
 </html>

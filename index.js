@@ -1,13 +1,18 @@
 (function () {
     'use strict';
 
-    const VERSION = '0.16.59';
+    const VERSION = '0.16.81';
     const baseUrl = new URL('./', import.meta.url).href;
     const modules = [
         'src/defaults.js',
         'src/facts.js',
         'src/settings.js',
         'src/storage.js',
+        'src/state-logic.js',
+        'src/worldbook-memory.js',
+        'src/plain-memory.js',
+        'src/worldbook-semantic.js',
+        'src/memory-view.js',
         'src/dice.js',
         'src/context.js',
         'src/api.js',

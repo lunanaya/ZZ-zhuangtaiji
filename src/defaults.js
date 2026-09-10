@@ -418,7 +418,7 @@ stateDelta为空表示完整KEEP。update只提交变化字段并由程序合并
         characters: { label: '人物概况', category: 'people', depth: 1, enabled: true, instruction: '只使用人物身份、当前落点、重要处境、持续状态与重要物品；具体移动和活动过程看NPC活动轨迹。' },
         npcActivities: { label: 'NPC活动轨迹', category: 'people', depth: 4, enabled: true, instruction: '只作为NPC具体行动与移动过程的连续性；当前落点以人物概况为准，不要复述成流水账。' },
         relationships: { label: '人物关系', category: 'people', depth: 2, enabled: true, instruction: '只描述角色怎么看待对方；具体知道哪些事实由知识与秘密约束。禁止关系评分或自动升级。' },
-        knowledge: { label: '知识与秘密', category: 'people', depth: 2, enabled: true, instruction: '秘密被召回时必须同时发送内容与完整知识边界；只约束角色实际知道、相信、怀疑或误解的事实，不得泄露给未知者。' },
+        knowledge: { label: '知识与秘密', category: 'people', depth: 2, enabled: true, instruction: '重点约束char和相关NPC不知道什么、只知道哪部分、怀疑或误解什么。内容与完整认知边界共同回传；不能凭AI读过设定让人物知情，须有明确获知渠道才更新。' },
         schedules: { label: '已有安排', category: 'affairs', depth: 3, enabled: true, instruction: '只保存已经明确承诺、约定、预约、命令或规定日期但尚未发生的事项；可能行为不得创建安排。' },
         tasks: { label: '主角任务', category: 'affairs', depth: 3, enabled: true, instruction: '只体现用户角色的目标，并区分主线与支线；每项行动选项必须根据目标、进展和条件动态生成。' },
         triggers: { label: '世界剧情扣子', category: 'affairs', depth: 4, enabled: true, instruction: '只体现世界已经向主角留下、但主角尚未回应的剧情入口；每项回应选项必须针对具体人物、地点和情境动态生成。' },

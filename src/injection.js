@@ -29,6 +29,69 @@
             return activity === 'WARM' && warmRelevant(item);
         });
     }
+    const REMINDER_RULE = '记忆用于保持事实一致。未被询问、未到触发时机且没有变化的未来安排，不主动复述，不用作结尾预告。到期提醒只需简短一次，不替用户执行或决定。';
+    const futureKey = (module, item) => `${module}:${WSM.Storage.memoryIdentity(module, item)}`;
+    const futureFingerprint = (item) => WSM.Storage.memoryFingerprint(item);
+    function mentionsSubject(input, value) {
+        const subject = text(value).toLowerCase();
+        const query = text(input).toLowerCase();
+        if (!subject || !query) return false;
+        if (subject.length >= 2 && query.includes(subject)) return true;
+        const stop = new Set(['当前','任务','安排','计划','准备','进行','继续','之后','明天','今天','需要','下一步','相关','人物','事情']);
+        const words = typeof Intl.Segmenter === 'function'
+            ? [...new Intl.Segmenter('zh', { granularity: 'word' }).segment(subject)].filter((part) => part.isWordLike).map((part) => part.segment)
+            : subject.split(/[\s，。；：、|]+/);
+        return words.some((word) => word.length >= 2 && !stop.has(word) && query.includes(word));
+    }
+    function futureSelection(state, module, item) {
+        if (['done','failed','resolved','cancelled','canceled','expired','completed','triggered'].includes(text(item.status).toLowerCase()) || item.userVisible === false) return null;
+        const user = text(WSM.Context?.latestUserMessage?.()?.content);
+        const broadQuery = /(?:有什么|有哪些|什么|查看|列出|提醒我|还要做|接下来|下一步|之后).{0,12}(?:安排|日程|任务|计划|做|事情)|(?:安排|日程|任务|计划).{0,8}(?:是什么|有哪些|如何|怎样|怎么样)/.test(user);
+        const explicit = mentionsSubject(user, item.title || item.direction) || broadQuery;
+        const key = futureKey(module, item);
+        const fingerprint = futureFingerprint(item);
+        if (explicit) return { key, fingerprint, reason: 'requested' }; // Explicit recall includes COLD records.
+        const now = WSM.Storage.storyTimestamp(state.world?.time?.iso) ?? WSM.Storage.storyTimestamp(state.world?.time?.display);
+        const timing = state.runtime?.memoryTiming?.[key];
+        const target = timing?.text === text(item.expectedTime || item.deadline) ? timing.at : WSM.Storage.storyTimestamp(item.expectedTime || item.deadline);
+        const due = now != null && target != null && now >= target - 30 * 60000;
+        const location = text(state.map?.currentLocationId);
+        const actionableHere = module === 'tasks' && location && list(item.locationRefs).includes(location);
+        const eligible = module === 'triggers' && item.status === 'eligible';
+        const decisionNeeded = module === 'progression' && !!text(item.blockedByDecision);
+        if (!due && !actionableHere && !eligible && !decisionNeeded) return null;
+        const reason = due ? `due:${target}` : eligible ? 'eligible' : decisionNeeded ? 'decision' : `location:${location}`;
+        const previous = state.runtime?.memoryDelivery?.[key];
+        const turn = Number(state.runtime?.memoryTurn || 0);
+        if (previous?.fingerprint === fingerprint) {
+            // The same unchanged trigger stays quiet indefinitely. A different
+            // scene trigger waits three successful turns; a newly due deadline
+            // bypasses that wait. Queries and changed facts also bypass it.
+            if (previous.reason === reason) return null;
+            if (!due && turn - Number(previous.turn || 0) < 3) return null;
+        }
+        return { key, fingerprint, reason };
+    }
+    function createDeliveryReceipt(state, prompts) {
+        if (WSM.PlainMemory?.isPlain(state)) return WSM.PlainMemory.createDeliveryReceipt(state, prompts);
+        const candidates = [];
+        fallbackBlocks(state, state.planner?.plan || {}, candidates);
+        const delivered = Object.values(prompts || {}).join('\n');
+        // Only complete item text that survived budget allocation counts.
+        return candidates.filter((item) => delivered.includes(removeRatingNumbers(replaceIdentityTokens(item.rendered, state)))).map(({ rendered, ...item }) => item);
+    }
+    function commitDeliveryReceipt(state, receipt = []) {
+        if (WSM.PlainMemory?.isPlain(state)) return WSM.PlainMemory.commitDeliveryReceipt(state, receipt);
+        const ledger = { ...(state.runtime?.memoryDelivery || {}) };
+        const current = new Map(['schedules','tasks','threads','triggers'].flatMap((module) => list(state[module]).map((item) => [futureKey(module, item), item])));
+        current.set(futureKey('progression', state.progression || {}), state.progression || {});
+        for (const entry of receipt) {
+            // Store what was actually sent, so a change during reconciliation
+            // remains eligible next turn instead of being prematurely consumed.
+            if (current.has(entry.key)) ledger[entry.key] = { fingerprint: entry.fingerprint, reason: entry.reason, turn: Number(state.runtime?.memoryTurn || 0) };
+        }
+        return Object.fromEntries(Object.entries(ledger).filter(([key]) => current.has(key)));
+    }
     function pacingBlock(settings = WSM.Settings?.get?.() || {}) {
         const pacing = settings.storyPacing || {};
         const mode = text(pacing.mode) || 'off';
@@ -48,6 +111,7 @@
         return [
             modeRules[mode] || modeRules.slow,
             '速度只控制推进幅度，不控制事件强度；快速不等于制造大事，极慢不等于人物停止行动。',
+            '变化点限制指前台叙述的焦点；各人物与组织仍可在同一段已过剧情时间内并行活动，无需等其他事项结束或栏目清空，后台推演保留依据与不确定性。',
             '任何速度都不得越过用户决策点。遇到是否跟随、签署、承诺、告白、离开、接受方案或改变立场等选择时，必须停下并等待用户决定。',
             '本模块不是剧情规划器：不得新增无依据节点，不得把后台可能性当成已发生事实，也不得在正文模型原有推进之外额外推进第二次。',
             sceneRule,
@@ -175,7 +239,14 @@
         return refs;
     }
 
-    function fallbackBlocks(state, plan = {}) {
+    function fallbackBlocks(state, plan = {}, deliveries = []) {
+        const renderFuture = (module, item, render) => {
+            const selection = futureSelection(state, module, item);
+            if (!selection) return '';
+            const rendered = render(item);
+            if (rendered) deliveries.push({ ...selection, rendered });
+            return rendered;
+        };
         const world = state.world || {};
         const currentLocation = text(world.location?.current);
         const isUserCharacter = (item) => text(item?.id).toLowerCase() === 'user' || (!!state.identities?.user && text(item?.name) === text(state.identities.user));
@@ -251,8 +322,8 @@
                 list(item.affiliationRefs).length ? `所属引用：${join(item.affiliationRefs)}` : '',
                 list(item.authorityRefs).length ? `权限规则引用：${join(item.authorityRefs)}` : '',
                 list(item.motives).length ? `稳定动机：${join(item.motives)}` : '',
-                list(item.currentGoals).length ? `当前目标：${join(item.currentGoals)}` : '',
-                item.routine ? `日常安排：${item.routine}` : '',
+                list(item.currentGoals).some((goal) => mentionsSubject(WSM.Context?.latestUserMessage?.()?.content, goal)) ? `当前目标：${join(list(item.currentGoals).filter((goal) => mentionsSubject(WSM.Context?.latestUserMessage?.()?.content, goal)))}` : '',
+                item.routine && /日常|作息|平时/.test(text(WSM.Context?.latestUserMessage?.()?.content)) ? `日常安排：${item.routine}` : '',
                 item.availability ? `当前可用性：${item.availability}` : '',
                 present ? `位置：${location || '当前场景'}（在场）` : `位置：${location || '未知地点'}`,
                 item.situation ? `重要处境：${item.situation}` : '',
@@ -281,38 +352,35 @@
                 join(list(item.misunderstoodBy).map((id) => entityName(state, id))) ? `误解：${join(list(item.misunderstoodBy).map((id) => entityName(state, id)))}` : '',
                 join(list(item.unknownTo).map((id) => entityName(state, id))) ? `未知：${join(list(item.unknownTo).map((id) => entityName(state, id)))}` : '',
             ].filter(Boolean).join('｜'), item)).filter(Boolean).join(PROTECTED_UNIT_SEPARATOR),
-            schedules: activeMemory(state.schedules, (item) => list(item.participantIds).some((id) => relevantNpcIds.has(id))).filter((item) => ['agreed','scheduled','changed'].includes(item.status)).map((item) => truthLine([
+            schedules: list(state.schedules).filter((item) => ['agreed','scheduled','changed'].includes(item.status)).map((item) => renderFuture('schedules', item, (item) => truthLine([
                 item.title,
                 list(item.participantIds).length ? `参与者：${join(list(item.participantIds).map((id) => entityName(state, id)))}` : '',
                 item.expectedTime ? `预计时间：${item.expectedTime}` : '',
                 list(item.preconditions).length ? `前置条件：${join(item.preconditions)}` : '',
                 `状态：${item.status}`,
-            ].filter(Boolean).join('｜'), item)).join('\n'),
-            tasks: activeMemory(state.tasks, (item) => item.status === 'active' && item.userVisible !== false).filter((item) => !['done','failed'].includes(item.status)).map((item) => truthLine([
+            ].filter(Boolean).join('｜'), item))).filter(Boolean).join('\n'),
+            tasks: list(state.tasks).map((item) => renderFuture('tasks', item, (item) => truthLine([
                 `${item.title}：${item.progress || item.status || '待处理'}${item.deadline ? `；截止${item.deadline}` : ''}`,
                 list(item.dependencies).length ? `依赖：${join(item.dependencies)}` : '',
                 list(item.completionConditions).length ? `完成条件（必须逐条核验）：${join(item.completionConditions)}` : '',
                 list(item.completedConditions).length ? `已核验完成条件：${join(item.completedConditions)}` : '',
                 [...list(item.locationRefs), ...list(item.characterRefs), ...list(item.ruleRefs), ...list(item.knowledgeRefs), ...list(item.resourceConstraintRefs)].length ? `依赖引用：${join([...list(item.locationRefs), ...list(item.characterRefs), ...list(item.ruleRefs), ...list(item.knowledgeRefs), ...list(item.resourceConstraintRefs)])}` : '',
-            ].filter(Boolean).join('｜'), item)).join('\n'),
-            triggers: activeMemory(state.triggers, (item) => item.status === 'eligible').filter((item) => !['triggered','expired'].includes(item.status)).map((item) => truthLine(`${item.title}：条件${join(item.conditions) || '未设定'}；当前${item.status || 'armed'}`, item)).join('\n'),
-            threads: activeMemory(state.threads, (item) => item.priority === 'L3' && touchesRelevant(item.participantIds)).filter((item) => item.status !== 'resolved').map((item) => truthLine(`${item.title}：${item.nextNaturalStep || item.status || '延续中'}`, item)).join('\n'),
-            progression: state.progression?.activity !== 'COLD' ? truthLine([
-                state.progression?.direction ? `当前方向：${state.progression.direction}` : '',
+            ].filter(Boolean).join('｜'), item))).filter(Boolean).join('\n'),
+            triggers: list(state.triggers).map((item) => renderFuture('triggers', item, (item) => truthLine(`${item.title}：条件${join(item.conditions) || '未设定'}；当前${item.status || 'armed'}`, item))).filter(Boolean).join('\n'),
+            threads: list(state.threads).map((item) => renderFuture('threads', item, (item) => truthLine(`${item.title}：${item.nextNaturalStep || item.status || '延续中'}`, item))).filter(Boolean).join('\n'),
+            progression: [state.progression?.activity !== 'COLD' ? truthLine([
                 state.progression?.currentMovement ? `当前变化：${state.progression.currentMovement}` : '',
-                join(state.progression?.nextRequiredChanges) ? `下一阶段仍需：${join(state.progression.nextRequiredChanges)}` : '',
-                state.progression?.blockedByDecision ? `必须停在用户决策点：${state.progression.blockedByDecision}` : '',
             ].filter(Boolean).join('\n'), state.progression) : '',
+            state.progression?.blockedByDecision ? truthLine(`必须停在用户决策点：${state.progression.blockedByDecision}`, state.progression) : '',
+            renderFuture('progression', state.progression || {}, (item) => truthLine([
+                item.direction ? `当前方向：${item.direction}` : '',
+                join(item.nextRequiredChanges) ? `下一阶段仍需：${join(item.nextRequiredChanges)}` : '',
+            ].filter(Boolean).join('\n'), item))].filter(Boolean).join('\n'),
             processes: activeMemory(state.processes, (item) => item.priority === 'L3').filter((item) => item.status !== 'resolved').map((item) => truthLine(`${item.title}：${item.currentDirection || item.status || '自然延续'}${Number(item.progress?.max) > 0 ? `；进度${Number(item.progress?.current || 0)}/${Number(item.progress.max)}` : ''}`, item)).join('\n'),
             causalEffects: activeMemory(state.causalEffects, (item) => item.status === 'active' && touchesRelevant(item.affectedIds)).filter((item) => item.status === 'active').map((item) => truthLine([item.cause || item.causeRef, ...list(item.steps), item.result].filter(Boolean).join(' → '), item)).join('\n'),
             pacing: pacingBlock(),
             planner: [
-                plan.advanceDecision?.direction ? `本轮方向：${plan.advanceDecision.direction}` : '',
-                plan.advanceDecision?.mode ? `推进方式：${plan.advanceDecision.mode}；强度：${plan.advanceDecision.intensity || 'none'}` : '',
-                ...list(plan.eligibleDevelopments).map((value) => `可以：${value}`),
                 ...list(plan.forbiddenDevelopments).map((value) => `不要：${value}`),
-                ...list(plan.noChangeReasons).map((value) => `可无变化：${value}`),
-                plan.notes ? `备注：${plan.notes}` : '',
             ].filter(Boolean).join('\n'),
         };
     }
@@ -454,6 +522,8 @@
             const fact = WSM.Facts.normalize(factValue);
             if (!fact.statement || includedFactIds.has(fact.factId) || fact.delivery === 'local') return;
             let owner = fact.owner;
+            if (['tasks','schedules','threads','triggers','progression'].includes(owner)
+                && !mentionsSubject(WSM.Context?.latestUserMessage?.()?.content, fact.statement)) return;
             const ownerAvailable = WSM.Defaults.INJECTION_MODULES[owner] && moduleConfig(owner).enabled !== false;
             if (!ownerAvailable) owner = 'worldbook';
             const depth = owner === 'worldbook'
@@ -482,6 +552,7 @@
     });
 
     function compose(state, plan = {}, plannerBlocks = {}) {
+        if (WSM.PlainMemory?.isPlain(state)) return Object.values(WSM.PlainMemory.composeByDepth(state)).join('\n\n');
         const settings = WSM.Settings.get();
         if (settings.enabled === false) return '';
         const override = finalOverride(state);
@@ -492,7 +563,7 @@
         const factGroups = activeFactGroups(state, modules);
         const diceBlock = settings.diceEnabled ? WSM.Dice?.injectionBlock?.(plan.diceRound) : '';
         const authorityBlock = '[外置状态权威]\n本 WORLD_STATE 标签是本轮唯一状态来源。只输出叙事正文及用户明确要求的附加格式；不得另行输出 <INDRS>、<abstract>、<note> 或 GM_STATE，不得在正文后自行提交第二套状态。';
-        const fixedBlock = [diceBlock, authorityBlock].filter(Boolean).join('\n\n');
+        const fixedBlock = [diceBlock, authorityBlock, REMINDER_RULE].filter(Boolean).join('\n\n');
         const candidates = [];
         const seenFacts = [];
         Object.entries(WSM.Defaults.INJECTION_MODULES).forEach(([id, defaultModule]) => {
@@ -500,7 +571,7 @@
             const config = Object.assign({}, defaultModule, modules[id] || {});
             if (config.enabled === false) return;
             const projectedFacts = factGroups.filter((group) => group.owner === id).map((group) => group.content).filter(Boolean).join('\n');
-            const source = [(['ambient','planner'].includes(id) ? (supplied[id] || generated[id]) : generated[id]), projectedFacts].filter(Boolean).join('\n');
+            const source = [(id === 'ambient' ? (supplied[id] || generated[id]) : generated[id]), projectedFacts].filter(Boolean).join('\n');
             const content = dedupeContent(removeRatingNumbers(replaceIdentityTokens(source, state)), seenFacts);
             if (!content) return;
             const instruction = text(settings.modulePrompts?.[id] || config.instruction);
@@ -518,6 +589,7 @@
     }
 
     function composeByDepth(state, plan = {}, plannerBlocks = {}) {
+        if (WSM.PlainMemory?.isPlain(state)) return WSM.PlainMemory.composeByDepth(state);
         const settings = WSM.Settings.get();
         if (settings.enabled === false) return {};
         const override = finalOverride(state);
@@ -533,7 +605,7 @@
             const config = Object.assign({}, defaultModule, modules[id] || {});
             if (config.enabled === false) return;
             const projectedFacts = factGroups.filter((group) => group.owner === id).map((group) => group.content).filter(Boolean).join('\n');
-            const source = [(['ambient','planner'].includes(id) ? (supplied[id] || generated[id]) : generated[id]), projectedFacts].filter(Boolean).join('\n');
+            const source = [(id === 'ambient' ? (supplied[id] || generated[id]) : generated[id]), projectedFacts].filter(Boolean).join('\n');
             const content = dedupeContent(removeRatingNumbers(replaceIdentityTokens(source, state)), seenFacts);
             if (!content) return;
             const instruction = text(settings.modulePrompts?.[id] || config.instruction);
@@ -556,7 +628,7 @@
         const weights = new Map(activeDepths.map((depth) => {
             const items = groups.get(depth) || [];
             const contentWeight = items.reduce((size, item) => size + item.content.length + item.instruction.length, 0);
-            const fixedWeight = depth === 0 ? [diceBlock, authorityBlock].filter(Boolean).join('\n\n').length : 0;
+            const fixedWeight = depth === 0 ? [diceBlock, authorityBlock, REMINDER_RULE].filter(Boolean).join('\n\n').length : 0;
             return [depth, Math.max(1, contentWeight + fixedWeight)];
         }));
         const totalWeight = [...weights.values()].reduce((sum, weight) => sum + weight, 0) || 1;
@@ -580,7 +652,7 @@
         const prompts = {};
         activeDepths.forEach((depth) => {
             const candidates = groups.get(depth) || [];
-            const fixed = depth === 0 ? [diceBlock, authorityBlock].filter(Boolean).join('\n\n') : '';
+            const fixed = depth === 0 ? [diceBlock, authorityBlock, REMINDER_RULE].filter(Boolean).join('\n\n') : '';
             const body = composeWithinBudget(fixed, candidates, budgets.get(depth));
             prompts[depth] = `<WORLD_STATE depth="${depth}">\n${body}\n</WORLD_STATE>`;
         });
@@ -594,5 +666,5 @@
         return Object.keys(statePrompts).map(Number).filter(Number.isFinite).sort((a, b) => a - b).map((depth) => text(statePrompts[depth])).filter(Boolean).join('\n\n');
     }
 
-    WSM.Injection = { compose, composeByDepth, preview, normalizeFinalOverride, fallbackBlocks, pacingBlock, _test: { replaceIdentityTokens, entityName } };
+    WSM.Injection = { compose, composeByDepth, preview, normalizeFinalOverride, fallbackBlocks, pacingBlock, createDeliveryReceipt, commitDeliveryReceipt, _test: { replaceIdentityTokens, entityName, futureSelection } };
 })();

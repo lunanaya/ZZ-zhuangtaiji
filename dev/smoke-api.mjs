@@ -265,6 +265,7 @@ assert.equal(parsedStream.choices[0].message.content, '{"evidence":{"canon":["�
 assert.equal(parsedStream.choices[0].finish_reason, 'stop');
 const callsBeforeBudgetTest = forwardedCalls;
 await WorldStateMachine.Api.withCallBudget(2, 'two-call-hard-cap', async () => {
+    await assert.rejects(WorldStateMachine.Api.withCallBudget(1, 'overlapping-operation', () => { throw new Error('must never run'); }), /已有 API 任务/);
     await WorldStateMachine.Api.complete('BASE-SYSTEM', { task: 'cap-a' });
     await WorldStateMachine.Api.complete('BASE-SYSTEM', { task: 'cap-b' });
     await assert.rejects(WorldStateMachine.Api.complete('BASE-SYSTEM', { task: 'blocked-third' }), /调用上限（2 次）/);

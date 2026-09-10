@@ -14,6 +14,104 @@
         threads: 8, processes: 8, causalEffects: 10, timeline: 24,
     });
     const MEMORY_MODULES = ['worldRules','factAnchors','resourceConstraints','organizations','characters','npcActivities','relationships','knowledge','schedules','tasks','triggers','threads','processes','causalEffects','timeline'];
+    const MEMORY_META = new Set(['activity','priority','updatedRevision','updatedTurn','basis','source','sourceRefs','evidence','evidenceRefs','checkedRevision','lastCheckedAt']);
+    // Ignore audit refreshes, object key order and cosmetic whitespace. Keep
+    // negation, conditions, truth status and ordered causal steps significant.
+    function memoryFingerprint(value) {
+        const semantic = (entry) => {
+            if (typeof entry === 'string') return entry.trim().replace(/\s+/g, ' ');
+            if (Array.isArray(entry)) return entry.map(semantic);
+            if (!entry || typeof entry !== 'object') return entry;
+            return Object.fromEntries(Object.keys(entry).sort().filter((key) => !MEMORY_META.has(key) && !(key === 'coverageOnly' && entry[key] === false)).map((key) => [key, semantic(entry[key])]));
+        };
+        return JSON.stringify(semantic(value));
+    }
+    function memoryIdentity(module, item = {}, index = 0) {
+        if (module === 'relationships') return `${item.from}>${item.to}`;
+        if (module === 'npcActivities') return String(item.characterId || item.id || index);
+        return String(item.id || item.factId || item.title || item.name || item.information || index);
+    }
+    function preserveMemoryTouch(previous, candidate) {
+        if (!previous || memoryFingerprint(previous) !== memoryFingerprint(candidate)) return candidate;
+        const next = { ...candidate };
+        for (const key of ['activity','updatedRevision','updatedTurn']) {
+            if (Object.prototype.hasOwnProperty.call(previous, key)) next[key] = previous[key];
+            else delete next[key];
+        }
+        return next;
+    }
+    function memoryAge(item, turn) {
+        // Old saves start at age zero; never interpret a REV as a chat turn.
+        const touched = Number(item?.updatedTurn ?? turn);
+        return Number.isFinite(touched) ? Math.max(0, turn - touched) : 0;
+    }
+    function storyTimestamp(value) {
+        const input = String(value || '').trim();
+        const match = input.match(/(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?(?:[T\s]+(\d{1,2})[:：](\d{2}))?/);
+        if (!match) return null;
+        if (/上午|下午|晚上|傍晚|早上|中午|凌晨|点|時|时/.test(input)) return null;
+        const [, year, month, day, hour = '0', minute = '0'] = match;
+        if (+month < 1 || +month > 12 || +day < 1 || +day > 31 || +hour > 23 || +minute > 59) return null;
+        // A fictional calendar is interpreted consistently, never relative to
+        // the host clock or its timezone.
+        const timestamp = Date.UTC(+year, +month - 1, +day, +hour, +minute);
+        const date = new Date(timestamp);
+        return date.getUTCMonth() === +month - 1 && date.getUTCDate() === +day ? timestamp : null;
+    }
+    function resolveReminderTime(value, anchor) {
+        const absolute = storyTimestamp(value);
+        if (absolute != null) return absolute;
+        if (anchor == null) return null;
+        const input = String(value || '');
+        if (/上午|下午|晚上|傍晚|早上|中午|凌晨|点|時|时/.test(input)) return null;
+        const clock = input.match(/(?:^|\D)(\d{1,2})[:：](\d{2})(?!\d)/);
+        const relative = input.match(/今天|今日|明天|明日|后天|后日/);
+        if (!clock && !relative) return null;
+        const hour = clock ? +clock[1] : 0;
+        const minute = clock ? +clock[2] : 0;
+        if (hour > 23 || minute > 59) return null;
+        const days = /后天|后日/.test(relative?.[0] || '') ? 2 : /明天|明日/.test(relative?.[0] || '') ? 1 : 0;
+        return Math.floor(anchor / 86400000) * 86400000 + days * 86400000 + (hour * 60 + minute) * 60000;
+    }
+    function reconcileMemoryClock(previous, candidate, options = {}) {
+        const next = clone(candidate);
+        next.runtime ||= {};
+        if (options.restore) return next;
+        const oldTurn = Number(previous?.runtime?.memoryTurn || 0);
+        const receipt = String(options.receipt || '');
+        const oldReceipt = String(previous?.runtime?.memoryReceipt || previous?.runtime?.lastSettledMessageId || '');
+        const turn = oldTurn + Number(!!receipt && receipt !== oldReceipt);
+        next.runtime.memoryTurn = turn;
+        next.runtime.memoryReceipt = receipt || oldReceipt;
+        next.runtime.memoryTiming = {};
+        const storyNow = storyTimestamp(next.world?.time?.iso) ?? storyTimestamp(next.world?.time?.display);
+        const touch = (module, item, old) => {
+            if (!item || typeof item !== 'object') return item;
+            const changed = !old || memoryFingerprint(item) !== memoryFingerprint(old);
+            if (['tasks','schedules'].includes(module)) {
+                const key = `${module}:${memoryIdentity(module, item)}`;
+                const timeText = String(item.expectedTime || item.deadline || '');
+                const oldTime = previous?.runtime?.memoryTiming?.[key];
+                // Relative times acquire an anchor only when newly established
+                // or explicitly rescheduled. Old unanchored prose is ambiguous.
+                const anchor = !old || timeText !== String(old.expectedTime || old.deadline || '') ? storyNow : null;
+                next.runtime.memoryTiming[key] = oldTime?.text === timeText ? oldTime : { text: timeText, at: resolveReminderTime(timeText, anchor) };
+            }
+            item.updatedTurn = changed ? turn : Number(old.updatedTurn ?? oldTurn);
+            item.updatedRevision = changed ? Number(previous?.revision || 0) + 1 : Number(old.updatedRevision ?? previous?.revision ?? 0);
+            if (changed) item.activity = old ? 'HOT' : (item.activity || defaultActivity(module, item));
+            else item.activity = old.activity || defaultActivity(module, old);
+            return item;
+        };
+        [...MEMORY_MODULES, 'locations'].forEach((module) => {
+            const oldItems = module === 'locations' ? previous?.map?.locations : previous?.[module];
+            const items = module === 'locations' ? next.map?.locations : next[module];
+            const byId = new Map((Array.isArray(oldItems) ? oldItems : []).map((item, index) => [memoryIdentity(module, item, index), item]));
+            (Array.isArray(items) ? items : []).forEach((item, index) => touch(module, item, byId.get(memoryIdentity(module, item, index))));
+        });
+        if (next.progression) touch('progression', next.progression, previous?.progression);
+        return next;
+    }
     const PRIORITY_DEFAULTS = Object.freeze({
         worldRules: 'L3', factAnchors: 'L3', resourceConstraints: 'L2', organizations: 'L2', characters: 'L2', npcActivities: 'L1', relationships: 'L2', knowledge: 'L2', schedules: 'L2', tasks: 'L2',
         triggers: 'L1', threads: 'L2', processes: 'L2', causalEffects: 'L2', timeline: 'L1',
@@ -184,11 +282,11 @@
                 ? priority : (module === 'characters' && next.maintenanceLevel === 'core' ? 'L3' : PRIORITY_DEFAULTS[module]);
             next.activity = ['HOT','WARM','COLD'].includes(activity) ? activity : defaultActivity(module, next);
             if (!Number.isFinite(Number(next.updatedRevision))) next.updatedRevision = revision;
-            const age = Math.max(0, revision - Number(next.updatedRevision || revision));
+            const age = memoryAge(next, revision);
             if (next.activity === 'HOT' && age > 4) next.activity = 'WARM';
             if (next.activity === 'WARM' && age > 12) next.activity = 'COLD';
             return next;
-        }).filter((item) => module === 'timeline' || item.priority !== 'L1' || item.activity !== 'COLD');
+        }).filter((item) => ['timeline','tasks','schedules','threads','triggers'].includes(module) || item.priority !== 'L1' || item.activity !== 'COLD');
     }
     function itemKey(item, index) {
         if (item && typeof item === 'object') return String(item.id || item.key || item.title || item.name || item.information || `${index}`);
@@ -315,8 +413,7 @@
     function removeExpiredL1(values, revision, keep = () => false) {
         return (Array.isArray(values) ? values : []).filter((item) => {
             if (String(item?.priority || '').toUpperCase() !== 'L1' || keep(item)) return true;
-            const touched = Number(item?.updatedRevision);
-            return !Number.isFinite(touched) || Math.max(0, revision - touched) <= 16;
+            return memoryAge(item, revision) <= 16;
         });
     }
     function compactTimeline(values, limit) {
@@ -368,7 +465,7 @@
         return state;
     }
     function compactState(state) {
-        const revision = Number(state.revision || 0);
+        const revision = Number(state.runtime?.memoryTurn || 0);
         MEMORY_MODULES.forEach((module) => {
             const values = (Array.isArray(state[module]) ? state[module] : []).filter((item) => validMemoryItem(module, item));
             state[module] = semanticRecent(values, Math.max(RETENTION_LIMITS[module] || values.length, values.length), (item, index) => memoryKey(module, item, index));
@@ -385,8 +482,7 @@
         state.resourceConstraints = activeFirst(removeExpiredL1(state.resourceConstraints.filter((item) => !['expired','satisfied'].includes(String(item?.status || '').toLowerCase())), revision, (item) => item?.status === 'active'), RETENTION_LIMITS.resourceConstraints, (item) => item?.status === 'active', (item) => String(item?.id || `${item?.subjectId || ''}>${item?.kind || ''}>${item?.scope || ''}`))
             .map((item) => trimFields(item, { sourceRefs: 4 }));
         state.progression ||= { priority: 'L2', activity: 'WARM', direction: '', currentMovement: '', nextRequiredChanges: [], basedOnRefs: [], blockedByDecision: '', updatedRevision: 0 };
-        const progressionTouched = Number.isFinite(Number(state.progression.updatedRevision)) ? Number(state.progression.updatedRevision) : revision;
-        const progressionAge = Math.max(0, revision - progressionTouched);
+        const progressionAge = memoryAge(state.progression, revision);
         if (state.progression.activity === 'HOT' && progressionAge > 4) state.progression.activity = 'WARM';
         if (state.progression.activity === 'WARM' && progressionAge > 12) state.progression.activity = 'COLD';
         state.progression.nextRequiredChanges = trimArray(state.progression.nextRequiredChanges, 6, false);
@@ -408,8 +504,7 @@
         });
         const eligibleLocations = state.map.locations.filter((item) => {
             if (requiredLocationIds.has(item.id) || item.priority === 'L3') return true;
-            const touched = Number(item.updatedRevision);
-            const age = Number.isFinite(touched) ? Math.max(0, revision - touched) : 0;
+            const age = memoryAge(item, revision);
             if (item.priority === 'L1' && (item.activity === 'COLD' || age > 16)) return false;
             if (item.priority === 'L2' && item.activity === 'COLD' && age > 40) return false;
             return true;
@@ -458,9 +553,9 @@
             holderIds: 8, knownBy: 8, believedBy: 8, suspectedBy: 8, misunderstoodBy: 8, unknownTo: 8,
             relatedRefs: 6, evidence: 5, discoveryPaths: 4, maturityConditions: 4,
         }));
-        state.schedules = activeFirst(removeExpiredL1(state.schedules, revision), RETENTION_LIMITS.schedules, (item) => ['agreed','scheduled','changed'].includes(String(item?.status || '').toLowerCase()), (item) => String(item?.id || item?.title || ''))
+        state.schedules = activeFirst(removeExpiredL1(state.schedules, revision, (item) => ['agreed','scheduled','changed'].includes(item?.status)), RETENTION_LIMITS.schedules, (item) => ['agreed','scheduled','changed'].includes(String(item?.status || '').toLowerCase()), (item) => String(item?.id || item?.title || ''))
             .map((item) => trimFields(item, { participantIds: 8, preconditions: 8, basis: 4, sourceRefs: 6 }));
-        state.tasks = activeFirst(removeExpiredL1(state.tasks.filter((item) => !['done','failed'].includes(item?.status)), revision, (item) => item?.status === 'active'), RETENTION_LIMITS.tasks, (item) => ['active','blocked'].includes(item?.status), (item) => String(item?.title || item?.id || ''))
+        state.tasks = activeFirst(removeExpiredL1(state.tasks.filter((item) => !['done','failed'].includes(item?.status)), revision, (item) => ['active','blocked','pending'].includes(item?.status)), RETENTION_LIMITS.tasks, (item) => ['active','blocked'].includes(item?.status), (item) => String(item?.title || item?.id || ''))
             .map((item) => trimFields(item, { ownerIds: 6, dependencies: 8, locationRefs: 8, characterRefs: 8, ruleRefs: 8, knowledgeRefs: 8, resourceConstraintRefs: 8, completionConditions: 8, completedConditions: 8, consequences: 4, sourceRefs: 4 }));
         state.triggers = activeFirst(state.triggers.filter((item) => !['triggered','expired'].includes(item?.status)), RETENTION_LIMITS.triggers, (item) => item?.status === 'eligible', (item) => String(item?.title || item?.id || ''))
             .map((item) => trimFields(item, { conditions: 4, effectsIfTriggered: 4, blockedReasons: 3, sourceRefs: 4 }));
@@ -639,6 +734,7 @@
         return box;
     }
     function normalizeState(value) {
+        if (WSM.PlainMemory) return WSM.PlainMemory.normalize(value || {});
         const incomingVersion = Number(value?.schemaVersion || 0);
         const state = Object.assign(WSM.Defaults.createState(), clone(value || {}));
         state.identities = Object.assign({ user: '', char: '' }, state.identities || {});
@@ -727,7 +823,7 @@
             location.priority = ['L1','L2','L3'].includes(priority) ? priority : defaultMapPriority(location.type);
             location.activity = ['HOT','WARM','COLD'].includes(activity) ? activity : (location.status === 'visited' ? 'HOT' : 'WARM');
             location.updatedRevision = Number.isFinite(Number(location.updatedRevision)) ? Number(location.updatedRevision) : Number(state.revision || 0);
-            const locationAge = Math.max(0, Number(state.revision || 0) - location.updatedRevision);
+            const locationAge = memoryAge(location, Number(state.runtime?.memoryTurn || 0));
             if (location.activity === 'HOT' && locationAge > 4) location.activity = 'WARM';
             if (location.activity === 'WARM' && locationAge > 12) location.activity = 'COLD';
             location.sourceRefs = stringList(location.sourceRefs);
@@ -1583,7 +1679,8 @@
         }
         const box = envelope();
         if (options.clearHistory === true) box.history = [];
-        if (options.snapshot === true && box.state) {
+        const repeatedPlainSnapshot = WSM.PlainMemory && options.snapshotTurnKey && box.history[0]?.kind === 'generation' && box.history[0]?.turnKey === options.snapshotTurnKey;
+        if (options.snapshot === true && box.state && !repeatedPlainSnapshot) {
             box.history.unshift({
                 at: Date.now(), reason, kind: options.snapshotKind || 'generation',
                 turnKey: String(options.snapshotTurnKey || ''),
@@ -1592,12 +1689,15 @@
             });
             box.history = box.history.filter(isGenerationSnapshot).slice(0, HISTORY_LIMIT);
         }
-        const state = normalizeState(next || WSM.Defaults.createState());
+        const state = WSM.PlainMemory ? WSM.PlainMemory.prepareSave(normalizeState(box.state), next || {}, reason, options) : normalizeState(reconcileMemoryClock(normalizeState(box.state), next || WSM.Defaults.createState(), {
+            restore: reason.startsWith('rollback'),
+            receipt: options.snapshotReadReceipt?.messageKey || (['reconcile','turn-reconcile-and-reason'].includes(reason) ? next?.runtime?.lastSettledMessageId : ''),
+        }));
         state.runtime ||= {};
         state.runtime.storageChatKey = activeChatKey;
         state.revision = Number(state.revision || 0) + 1;
         state.updatedAt = Date.now();
-        box.state = state;
+        box.state = WSM.PlainMemory ? WSM.PlainMemory.pack(state) : state;
         await persist();
         window.dispatchEvent(new CustomEvent('wsm-state-changed', { detail: { reason } }));
         return clone(state);
@@ -1682,10 +1782,14 @@
         return clone(box.state);
     }
     function memoryItemCount(state) {
+        if (WSM.PlainMemory?.isPlain(state)) return Object.values(state.memory).reduce((sum, values) => sum + values.length, 0);
         return MEMORY_MODULES.reduce((total, module) => total + (Array.isArray(state?.[module]) ? state[module].length : 0), 0);
     }
     async function organizeState(mode = 'smart') {
         const current = load();
+        if (WSM.PlainMemory?.isPlain(current)) {
+            return WSM.Engine.organizeState();
+        }
         if (!current.initialized) throw new Error('状态尚未初始化');
         const next = clone(current);
         const beforeItems = memoryItemCount(next);
@@ -1743,6 +1847,7 @@
         return result;
     }
     WSM.Storage = {
+        memoryFingerprint, memoryIdentity, preserveMemoryTouch, reconcileMemoryClock, storyTimestamp, resolveReminderTime,
         load, save, currentChatKey, history, rollbackPreviousGeneration, rollbackGenerations, clearAll, organizeState, enforceLocks, enforceTruthTransition, clone, normalizeMapHierarchy,
         readSourceReadCache, readSourceReadArchive, writeSourceReadCache,
         loadHistoryMemory, beginHistoryCalibration, readHistoryCalibrationChunk, writeHistoryCalibrationChunk,

@@ -33,7 +33,7 @@
         blockOnPlannerError: false,
         injectionModules: WSM.Defaults.INJECTION_MODULES,
         modulePrompts: WSM.Defaults.MODULE_PROMPTS,
-        worldbookCompiler: { enabled: false, selectedBookNames: [], knownBookNames: [], entryKeys: [], knownEntryKeys: [], budget: 500, contextMessages: 8, failClosed: true },
+        worldbookCompiler: { enabled: false, selectedBookNames: [], knownBookNames: [], entryKeys: [], knownEntryKeys: [], budget: 500, contextMessages: 8, failClosed: true, injectionPosition: 'after_character' },
         timeoutMs: 180000,
         plannerPrompt: WSM.Defaults.PLANNER_PROMPT,
         reconcilerPrompt: WSM.Defaults.RECONCILER_PROMPT,

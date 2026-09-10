@@ -210,10 +210,11 @@ assert.equal(repairedHierarchy.find((item) => item.id === 'building').parentId, 
 assert.equal(repairedHierarchy.find((item) => item.id === 'room').parentId, 'building', '室内空间应归入建筑');
 const gcState = WorldStateMachine.Defaults.createState();
 gcState.revision = 20;
+gcState.runtime.memoryTurn = 20;
 gcState.relationships = [
     { id: 'old-rel', from: 'user', to: 'char', priority: 'L2', status: '旧摘要' },
     { id: 'new-rel', from: 'user', to: 'char', priority: 'L2', status: '当前摘要' },
-    { id: 'expired-rel', from: 'char', to: 'npc', priority: 'L1', status: '临时印象', updatedRevision: 2 },
+    { id: 'expired-rel', from: 'char', to: 'npc', priority: 'L1', status: '临时印象', updatedRevision: 2, updatedTurn: 2 },
     ...Array.from({ length: 35 }, (_, index) => ({ id: `l3-rel-${index}`, from: `a${index}`, to: `b${index}`, priority: 'L3', status: '核心关系', truthStatus: 'confirmed', sourceRefs: [`chat:core-rel-${index}`] })),
 ];
 gcState.timeline = Array.from({ length: 48 }, (_, index) => ({ id: `history-${index}`, summary: `历史节点${index}`, priority: 'L1' }));
@@ -225,10 +226,11 @@ assert.ok(gcState.timeline.length <= 24);
 assert.ok(gcState.timeline.some((item) => item.granularity === 'phase'), '较早时间线应降低分辨率');
 const heatState = WorldStateMachine.Defaults.createState();
 heatState.revision = 20;
+heatState.runtime.memoryTurn = 20;
 heatState.characters = [{ id: 'user', name: '用户', present: true, priority: 'L3', activity: 'HOT', updatedRevision: 20 }];
 heatState.knowledge = [
     { id: 'cold-core', information: '某人的真实身份是卧底', priority: 'L3', activity: 'COLD', knownBy: ['user'], updatedRevision: 1, truthStatus: 'confirmed', sourceRefs: ['worldbook:cold-core'] },
-    { id: 'aged-core', information: '久未调用的核心秘密', priority: 'L3', activity: 'HOT', knownBy: ['other'], updatedRevision: 1, truthStatus: 'confirmed', sourceRefs: ['worldbook:aged-core'] },
+    { id: 'aged-core', information: '久未调用的核心秘密', priority: 'L3', activity: 'HOT', knownBy: ['other'], updatedRevision: 1, updatedTurn: 1, truthStatus: 'confirmed', sourceRefs: ['worldbook:aged-core'] },
     { id: 'warm-core', information: '与当前人物有关的重要旧事实', priority: 'L3', activity: 'WARM', knownBy: ['user'], updatedRevision: 18, truthStatus: 'confirmed', sourceRefs: ['worldbook:warm-core'] },
     { id: 'temporary-breakfast', information: '早餐吃了面包', priority: 'L1', activity: 'COLD', updatedRevision: 1 },
 ];
@@ -242,7 +244,7 @@ assert.match(heatBlocks.knowledge, /与当前人物有关的重要旧事实/, '�
 const reheated = WorldStateMachine.Engine._test.applyStateDelta(heatState, {
     collectionOps: [{ module: 'knowledge', op: 'update', id: 'cold-core', value: { source: '本轮正文重新提及' } }],
 });
-assert.equal(reheated.knowledge.find((item) => item.id === 'cold-core')?.activity, 'HOT', '正文更新条目时应自动升温');
+assert.equal(reheated.knowledge.find((item) => item.id === 'cold-core')?.activity, 'COLD', '重复提及仅更新来源，不应自动升温');
 const taskBase = { ...heatState, tasks: [{ id: 'audit-task', title: '核验档案', status: 'active', completionConditions: ['取得档案', '核验来源'], completedConditions: [] }] };
 const prematureDone = WorldStateMachine.Engine._test.applyStateDelta(taskBase, {
     collectionOps: [{ module: 'tasks', op: 'update', id: 'audit-task', value: { status: 'done', completedConditions: ['取得档案'] } }],
@@ -372,7 +374,7 @@ assert.match(fastPacing, /不得越过用户决策点/);
 WorldStateMachine.Settings.update({ storyPacing: { mode: 'off', allowSceneTransition: false, allowTimeSkip: false } });
 
 const plannerNamed = WorldStateMachine.Injection.compose(state, {}, { planner: 'user可以继续与<char>交流' });
-assert.match(plannerNamed, /林知夏可以继续与相关人物交流/);
+assert.doesNotMatch(plannerNamed, /可以继续与/, '旧后台规划文本不能绕过本轮记忆筛选');
 assert.doesNotMatch(plannerNamed, /<char>|\bchar\b/i);
 
 const renamedState = structuredClone(state);
@@ -393,8 +395,8 @@ const fourModulePlan = WorldStateMachine.Injection.compose(state, {
     backgroundQueue: [{ sourceType: 'task', sourceId: 'meeting', decision: 'carry', reason: '尚未到时间' }],
     advanceDecision: { mode: 'continue', intensity: 'none', direction: '继续当前交流', reason: '无需制造额外事件' },
 });
-assert.match(fourModulePlan, /本轮方向：继续当前交流/);
-assert.match(fourModulePlan, /推进方式：continue；强度：none/);
+assert.doesNotMatch(fourModulePlan, /本轮方向：继续当前交流/, '保存的计划不能逐轮充当新的正文指令');
+assert.doesNotMatch(fourModulePlan, /推进方式：continue；强度：none/);
 assert.doesNotMatch(fourModulePlan, /尚未到时间/);
 
 const ratingFree = WorldStateMachine.Injection.compose(state, {}, { relationships: '林知夏→夏以昼：熟悉但谨慎\n亲密度：38\ntrust=42\n紧张 31%' });
@@ -421,7 +423,7 @@ const crowdedBlocks = Object.fromEntries(Object.keys(WorldStateMachine.Defaults.
 const crowdedInjection = WorldStateMachine.Injection.compose(state, {}, crowdedBlocks);
 const crowdedDepthInjection = Object.values(WorldStateMachine.Injection.composeByDepth(state, {}, crowdedBlocks)).join('\n\n');
 const generatedCrowded = WorldStateMachine.Injection.fallbackBlocks(state);
-Object.entries(WorldStateMachine.Defaults.INJECTION_MODULES).filter(([id]) => id !== 'map' && (generatedCrowded[id] || ['ambient','planner'].includes(id))).forEach(([, config]) => {
+Object.entries(WorldStateMachine.Defaults.INJECTION_MODULES).filter(([id]) => id !== 'map' && (generatedCrowded[id] || id === 'ambient')).forEach(([, config]) => {
     assert.match(crowdedInjection, new RegExp(`\\[${config.label}\\]`));
 });
 assert.doesNotMatch(crowdedInjection, /knowledge-UNIQUE|tasks-UNIQUE|threads-UNIQUE|processes-UNIQUE/, '空状态模块不得被自由文本强行填满');

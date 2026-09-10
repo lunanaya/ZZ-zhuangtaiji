@@ -55,6 +55,14 @@ assert.equal(state.memory.characters.length,1,'reuse existing replacement logic 
 assert.equal(state.memory.worldbook.length,2,'misplaced old content moves out of supplement');
 assert.equal(W.WorldbookMemory.fallback(state).length,0,'successfully read originals stop circulating');
 assert.ok(W.WorldbookSemantic.hasRead(state,entry),'read marker survives storage');
+const rawSource={worldbooks:[{name:entry.bookName,entries:[entry,long]}]};
+assert.deepEqual(W.WorldbookMemory.forRead(state,rawSource).worldbooks,[],'completed compression prevents repeat original input');
+const legacyState=structuredClone(state);
+legacyState.runtime.worldbookRead[entry.key]=W.Facts.hash(entry.content);
+assert.equal(W.WorldbookMemory.forRead(legacyState,rawSource).worldbooks[0].entries.length,1,'legacy extraction must be compressed once under the new contract');
+const changedSource=structuredClone(rawSource);
+changedSource.worldbooks[0].entries[1].content+='新增地点：西港。';
+assert.deepEqual(W.WorldbookMemory.forRead(state,changedSource).worldbooks[0].entries.map(row=>row.key),[long.key],'only a changed entry is read again');
 assert.ok(W.PlainMemory.canInitialize({...state,initialized:false}),'reading worldbooks first must not prevent later chat initialization');
 const prompts=W.PlainMemory.composeByDepth(state);
 assert.ok(prompts.worldbook.includes('星砂：朔日发光'));
@@ -109,18 +117,19 @@ for (const [nativeEntries,selected,expected] of [
     [[],true,false],
     [[{world:'B',uid:9,content:rawEntry.content,disable:true}],true,false],
     [[{world:'B',uid:9,content:rawEntry.content,disable:false}],false,false],
-    [[{world:'B',uid:9,content:rawEntry.content,disable:false}],true,true],
+    [[{world:'B',uid:9,content:rawEntry.content,disable:false}],true,false],
 ]) {
     settings.worldbookCompiler.entryKeys=settings.worldbookCompiler.entryKeys.filter(key=>key!==rawKey);
     if(selected) settings.worldbookCompiler.entryKeys.push(rawKey);
     const livePayload={globalLore:[],characterLore:nativeEntries,chatLore:[],personaLore:[]};
     await W.WorldbookSemantic._test.injectNative(livePayload);
     assert.equal(livePayload.chatLore.some(row=>row.content.includes(rawEntry.content)),expected);
+    if(selected) assert.ok(!livePayload.characterLore.some(row=>row.content===rawEntry.content),'managed originals never reach native story prompts');
 }
 W.Context.listWorldbookEntries=async()=>[];
 await assert.rejects(W.WorldbookSemantic.compile([entry]),/没有已勾选且开启/,'stale picker entries cannot reach API after unmount');
 delete W.Context.listWorldbookEntries;
 const html=W.UI._test.renderSectionForTest(W.Storage.load(),'worldbook');
-assert.ok(html.includes('已读取归栏'));
+assert.ok(html.includes('已拆解压缩'));
 assert.ok(!/覆盖已通过|待核对|引用覆盖/.test(html));
 console.log('PASS worldbook read: one request, existing sentence updates, original suppression, anchors, failures and chat isolation');

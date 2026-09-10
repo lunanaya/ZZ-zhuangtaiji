@@ -82,7 +82,7 @@
         injection: '显示当前真正会发送给正文模型的全部注入；设置中未勾选的模块不会出现。小铅笔修改会覆盖下一次正文生成，结算后恢复自动合成。',
         sources: '显示最近一次推演实际读到的角色卡、Persona、酒馆正文和世界书；未列出的世界书没有进入 Planner。',
         worldbookEmpty: '本轮没有可显示的规则命中。若来源应当存在但编译失败，将明确显示 RULE_COMPILE_FAILED。',
-        worldbook: '世界书随角色卡和正文一起读取，人物、地图、规则直接进入对应栏目；这里只保留无法归类的简写补充，原文折叠备份。注入位置在设置的“注入模块”中调整。',
+        worldbook: '世界书先拆解压缩，关键内容归栏，其余设定再次压缩后留在补充；原文只作本地备份。注入位置在设置的“注入模块”中调整。',
     };
     const worldbookSectionId = (key) => `worldbookEntry:${encodeURIComponent(String(key || ''))}`;
     const isWorldbookSection = (id) => String(id || '').startsWith('worldbookEntry:');
@@ -665,11 +665,11 @@
             const originals = WSM.WorldbookMemory?.originals(state) || [];
             const supplement = WSM.PlainMemory.rows(state, 'worldbook');
             const config = WSM.Settings.get().injectionModules?.worldbook;
-            return `<section class="wsm-board"><h4>已接管 ${originals.length} 条世界书</h4><p>${config?.enabled === false ? '世界书补充注入已关闭。' : '读取世界书后，地图、人物、规则等直接进入对应栏目；这里只保留无法归类的简写补充。原文折叠保存，已读取的原文不再整段回传。'}</p></section>
+            return `<section class="wsm-board"><h4>已接管 ${originals.length} 条世界书</h4><p>${config?.enabled === false ? '世界书补充注入已关闭。' : '先拆解压缩，关键内容进入对应栏目；其余设定再次压缩后保留在这里。原文仅作本地备份，不发给正文 AI。'}</p></section>
                 ${supplement.map(row => `<article class="wsm-memory-card"><p>${escape(row)}</p></article>`).join('')}
                 ${originals.map(entry => {
                     const read = WSM.WorldbookSemantic?.hasRead(state,entry);
-                    return `<details class="wsm-game-card"><summary>${escape(entry.bookName)} · ${escape(entry.title || '世界书条目')} · ${read ? '已读取归栏' : '尚未读取归栏'} · 原文 ${entry.content.length} 字符</summary><div class="wsm-card-body"><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${escape(entry.content)}</pre></div></details>`;
+                    return `<details class="wsm-game-card"><summary>${escape(entry.bookName)} · ${escape(entry.title || '世界书条目')} · ${read ? '已拆解压缩' : '待拆解压缩'} · 本地原文备份 ${entry.content.length} 字符</summary><div class="wsm-card-body"><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${escape(entry.content)}</pre></div></details>`;
                 }).join('')}`;
         }
         const memoryView = WSM.MemoryView?.render(state, active);
@@ -1146,7 +1146,7 @@
                     <label class="wsm-check" hidden><input id="wsm-block-on-planner-error" type="checkbox">兼容旧设置</label>
                 </section>
                 <section class="wsm-settings-section" data-settings-section="source">
-                    <p class="wsm-settings-help">初始化固定两步：第一步合并读取当前启用或绑定的世界书、角色卡和正文并归栏，第二步结合原始资料与第一步结果进行推理；最多 2 次 API。下方只调整正文读取范围，不裁剪世界书。</p>
+                    <p class="wsm-settings-help">初始化固定两步：第一步拆解压缩当前启用或绑定的世界书，结合角色卡和正文将关键内容归栏；第二步将剩余补充再次压缩，并使用压缩结果推理；最多 2 次 API。下方只调整正文读取范围，不裁剪世界书。</p>
                     <label>聊天总结标签（留空读取全文）<input id="wsm-summary-tag" type="text" maxlength="64" placeholder="meow_FM"></label>
                     <p class="wsm-settings-help">填写标签名后采用混合读取：最近若干层读取可见正文，更早楼层只读取该总结标签；留空则全部读取正文。</p>
                     <div class="wsm-grid"><label>普通轮次扫描最近楼层数（0=全部）<input id="wsm-recent-messages" type="number" min="0" max="200"></label><label>其中最近全文楼层数<input id="wsm-recent-full-text-messages" type="number" min="1" max="20"></label></div>
@@ -1165,7 +1165,7 @@
                     <p class="wsm-settings-help">默认关闭。启用后，程序每轮生成一个共享随机种和 1–3 枚顺序骰，为多个合理未来提供统一随机源。它不决定剧情是否推进，也不修改“剧情节奏”设置。</p>
                     <section class="wsm-rollback-panel"><b>${icon('check')}<span>什么时候检定</span></b><p>只有结果同时具备不确定性、现实阻力和有意义的成败后果时才消耗检定骰。日常必然行为、无压力过渡、显而易见的信息、普通对话和一般思考不检定。</p><small>1=大失败，2–10=失败，11–19=成功，20=大成功。</small></section>
                 </section>
-                <section class="wsm-settings-section" data-settings-section="injection"><label>世界书补充注入位置<select id="wsm-worldbook-injection-position"><option value="after_character">角色定义之后</option><option value="before_character">角色定义之前</option><option value="before_author">作者注释之前</option><option value="after_author">作者注释之后</option></select></label><p class="wsm-settings-help">世界书与角色卡、正文一起读取，归栏内容沿用对应栏目位置。只有无法归类的简写留在世界书补充；作者注释本轮未启用时，补充放在角色定义之后。</p><p class="wsm-settings-help">勾选需要发送给正文模型的状态模块。深度 0–4 表示注入位置和作用时机，不等于 L1/L2/L3 重要等级；归栏后的世界书设定沿用对应栏目位置，世界书补充可在本页选择作者注释或角色定义前后。时间线和完整后台数据库始终不注入。</p><div id="wsm-injection-module-list"></div></section>
+                <section class="wsm-settings-section" data-settings-section="injection"><label>世界书补充注入位置<select id="wsm-worldbook-injection-position"><option value="after_character">角色定义之后</option><option value="before_character">角色定义之前</option><option value="before_author">作者注释之前</option><option value="after_author">作者注释之后</option></select></label><p class="wsm-settings-help">世界书拆解压缩后，关键内容沿用对应栏目位置；其余压缩设定留在世界书补充；作者注释本轮未启用时，补充放在角色定义之后。</p><p class="wsm-settings-help">勾选需要发送给正文模型的状态模块。深度 0–4 表示注入位置和作用时机，不等于 L1/L2/L3 重要等级；归栏后的世界书设定沿用对应栏目位置，世界书补充可在本页选择作者注释或角色定义前后。时间线和完整后台数据库始终不注入。</p><div id="wsm-injection-module-list"></div></section>
                 <section class="wsm-settings-section" data-settings-section="prompts">
                     <p class="wsm-settings-help">总规则控制整体流程；模块规则会发送给 Planner 和结算器。已勾选且非空的模块还会把自己的模块规则连同状态数据一起注入正文模型。</p>
                     <details class="wsm-prompt-group"><summary>${icon('brain')}<span>全局总规则</span></summary><div>

@@ -41,8 +41,7 @@
         if (!payload || typeof payload !== 'object') return 0;
         const state = WSM.Storage?.load?.();
         const selected = WSM.WorldbookSemantic
-            ? new Set((WSM.WorldbookMemory?.originals(state) || []).filter(entry => WSM.WorldbookSemantic.hasRead(state,entry)
-                && (!config.enabled || config.entryKeys.includes(entry.key))).map(entry => entry.key))
+            ? new Set((WSM.WorldbookMemory?.originals(state) || []).filter(entry => !config.enabled || config.entryKeys.includes(entry.key)).map(entry => entry.key))
             : new Set(config.enabled ? config.entryKeys.map(String) : []);
         let removed = 0;
         for (const key of ['globalLore','characterLore','chatLore','personaLore']) {
@@ -1124,6 +1123,7 @@
         processChat,
         setWorldbookPrompts,
         installNativeWorldbookFilter,
+        filterNativeWorldbookEntries,
         compileConfig,
         ingestReadResult,
         getLastStatus: () => clone(lastStatus),

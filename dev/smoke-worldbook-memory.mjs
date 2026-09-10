@@ -48,28 +48,28 @@ await W.Engine.syncRegisteredPrompt();
 let prompt = [...registered.values()].join('\n');
 for (const entry of source.worldbooks[0].entries) {
     const transmitted = W.WorldbookMemory.transmission(entry.content);
-    assert.ok(prompt.includes(transmitted.text),'verified complete information must reach actual registered prompts without keywords or initialization');
+    assert.ok(!prompt.includes(transmitted.text),'local originals are never registered as fallback prompts');
     assert.equal(transmitted.mode === 'compact' ? W.WorldbookMemory._test.expand(transmitted.packed) : transmitted.text,entry.content);
 }
 await W.Engine.interceptor([],0,()=>{},'normal');
-assert.ok([...registered.values()].join('\n').includes('畏惧雷声'),'generation interceptor must preserve source-only injection');
-assert.equal(W.WorldbookMemory.fallback(state,[source.worldbooks[0].entries[0].content]).length,2);
-assert.equal(W.WorldbookMemory.fallback(state,['需要许可。']).length,3,'a lossy summary is not full coverage');
+assert.ok(![...registered.values()].join('\n').includes('畏惧雷声'),'generation interceptor must not inject raw backups');
+assert.equal(W.WorldbookMemory.fallback(state,[source.worldbooks[0].entries[0].content]).length,0);
+assert.equal(W.WorldbookMemory.fallback(state,['需要许可。']).length,0,'partial extraction cannot enable raw fallback');
 state.runtime.finalInjectionOverride='手动填写的本轮状态结论。';
-assert.ok(W.Injection.compose(state).includes('畏惧雷声'),'editing the state conclusion must not silently suppress adopted originals');
+assert.ok(!W.Injection.compose(state).includes('畏惧雷声'),'manual state conclusion does not revive raw backups');
 delete state.runtime.finalInjectionOverride;
 state.memory.worldRules = [source.worldbooks[0].entries[0].content];
 prompt = W.Injection.compose(state);
 assert.equal(prompt.split(source.worldbooks[0].entries[0].content).length-1,1,'fully delivered verbatim state does not duplicate the original');
 settings.injectionModules.worldRules.enabled=false;
-assert.ok(W.Injection.compose(state).includes(source.worldbooks[0].entries[0].content),'disabled state projection cannot hide the source fallback');
+assert.ok(!W.Injection.compose(state).includes(source.worldbooks[0].entries[0].content),'disabled state projection does not revive raw fallback');
 settings.injectionModules.worldRules.enabled=true;
 state.memory.worldbook = ['未能归类但重要的海上礼俗。'];
 assert.ok(!W.Injection.compose(state).includes('海上礼俗'),'unrelated supplementary facts follow current relevance routing');
 const html = W.UI._test.renderSectionForTest(state,'worldbook');
 assert.ok(html.includes('已接管 3 条'));
 assert.ok(html.includes('畏惧雷声'));
-assert.ok(html.includes('尚未读取归栏') && html.includes('原文'),'UI keeps unread source available in a collapsed original');
+assert.ok(html.includes('待拆解压缩') && html.includes('本地原文备份'),'UI keeps originals local and collapsed');
 
 let restored = await W.WorldbookMemory.restoreSource(state,{worldbooks:[]});
 assert.deepEqual(restored.worldbooks,[],'unmounted originals cannot be restored from cache');

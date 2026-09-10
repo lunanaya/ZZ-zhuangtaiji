@@ -29,7 +29,11 @@ let truncate=false, emptySupplement=false;
 globalThis.fetch=async (_url,options)=>{
     const body=JSON.parse(options.body), input=JSON.parse(body.messages[1].content);
     calls.push(input);
-    assert.equal(input.source.worldbooks[0].entries[0].text,raw,'both requests receive full original book, including its tail');
+    if (input.task==='PLAIN_MEMORY_READ' || truncate) assert.equal(input.source.worldbooks[0].entries[0].text,raw,'only unfinished extraction receives full original');
+    else {
+        assert.deepEqual(input.source.worldbooks,[],'reasoning consumes compressed memory, not the original book');
+        assert.ok(!JSON.stringify(input).includes(raw),'no original hidden elsewhere in the second request');
+    }
     assert.equal(input.source.character.description,source.character.description);
     assert.deepEqual(input.source.chat,source.chat.map(row=>({role:row.role,text:row.content})));
     let rows;
@@ -42,9 +46,11 @@ globalThis.fetch=async (_url,options)=>{
     } else {
         assert.equal(input.task,'PLAIN_MEMORY_REASON','no standalone worldbook/third call');
         assert.ok(input.memory.characters[0].includes('东港'),'second request consumes first results');
-        assert.match(body.messages[0].content,/结合完整原始source与第一步memory/);
+        assert.match(body.messages[0].content,/对剩余补充再次压缩/);
+        assert.match(body.messages[0].content,/分配依据是重要性和当前用途/);
         assert.ok(!input.missingModules.includes('worldbook'));
         rows=input.missingModules.map(module=>({module,text:module==='world'?'旅人｜位置：青石城':`${W.PlainMemory.LABELS[module]}：示例有效内容`}));
+        if(!emptySupplement) rows.push({module:'worldbook',before:'地方典故仅作背景。',text:'地方典故：背景参考。'});
     }
     const output=rows.map(row=>JSON.stringify(row)).join('\n')+(truncate?'\n{"module":"map","text":"unfinished':'\n{"end":true}');
     return new Response(`data: ${JSON.stringify({choices:[{delta:{content:output},finish_reason:'stop'}]})}\n\ndata: [DONE]\n\n`,{headers:{'Content-Type':'text/event-stream'}});
@@ -59,6 +65,11 @@ assert.ok(W.WorldbookSemantic.hasRead(state,W.WorldbookMemory.originals(state)[0
 assert.equal(W.WorldbookMemory.fallback(state).length,0,'merged read suppresses original fallback');
 assert.ok(!W.Injection.compose(state).includes(raw));
 assert.ok(state.memory.worldbook.every(row=>!row.includes('医师')&&!row.includes('不得')));
+assert.deepEqual(state.memory.worldbook,['地方典故：背景参考。'],'second pass replaces the first compression, without keeping both');
+assert.deepEqual(W.PlainMemory._test.compactSource(source,state).worldbooks,[],'later unchanged reads also omit original');
+const changedSource=structuredClone(source);
+changedSource.worldbooks[0].entries[0].content+='新限制：夜间闭馆。';
+assert.equal(W.PlainMemory._test.compactSource(changedSource,state).worldbooks.length,1,'changed source must be decomposed again');
 const native={globalLore:[{world:'世界观',uid:0,key:['青石城'],content:raw}],characterLore:[],chatLore:[],personaLore:[]};
 assert.equal(W.WorldbookCompiler._test.filterNativeWorldbookEntries(native),1,'merged read suppresses native duplicate without old compiler selection');
 assert.equal(native.globalLore.length,0);
@@ -77,11 +88,13 @@ assert.equal(calls.length,2,'truncation never adds a retry');
 state=W.Storage.load();
 assert.equal(state.runtime.plainReadIncomplete,true);
 assert.equal(Object.keys(state.runtime.worldbookRead||{}).length,0,'unfinished responses do not mark originals read');
-assert.ok(W.WorldbookMemory.fallback(state).length);
+assert.equal(W.WorldbookMemory.fallback(state).length,0,'truncation must not send raw fallback to the story model');
+const pending={globalLore:[{world:'世界观',uid:0,content:raw}],characterLore:[],chatLore:[],personaLore:[]};
+assert.equal(W.WorldbookCompiler.filterNativeWorldbookEntries(pending),1,'unfinished extraction also suppresses managed native originals');
 const $=parseHtml(W.UI._test.modalHtml());
 assert.equal($('[data-settings-tab="worldbook"],[data-settings-section="worldbook"],[data-action*="compile-worldbook"]').length,0);
 assert.equal($('[data-settings-section="injection"] #wsm-worldbook-injection-position option').length,4);
 assert.equal($('[data-category-select="worldbook"]').text().trim(),'世界书补充');
 const ui=await readFile(new URL('../src/ui.js',import.meta.url),'utf8');
 assert.doesNotMatch(ui,/mountExternalWorldbookButton|renderWorldbookCompilerSettings|separateWorldbookRead/);
-console.log('PASS merged read: two real API/parser stages, full long sources, first-state carry, optional supplement, no native duplicate, truncation and merged UI');
+console.log('PASS semantic compression: original only for extraction, second-pass residual compression, critical state, no raw fallback, changed source and two-call limit');

@@ -89,17 +89,15 @@
             retainedNames:[], recoveryFailures:[], unavailableNames:diagnostics.failedNames || []}};
     }
     function fallback(state, delivered = []) {
-        const result = [];
-        const seen = new Set();
-        for (const entry of originals(state)) {
-            if (W.WorldbookSemantic?.hasRead(state,entry)) continue;
-            // A reference, a topic match or a summary is not proof of full
-            // coverage. Omit only an original reproduced verbatim this turn.
-            if (seen.has(entry.content) || delivered.some(row => String(row).includes(entry.content))) continue;
-            seen.add(entry.content);
-            result.push({...entry, transmission:transmission(entry.content)});
-        }
-        return result;
+        // Source backups are for local inspection and unfinished extraction,
+        // never a fallback prompt for the story model.
+        return [];
     }
-    W.WorldbookMemory = {entries, retain, restoreSource, originals, fallback, transmission, _test:{expand, verify}};
+    function forRead(state, source) {
+        return {...source,worldbooks:(source?.worldbooks || []).map(book => ({...book,
+            entries:(book.entries || []).filter((entry,index) => entry.enabled !== false
+                && !W.WorldbookSemantic?.hasRead(state,{...entry,key:key(book.name,entry,index)}))
+        })).filter(book => book.entries.length)};
+    }
+    W.WorldbookMemory = {entries, retain, restoreSource, originals, fallback, forRead, transmission, _test:{expand, verify}};
 })();

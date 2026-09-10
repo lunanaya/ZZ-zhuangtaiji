@@ -1,5 +1,11 @@
 # 测试指南
 
+## v0.16.86 世界书语义压缩路径
+
+- `smoke-worldbook-merged-read.mjs`：模拟两步实际 HTTP/SSE 读取，验证第一步完整原书、第二步只带压缩结果，补充二次压缩通过 before 替换而不追加副本；原文不出现在第二步请求或正文注入中。截断保留有效内容，不恢复原文兜底，不增加调用。
+- `smoke-worldbook-semantic.mjs`：旧读取回执需升级压缩一次、已完成条目不重发、改动条目单独重读，关键内容与压缩补充分开投递，已接管原文在成功/未完成状态下均不注入；原始文件不改写。
+- 回归 `smoke-worldbook-memory.mjs`、`smoke-worldbook-scope.mjs`、`smoke-worldbook-entries.mjs`、`smoke-plain-memory.mjs`、`smoke-read-diagnostics.mjs`。均使用模拟模型结果，检验发送/保存路径，不声称验证真实模型的压缩质量或固定压缩比例。
+
 ## v0.16.85 可复制读取诊断
 
 - `node dev/smoke-read-diagnostics.mjs` 使用模拟时钟与数据包，区分心跳、推理和首个文字到达时间；检查请求失败也留记录、历史上限 6 条、隐私字段不进入诊断、复制失败有手动文本入口，且不额外请求 API。

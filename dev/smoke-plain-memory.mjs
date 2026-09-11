@@ -127,6 +127,10 @@ globalThis.fetch = async (url, options) => {
         assert.match(body.messages[0].content,/没有依据的栏目可以暂空/);
         assert.doesNotMatch(body.messages[0].content,/所有栏目必须读取并填写|持续世界演化/);
     } else {
+    if (input.task === 'PLAIN_MEMORY_REASON') {
+        assert.match(body.messages[0].content,/第一步中断或不完整时的定点接续/);
+        assert.match(body.messages[0].content,/不要重抄memory里已经正确的记录/);
+    }
     assert.match(body.messages[0].content,/正文已写的地点必须落到对应人物概况和活动记录/);
     assert.match(body.messages[0].content,/推演阶段才.*标明“推测”/);
     assert.match(body.messages[0].content,/所有栏目必须读取并填写，不允许空栏目/);
@@ -137,6 +141,7 @@ globalThis.fetch = async (url, options) => {
     assert.doesNotMatch(body.messages[0].content,/可保持空栏|不要求凑满栏目|列为空不表示资料读取失败/);
     }
     if (mode === 'stale') await new Promise(resolve => { delayedResolve = resolve; });
+    if (mode === 'auth-first' && input.task === 'PLAIN_MEMORY_READ') return new Response('invalid API key',{status:401});
     if (mode === 'fail-second' && input.task === 'PLAIN_MEMORY_REASON') return new Response('{"error":{"message":"simulated provider failure"}}',{status:500});
     let rows;
     if (input.task === 'PLAIN_MEMORY_READ') {
@@ -289,8 +294,15 @@ assert.ok(WSM.Storage.load().runtime.plainReadIssues.some(issue=>issue.includes(
 await WSM.Storage.clearAll();
 mode='truncated';
 result=await WSM.Engine.plan({initialize:true});
-assert.match(result.error,/模型未返回有效结束标记/);
+assert.match(result.error,/格式错误或残缺尾部/);
 assert.match(result.error,/不会继续等待或自动重试/);
+assert.ok(WSM.Storage.load().memory.worldRules.length > 0,'complete second-pass records survive an invalid trailing record');
+await WSM.Storage.clearAll();
+mode='auth-first';
+const beforeAuthCalls=requests.length;
+result=await WSM.Engine.plan({initialize:true});
+assert.equal(requests.length-beforeAuthCalls,1,'authentication and parameter-class failures stop without spending the second call');
+assert.match(result.error,/401|API key/);
 await WSM.Storage.clearAll();
 mode='normal';
 await WSM.Engine.plan({initialize:true});

@@ -269,6 +269,16 @@ Mock服务器终端应依次看到：
 
 打开本地 `preview.html`，在设置 → 世界书检查：恢复默认后仅勾选挂载书的开启条目；取消单条后刷新列表仍保留选择；关闭条目可手动勾选；额外书下拉框可以添加、移除示例未挂载书。上述选择操作不触发AI。已有 `smoke-worldbook-scope.mjs`、`smoke-worldbook-semantic.mjs`、`smoke-worldbook-merged-read.mjs` 继续检查挂载隔离、语义压缩与初始化两次上限。
 
+## 两次调用内恢复回归（0.16.91）
+
+运行 `node dev/smoke-plain-memory.mjs`，验证正常初始化、第一步残缺后由第二步定点补齐、第二步末尾残缺时保留全部完整记录，以及401类终止错误只调用一次。所有初始化路径最多2次API、无并发请求；流式检查点只产生本地存储写入。配合 `smoke-worldbook-merged-read.mjs` 验证第二步压缩补充仍能精确替换第一步结果。
+
+## 首正文等待回归（0.16.90）
+
+运行 `node dev/smoke-stream-watchdog.mjs`。虚拟时钟复现第9.818秒收到869字推理、第69.822秒仍无正文：请求必须继续等待，第100秒的正文仍可接收，并从正文到达起计算60秒停流。只有一次推理后一直沉默的请求必须在第180秒按first_text退出，并明确本批未写入、此前内容保留。持续推理不能延长首正文上限，收到正文后的停流、空包、总时限、取消、锁释放和调用次数检查继续保留。无真实API调用。
+
+配合 `smoke-stream-completion.mjs`、`smoke-read-diagnostics.mjs`、`smoke-tavern-stream.mjs`、`smoke-plain-memory.mjs` 和 `smoke-worldbook-grounding.mjs` 检查结束确认、两条路线、第一步保存与第二步失败保留、世界书原文输入。
+
 ## 流式卡住回归（0.16.87）
 
 运行 `node dev/smoke-stream-watchdog.mjs`：使用虚拟时钟与模拟流验证不响应取消的 fetch/read、持续推理无正文、空 choices 心跳、60秒停流、300秒总上限、实时诊断与进度、部分完整句保留、取消和后续任务锁释放。无真实 API 调用。

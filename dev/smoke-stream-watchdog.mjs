@@ -73,7 +73,43 @@ try {
     assert.equal(transport.signal.aborted, true);
     released();
 
-    // Reasoning keeps the idle deadline alive but cannot extend first text.
+    // Reproduce the reported 9.818s reasoning / 69.822s idle failure:
+    // sparse reasoning must not consume the allowance for the first text.
+    streamFetch(); run = await start();
+    await advance(9818);
+    transport.emit(thinking('推'.repeat(869))); await flush();
+    await advance(60004);
+    assert.equal(run.settled(), false, 'reasoning-only silence cannot trigger the post-text idle timeout');
+    assert.equal(row().reasoningChars, 869);
+    assert.equal(row().timeoutKind, '');
+    for (const fn of intervals.values()) fn();
+    assert.match(progress.at(-1)[2], /正文到达后启用停流计时/);
+    await advance(30178);
+    transport.emit(text(sentence)); await flush();
+    assert.equal(row().firstTextMs, 100000, 'late first text is accepted');
+    await advance(59999);
+    assert.equal(run.settled(), false, 'first text starts a fresh idle allowance');
+    await advance(1);
+    assert.equal((await run.promise).value.factStream.facts.length, 1);
+    assert.equal(row().timeoutKind, 'idle');
+    released();
+
+    // A single reasoning burst followed by silence still ends at 180s.
+    streamFetch(); run = await start();
+    await advance(9818);
+    transport.emit(thinking('推'.repeat(869))); await flush();
+    await advance(170181);
+    assert.equal(run.settled(), false);
+    await advance(1);
+    const noText = (await run.promise).error;
+    assert.match(noText.message, /首条正文等待超时/);
+    assert.match(noText.message, /正文 0 字，推理 869 字/);
+    assert.match(noText.message, /完整JSONL记录；本批未写入，此前已保存内容保留/);
+    assert.equal(row().timeoutKind, 'first_text');
+    assert.equal(row().durationMs, 180000);
+    released();
+
+    // Continuous reasoning cannot extend the fixed first-text deadline.
     streamFetch(); run = await start();
     for (let i = 0; i < 6; i++) { transport.emit(thinking('推理中')); await flush(); await advance(29000); }
     assert.equal(row().reasoningChars, 18, 'reasoning counts are live before completion');
@@ -126,6 +162,6 @@ try {
     assert.equal((await run.promise).value.factStream.end, true);
     assert.equal(row().timeoutKind, '');
     released();
-    assert.equal(calls, 6, 'exactly one transport call per operation; no retries');
+    assert.equal(calls, 8, 'exactly one transport call per operation; no retries');
     console.log('PASS stream watchdog: silent fetch, reasoning-only, empty packets, idle recovery, total limit, live progress, cancel and lock release. Real API calls: 0.');
 } finally { Date.now = nativeNow; }

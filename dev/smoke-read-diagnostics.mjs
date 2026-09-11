@@ -39,8 +39,9 @@ try {
     assert.equal(row.route,'independent');
     assert.equal(row.ended,true);
     assert.equal(calls,1);
-    api.recordValidation({phase:2,complete:false,ended:true,recordCount:2,errorCount:1,replacementErrors:1,missingModules:['factAnchors','resourceConstraints']});
+    api.recordValidation({phase:2,complete:false,ended:true,recordCount:2,errorCount:1,replacementErrors:1,missingModules:['factAnchors','resourceConstraints'],issueKinds:['replacement_error','missing_modules']});
     assert.equal(api.getDiagnostics().validations[0].replacementErrors,1);
+    assert.deepEqual(api.getDiagnostics().validations[0].issueKinds,['replacement_error','missing_modules']);
     assert.doesNotMatch(JSON.stringify(api.getDiagnostics()),/PRIVATE_|private\.invalid/,'diagnostics exclude source, prompt, model, address and credentials');
     row.route='tampered';
     assert.equal(api.getDiagnostics().requests[0].route,'independent','returned snapshots cannot mutate diagnostics');

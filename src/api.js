@@ -12,10 +12,11 @@
             requests:requestDiagnostics.map(row => ({...row, durationMs:row.durationMs ?? Date.now()-row.startedAt})),
             validations:validationDiagnostics.map(row => ({...row, missingModules:[...row.missingModules]}))};
     }
-    function recordValidation({phase, complete, ended, recordCount, errorCount, replacementErrors, missingModules}) {
+    function recordValidation({phase, complete, ended, recordCount, errorCount, replacementErrors, missingModules, issueKinds}) {
         validationDiagnostics.push({phase:Number(phase), complete:!!complete, ended:!!ended,
             recordCount:Number(recordCount), errorCount:Number(errorCount), replacementErrors:Number(replacementErrors),
-            missingModules:(missingModules || []).filter(key => /^[a-zA-Z]+$/.test(key)), at:Date.now()});
+            missingModules:(missingModules || []).filter(key => /^[a-zA-Z]+$/.test(key)),
+            issueKinds:[...new Set((issueKinds || []).filter(key => /^(?:interruption|invalid_tail|missing_end|missing_modules|replacement_error|validation_error)$/.test(key)))], at:Date.now()});
         if (validationDiagnostics.length > 6) validationDiagnostics.shift();
     }
 
@@ -631,7 +632,9 @@
         let receivedChars = 0, lastReported = 0, lastReportAt = 0;
         let complete = false, receiptSeen = false;
         const sentences = jsonFrames(frame => {
-            if (frame.includes('"end"') && parseSentenceLines(frame).end) receiptSeen = true;
+            const parsed = parseSentenceLines(frame);
+            if (parsed.end) receiptSeen = true;
+            if (!parsed.invalid && parsed.facts.length) meta.onSentence?.(parsed.facts);
         });
         const consumeEvent = frame => {
             if (frame === '[DONE]') { complete = true; return; }
@@ -865,7 +868,10 @@
             if (controller.signal.aborted) return;
             const deadlines = [{at:startedAt + timeoutMs, kind:'total'}];
             if (streaming && !textSeen) deadlines.push({at:startedAt + firstTextTimeoutMs, kind:'first_text'});
-            if (streaming && lastActivityAt !== null) deadlines.push({at:lastActivityAt + idleTimeoutMs, kind:'idle'});
+            // Before the first text, providers may pause between reasoning and
+            // visible output. Give that phase its full first-text allowance;
+            // an early reasoning fragment must not shorten it to 60 seconds.
+            if (streaming && textSeen && lastActivityAt !== null) deadlines.push({at:lastActivityAt + idleTimeoutMs, kind:'idle'});
             const deadline = deadlines.reduce((a,b) => a.at <= b.at ? a : b);
             timer = window.setTimeout(() => {
                 abortReason = 'timeout';
@@ -1082,7 +1088,7 @@
                     : diagnostic.reasoningChars > 0 ? '模型正在推理，尚未输出正文'
                     : diagnostic.httpStatus === null ? '正在等待 API 响应' : '已连接，等待模型正文';
                 WSM.Engine?.reportProgress?.(title, 'running',
-                    `任务 ${meta.task} · 输入世界书 ${diagnostic.worldbookEntries} 条 / ${diagnostic.worldbookChars} 字 · 已等待 ${Math.floor(elapsed/1000)} 秒 · 正文 ${diagnostic.streamedTextChars} 字 / 推理 ${diagnostic.reasoningChars || 0} 字 · ${Math.floor(silence/1000)} 秒无新增内容 · ${diagnostic.firstTextMs === null ? `首正文上限 ${Math.round(attempt.firstTextTimeoutMs/1000)} 秒 · ` : ''}总上限 ${Math.round(timeoutMs/1000)} 秒 · 同一次 API`, {replaceCurrent:true});
+                    `任务 ${meta.task} · 输入世界书 ${diagnostic.worldbookEntries} 条 / ${diagnostic.worldbookChars} 字 · 已等待 ${Math.floor(elapsed/1000)} 秒 · 正文 ${diagnostic.streamedTextChars} 字 / 推理 ${diagnostic.reasoningChars || 0} 字 · ${Math.floor(silence/1000)} 秒无新增内容 · ${diagnostic.firstTextMs === null ? `首正文上限 ${Math.round(attempt.firstTextTimeoutMs/1000)} 秒（正文到达后启用停流计时） · ` : `停流上限 ${Math.round(attempt.idleTimeoutMs/1000)} 秒 · `}总上限 ${Math.round(timeoutMs/1000)} 秒 · 同一次 API`, {replaceCurrent:true});
             };
             const progressTimer = options.stream === true ? window.setInterval(reportStreamProgress, 1000) : null;
             let response;
@@ -1129,6 +1135,7 @@
                     onVisible:chars => { diagnostic.firstTextMs ??= Date.now()-requestStartedAt; diagnostic.streamedTextChars += chars; diagnostic.visibleChars = diagnostic.streamedTextChars; },
                     onReasoning:chars => { diagnostic.reasoningChars = (diagnostic.reasoningChars || 0) + chars; },
                     jsonContract: options.jsonContract, signal:attempt.signal, reportProgress:reportStreamProgress,
+                    onSentence:options.onSentence,
                     interruptionReason: attempt.reason, onActivity:kind => { diagnostic.lastActivityMs = Date.now()-requestStartedAt; attempt.touch(kind); } });
                 raw = forwarded.raw;
                 streamInterrupted = forwarded.interrupted;
@@ -1182,7 +1189,10 @@
             if (streamInterrupted || budgetExhausted) {
                 try {
                     const recovered = extractJson(visibleOutput || raw, { jsonContract: options.jsonContract });
-                    if (options.jsonContract === 'sentences' && recovered.factStream) recovered.factStream.end = false;
+                    if (options.jsonContract === 'sentences' && recovered.factStream) {
+                        recovered.factStream.end = false;
+                        recovered.factStream.interruption = diagnostic.timeoutKind || (budgetExhausted ? 'output_limit' : 'stream');
+                    }
                     WSM.Engine?.reportProgress?.(
                         streamInterrupted ? diagnostic.timeoutKind ? '流式等待超时，已保留完整记录' : '流式结束标记缺失，已安全接收' : '模型输出到达上限，已安全抢救',
                         'running',
@@ -1195,7 +1205,8 @@
                             ? diagnostic.timeoutKind === 'first_text' ? '首条正文等待超时'
                                 : diagnostic.timeoutKind === 'idle' ? '连续无新增正文或推理，等待超时' : '单次请求总时限已到，等待超时'
                             : meta.interruptionReason === 'cancelled' ? '用户取消' : '上游或反代断流';
-                        throw new Error(`任务 ${meta.task} ${interruptionLabel}；已收到正文 ${visibleChars} 字，推理 ${data.reasoningChars || 0} 字，但尚未形成一个可安全保存的完整JSON模块；本批未写入`);
+                        const recordLabel = options.jsonContract === 'sentences' ? '完整JSONL记录' : '完整JSON模块';
+                        throw new Error(`任务 ${meta.task} ${interruptionLabel}；已收到正文 ${visibleChars} 字，推理 ${data.reasoningChars || 0} 字，但尚未形成一个可安全保存的${recordLabel}；本批未写入，此前已保存内容保留`);
                     }
                     if (meta.task === 'SOURCE_READ_SEQUENTIAL_BATCH') throw new Error(`任务 ${meta.task} 接口明确报告输出预算耗尽；上限 ${maxTokens} Tokens，正文 ${visibleChars} 字，推理 ${data.reasoningChars || 0} 字，且未形成可安全保存的完整JSON模块；本批未写入。${requestIdentity}`);
                 }

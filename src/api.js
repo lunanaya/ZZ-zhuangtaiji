@@ -6,11 +6,25 @@
     let chatModulePromise = null;
     const requestDiagnostics = [];
     const validationDiagnostics = [];
+    const settlementDiagnostics = [];
     const diagnosticNumber = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
     function getDiagnostics() {
         return {version:String(WSM.version || ''), capturedAt:new Date().toISOString(),
             requests:requestDiagnostics.map(row => ({...row, durationMs:row.durationMs ?? Date.now()-row.startedAt})),
-            validations:validationDiagnostics.map(row => ({...row, missingModules:[...row.missingModules]}))};
+            validations:validationDiagnostics.map(row => ({...row, missingModules:[...row.missingModules]})),
+            settlements:settlementDiagnostics.map(row => ({...row}))};
+    }
+    function recordSettlement({startedAt, background, stage, outcome, reason = '', saved = false}) {
+        // Fixed codes only: never copy model text, messages, API errors or keys.
+        const at = Date.now();
+        settlementDiagnostics.push({startedAt:diagnosticNumber(startedAt), at,
+            durationMs:diagnosticNumber(startedAt) == null ? null : Math.max(0,at-startedAt),
+            mode:background === true ? 'automatic' : 'manual',
+            stage:['guard_before_request','request','guard_after_request','validation','save','injection','done'].includes(stage) ? stage : 'unknown',
+            outcome:['complete','incomplete','error'].includes(outcome) ? outcome : 'error',
+            reason:['','body_changed','chat_changed','state_changed','cancelled','missing_modules','validation_error','incomplete_response','other_error'].includes(reason) ? reason : 'other_error',
+            saved:saved === true});
+        if (settlementDiagnostics.length > 6) settlementDiagnostics.shift();
     }
     function recordValidation({phase, complete, ended, recordCount, errorCount, replacementErrors, missingModules, issueKinds}) {
         validationDiagnostics.push({phase:Number(phase), complete:!!complete, ended:!!ended,
@@ -1312,5 +1326,5 @@
             }
         });
     }
-    WSM.Api = { complete, test, listModels, withCallBudget, requestHeaders, getDiagnostics, recordValidation, isModelUnavailable, _test: { prepareTavernStreamBody, outputTokens, quotaTokenBudgets, isQuotaReservationError, consumeCallBudget, extractJson, repairTruncatedJson, parseFactLines, parseLenientJsonObject, parseSseResponse, responseText, providerResponseError, isGptReasoningModel, contractScore } };
+    WSM.Api = { complete, test, listModels, withCallBudget, requestHeaders, getDiagnostics, recordValidation, recordSettlement, isModelUnavailable, _test: { prepareTavernStreamBody, outputTokens, quotaTokenBudgets, isQuotaReservationError, consumeCallBudget, extractJson, repairTruncatedJson, parseFactLines, parseLenientJsonObject, parseSseResponse, responseText, providerResponseError, isGptReasoningModel, contractScore } };
 })();

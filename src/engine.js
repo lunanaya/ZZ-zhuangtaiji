@@ -4705,6 +4705,10 @@
             settlingController?.abort();
         }
         postGenerationQueue = postGenerationQueue.then(async () => {
+            // MESSAGE_RECEIVED is emitted before later message/render listeners
+            // finish. Leave this event turn before capturing the body snapshot;
+            // do not start an API request from the middle of that listener chain.
+            await new Promise((resolve) => window.setTimeout(resolve, 0));
             if (WSM.Settings.get().enabled === false) return null;
             if (WSM.Storage.currentChatKey() !== chatKey) return null;
             if (options.replaced === true) await rollbackReplacedAssistant();

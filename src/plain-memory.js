@@ -620,11 +620,11 @@ localState.recentResults是历史结果，不是新待办。结束、撤销或�
         return missingModules(prepareSave(previous, next, 'validate-column-coverage'));
     }
     function chatSignature() { return JSON.stringify(WSM.Context.context()?.chat || []); }
-    function assertCurrent(start, signal, initialChat) {
+    function assertCurrent(start, signal, initialChat, signature = chatSignature) {
         if (signal?.aborted) throw new Error('读取已取消');
         if (WSM.Storage.currentChatKey() !== start.runtime.storageChatKey) throw new Error('聊天已切换，结果未写入');
         if (WSM.Storage.load().revision !== start.revision) throw new Error('状态在读取期间已改变，结果未覆盖新状态');
-        if (initialChat !== chatSignature()) throw new Error('正文在读取期间已改变，结果未覆盖当前状态');
+        if (initialChat !== signature()) throw new Error('正文在读取期间已改变，结果未覆盖当前状态');
     }
     function terminalRequestFailure(error) {
         if (WSM.Api.isModelUnavailable?.(error)) return true;
@@ -814,19 +814,26 @@ localState.recentResults是历史结果，不是新待办。结束、撤销或�
     }
     async function settle(options, helpers) {
         let start = WSM.Storage.load();
-        const initialChat = chatSignature();
+        const signature = WSM.Context.readingSignature || chatSignature;
+        const initialChat = signature();
         const assistant = WSM.Context.latestAssistantMessage();
         if (!start.initialized || !assistant?.content || (!options.force && !helpers.needsPreviousBodyRead(start, assistant))) return null;
         const receipt = helpers.previousBodyReceipt(assistant);
+        const startedAt = Date.now();
+        let stage = 'guard_before_request', stateSaved = false;
+        const diagnose = (outcome, reason = '') => WSM.Api.recordSettlement?.({startedAt, background:options.background, stage, outcome, reason, saved:stateSaved});
         try {
             helpers.reportProgress('依据精简记忆读取上一轮正文并推理', 'running', '只读取插件精简资料与本轮完整正文，输出变化的句子');
-            assertCurrent(start, options.signal, initialChat);
+            assertCurrent(start, options.signal, initialChat, signature);
+            stage = 'request';
             const response = await request('', {
                 task:'PLAIN_MEMORY_SETTLE', memory:start.memory, missingModules:missingModules(start),
                 localState:WSM.StateLogic?.context(start), pacing:WSM.Injection?.pacingBlock?.(WSM.Settings.get()),
                 assistantMessage:{content:assistant.content},
-            }, options.signal, {beforeAttempt:() => assertCurrent(start, options.signal, initialChat)});
-            assertCurrent(start, options.signal, initialChat);
+            }, options.signal, {beforeAttempt:() => assertCurrent(start, options.signal, initialChat, signature)});
+            stage = 'guard_after_request';
+            assertCurrent(start, options.signal, initialChat, signature);
+            stage = 'validation';
             const applied = applyMixed(start, response.records);
             const next = applied.state;
             const missing = missingAfterCleanup(start,next);
@@ -852,14 +859,26 @@ localState.recentResults是历史结果，不是新待办。结束、撤销或�
                 }
             }
             next.planner = {...next.planner, turnKey:'', lastRunAt:Date.now(), error:complete ? '' : `完整句子已保存，本次更新未完整确认${!response.complete ? '；模型缺少有效结束标记' : ''}${missing.length ? `；清理后待补栏目：${missing.map(module => LABELS[module]).join('、')}` : ''}${applied.errors.length ? `；${applied.errors.join('；')}` : ''}`};
+            stage = 'save';
             const saved = await WSM.Storage.save(next, options.background ? 'post-generation-read' : 'manual-read-previous-body', {
                 snapshot:true, snapshotKind:'generation', snapshotTurnKey:`plain:${receipt.messageKey}`, snapshotReadReceipt:receipt, receiptConfirmed:complete,
             });
+            stateSaved = true;
             if (complete) helpers.deliveryCommitted?.();
+            stage = 'injection';
             await helpers.setStatePrompts(saved);
+            stage = 'done';
+            diagnose(complete ? 'complete' : 'incomplete', !response.complete ? 'incomplete_response' : applied.errors.length ? 'validation_error' : missing.length ? 'missing_modules' : '');
             helpers.reportProgress(complete ? '正文结算与世界推演已完成' : '完整句子已保存，更新尚未完成', complete ? 'success' : 'error', saved.planner.error);
             return complete ? saved : null;
-        } catch (error) { helpers.reportProgress('正文更新失败，旧状态保留', 'error', text(error.message)); return null; }
+        } catch (error) {
+            const message = text(error.message);
+            const reason = options.signal?.aborted ? 'cancelled' : message.includes('正文在读取期间已改变') ? 'body_changed'
+                : message.includes('聊天已切换') ? 'chat_changed' : message.includes('状态在读取期间已改变') ? 'state_changed' : 'other_error';
+            diagnose('error', reason);
+            helpers.reportProgress(stateSaved ? '正文已保存，后续处理失败' : '正文更新失败，旧状态保留', 'error', message);
+            return null;
+        }
     }
     WSM.PlainMemory = {FORMAT, LABELS, MODULES, REQUEST_ATTEMPTS, isPlain, canInitialize, normalize, pack, rows, edit, apply, prepareSave,
           composeByDepth, createDeliveryReceipt, commitDeliveryReceipt, organize, runPlan, settle, sectionModule,

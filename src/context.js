@@ -142,6 +142,16 @@
     function latestAssistantMessage(ctx = context()) {
         return [...chat(ctx)].reverse().find((item) => item.role === 'assistant') || null;
     }
+    function readingSignature(ctx = context()) {
+        // Reconciliation reads visible prose, not token counts, render flags,
+        // generation timers or cached swipe copies. Keep every floor (including
+        // empty/hidden ones), authorship, identity and selected swipe so actual
+        // edits, deletions, additions and candidate changes still invalidate it.
+        return JSON.stringify((ctx?.chat || []).map((message, index) => ({
+            ...normalizeMessage(message, index, { preserveHiddenAuthor: true }),
+            swipeId: message?.swipe_id ?? 0,
+        })));
+    }
     function normalizeSummaryTag(value) {
         const raw = text(value);
         if (!raw) return '';
@@ -519,5 +529,5 @@
         for (let i = 0; i < raw.length; i += 1) hash = Math.imul(hash ^ raw.charCodeAt(i), 16777619);
         return (hash >>> 0).toString(16);
     }
-    WSM.Context = { context, chat, normalizeMessage, normalizeMessages, messagesByIds, latestUserMessage, latestAssistantMessage, meowMessage, recentFullTextMessage, summaryContent, normalizeSummaryTag, identityNames, buildSource, sourceFingerprint, readWorldbook, listWorldbookEntries, listEnabledWorldNames, worldbookEntryKey, selectedWorldbooks, worldbookCatalog, isWorldbookEntrySelected, editableWorldbookSelection, _test: { normalizeEntries, normalizeMessage, normalizeMessages, visibleMessageContent, meowFMContent, summaryContent, normalizeSummaryTag, recentFullTextMessage } };
+    WSM.Context = { context, chat, normalizeMessage, normalizeMessages, messagesByIds, latestUserMessage, latestAssistantMessage, readingSignature, meowMessage, recentFullTextMessage, summaryContent, normalizeSummaryTag, identityNames, buildSource, sourceFingerprint, readWorldbook, listWorldbookEntries, listEnabledWorldNames, worldbookEntryKey, selectedWorldbooks, worldbookCatalog, isWorldbookEntrySelected, editableWorldbookSelection, _test: { normalizeEntries, normalizeMessage, normalizeMessages, visibleMessageContent, meowFMContent, summaryContent, normalizeSummaryTag, recentFullTextMessage } };
 })();

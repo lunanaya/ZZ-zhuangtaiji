@@ -42,6 +42,16 @@ try {
     api.recordValidation({phase:2,complete:false,ended:true,recordCount:2,errorCount:1,replacementErrors:1,missingModules:['factAnchors','resourceConstraints'],issueKinds:['replacement_error','missing_modules']});
     assert.equal(api.getDiagnostics().validations[0].replacementErrors,1);
     assert.deepEqual(api.getDiagnostics().validations[0].issueKinds,['replacement_error','missing_modules']);
+    api.recordSettlement({startedAt:1000,background:true,stage:'guard_after_request',outcome:'error',reason:'body_changed'});
+    const settlement=api.getDiagnostics().settlements[0];
+    assert.equal(settlement.mode,'automatic');
+    assert.equal(settlement.reason,'body_changed');
+    assert.equal(settlement.saved,false);
+    settlement.reason='tampered';
+    assert.equal(api.getDiagnostics().settlements[0].reason,'body_changed');
+    for(let i=0;i<8;i++) api.recordSettlement({startedAt:1000,stage:'PRIVATE_STAGE',outcome:'PRIVATE_OUTCOME',reason:'PRIVATE_ERROR'});
+    assert.equal(api.getDiagnostics().settlements.length,6);
+    assert.equal(api.getDiagnostics().settlements.at(-1).stage,'unknown');
     assert.doesNotMatch(JSON.stringify(api.getDiagnostics()),/PRIVATE_|private\.invalid/,'diagnostics exclude source, prompt, model, address and credentials');
     row.route='tampered';
     assert.equal(api.getDiagnostics().requests[0].route,'independent','returned snapshots cannot mutate diagnostics');

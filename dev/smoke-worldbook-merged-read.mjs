@@ -47,7 +47,7 @@ globalThis.fetch=async (_url,options)=>{
     } else {
         assert.equal(input.task,'PLAIN_MEMORY_REASON','no standalone worldbook/third call');
         assert.ok(input.memory.characters[0].includes('东港'),'second request consumes first results');
-        assert.match(body.messages[0].content,/对剩余补充再次压缩/);
+        assert.match(body.messages[0].content,/已准确压缩的内容KEEP/,'correct compression is retained instead of mandatory rewording');
         assert.match(body.messages[0].content,/分配依据是内容归属/);
         assert.ok(!input.missingModules.includes('worldbook'));
         rows=input.missingModules.map(module=>({module,text:module==='world'?'旅人｜位置：青石城':`${W.PlainMemory.LABELS[module]}：示例有效内容`}));
@@ -57,7 +57,7 @@ globalThis.fetch=async (_url,options)=>{
     return new Response(`data: ${JSON.stringify({choices:[{delta:{content:output},finish_reason:'stop'}]})}\n\ndata: [DONE]\n\n`,{headers:{'Content-Type':'text/event-stream'}});
 };
 const realBudget=W.Api.withCallBudget;
-W.Api.withCallBudget=(max,label,fn)=>{assert.equal(max,2,'retired three-step option must not raise budget');return realBudget(max,label,fn);};
+W.Api.withCallBudget=(max,label,fn)=>{assert.equal(max,4,'two normal phases plus at most two recovery calls, independent of the retired three-step option');return realBudget(max,label,fn);};
 await W.Engine.plan({initialize:true,separateWorldbookRead:true});
 assert.deepEqual(calls.map(input=>input.task),['PLAIN_MEMORY_READ','PLAIN_MEMORY_REASON']);
 let state=W.Storage.load();
@@ -85,7 +85,7 @@ assert.equal(state.runtime.plainReadIncomplete,false,'empty residual background 
 assert.deepEqual(state.memory.worldbook,[]);
 await W.Storage.clearAll();calls.length=0;truncate=true;
 await W.Engine.plan({initialize:true});
-assert.equal(calls.length,2,'truncation never adds a retry');
+assert.equal(calls.length,4,'persistent truncation is bounded to two final-phase continuations');
 state=W.Storage.load();
 assert.equal(state.runtime.plainReadIncomplete,true);
 assert.equal(Object.keys(state.runtime.worldbookRead||{}).length,0,'unfinished responses do not mark originals read');
@@ -101,4 +101,4 @@ assert.equal($('[data-settings-section="injection"] #wsm-worldbook-injection-pos
 assert.equal($('[data-category-select="worldbook"]').text().trim(),'世界书补充');
 const ui=await readFile(new URL('../src/ui.js',import.meta.url),'utf8');
 assert.doesNotMatch(ui,/mountExternalWorldbookButton|renderWorldbookCompilerSettings|separateWorldbookRead/);
-console.log('PASS semantic compression: original only for extraction, second-pass residual compression, critical state, no raw fallback, changed source and two-call limit');
+console.log('PASS merged read: full originals in both phases and continuations, critical state, no raw story fallback, changed source, two normal calls and bounded recovery.');

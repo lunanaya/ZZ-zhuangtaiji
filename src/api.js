@@ -844,14 +844,14 @@
         eventSource.on(eventName, handler);
         return () => eventSource.removeListener?.(eventName, handler);
     }
-    function attemptSignal(parentSignal, timeoutMs, streaming = false) {
+    function attemptSignal(parentSignal, timeoutMs, streaming = false, progressTimeout = false) {
         const controller = new AbortController();
         let abortReason = '';
         let timeoutKind = '';
         let timer;
         const startedAt = Date.now();
         const firstTextTimeoutMs = Math.min(timeoutMs, 180000);
-        const idleTimeoutMs = Math.min(timeoutMs, 60000);
+        const idleTimeoutMs = Math.min(timeoutMs, progressTimeout ? 120000 : 60000);
         let textSeen = false, lastActivityAt = null;
         const abort = () => {
             if (controller.signal.aborted) return;
@@ -866,8 +866,8 @@
         const armTimeout = () => {
             window.clearTimeout(timer);
             if (controller.signal.aborted) return;
-            const deadlines = [{at:startedAt + timeoutMs, kind:'total'}];
-            if (streaming && !textSeen) deadlines.push({at:startedAt + firstTextTimeoutMs, kind:'first_text'});
+            const deadlines = progressTimeout && streaming ? [] : [{at:startedAt + timeoutMs, kind:'total'}];
+            if (streaming && !textSeen) deadlines.push({at:(progressTimeout ? lastActivityAt ?? startedAt : startedAt) + firstTextTimeoutMs, kind:'first_text'});
             // Before the first text, providers may pause between reasoning and
             // visible output. Give that phase its full first-text allowance;
             // an early reasoning fragment must not shorten it to 60 seconds.
@@ -884,7 +884,7 @@
             signal: controller.signal,
             reason: () => abortReason || 'upstream',
             timeoutKind: () => timeoutKind,
-            firstTextTimeoutMs, idleTimeoutMs,
+            firstTextTimeoutMs, idleTimeoutMs, progressTimeout,
             touch: kind => {
                 if (controller.signal.aborted) return;
                 lastActivityAt = Date.now();
@@ -1034,7 +1034,9 @@
             worldbookEntries:inputWorldbookEntries.length,
             worldbookChars:inputWorldbookEntries.reduce((sum,entry) => sum + String(entry.text ?? entry.content ?? '').length,0),
             visibleChars:null, reasoningChars:null, outputTokens:null, reasoningTokens:null,
-            httpStatus:null, finishReason:'', ended:null, interrupted:false, failure:'', outcome:'running', durationMs:null};
+            httpStatus:null, finishReason:'', ended:null, interrupted:false, failure:'', outcome:'running', durationMs:null,
+            reasoningEffort:options.reasoningEffort || '', continuationAttempt:Number(options.continuationAttempt || 0),
+            timeoutPolicy:options.progressTimeout === true ? 'activity' : 'fixed'};
         requestDiagnostics.push(diagnostic);
         if (requestDiagnostics.length > 6) requestDiagnostics.shift();
         const finish = value => {
@@ -1078,8 +1080,11 @@
                 ? await prepareTavernStreamBody(window.SillyTavern?.getContext?.(), messages, requestSettings)
                 : null;
             diagnostic.route = useTavern ? (tavernBody ? 'tavern-stream' : 'tavern-native') : 'independent';
-            if (useTavern && !tavernBody) return finish(await completeViaTavern(messages, requestSettings, options.signal, timeoutMs, meta, options.singleAttempt === true, options.jsonContract));
-            const attempt = attemptSignal(options.signal, timeoutMs, options.stream === true);
+            if (useTavern && !tavernBody) {
+                diagnostic.timeoutPolicy = 'fixed'; // This adapter exposes no streaming activity callbacks.
+                return finish(await completeViaTavern(messages, requestSettings, options.signal, timeoutMs, meta, options.singleAttempt === true, options.jsonContract));
+            }
+            const attempt = attemptSignal(options.signal, timeoutMs, options.stream === true, options.progressTimeout === true);
             if (options.stream === true) Object.assign(diagnostic, {firstTextTimeoutMs:attempt.firstTextTimeoutMs, idleTimeoutMs:attempt.idleTimeoutMs});
             const reportStreamProgress = () => {
                 const elapsed = Date.now() - requestStartedAt;
@@ -1088,7 +1093,7 @@
                     : diagnostic.reasoningChars > 0 ? '模型正在推理，尚未输出正文'
                     : diagnostic.httpStatus === null ? '正在等待 API 响应' : '已连接，等待模型正文';
                 WSM.Engine?.reportProgress?.(title, 'running',
-                    `任务 ${meta.task} · 输入世界书 ${diagnostic.worldbookEntries} 条 / ${diagnostic.worldbookChars} 字 · 已等待 ${Math.floor(elapsed/1000)} 秒 · 正文 ${diagnostic.streamedTextChars} 字 / 推理 ${diagnostic.reasoningChars || 0} 字 · ${Math.floor(silence/1000)} 秒无新增内容 · ${diagnostic.firstTextMs === null ? `首正文上限 ${Math.round(attempt.firstTextTimeoutMs/1000)} 秒（正文到达后启用停流计时） · ` : `停流上限 ${Math.round(attempt.idleTimeoutMs/1000)} 秒 · `}总上限 ${Math.round(timeoutMs/1000)} 秒 · 同一次 API`, {replaceCurrent:true});
+                    `任务 ${meta.task} · 输入世界书 ${diagnostic.worldbookEntries} 条 / ${diagnostic.worldbookChars} 字 · 已等待 ${Math.floor(elapsed/1000)} 秒 · 正文 ${diagnostic.streamedTextChars} 字 / 推理 ${diagnostic.reasoningChars || 0} 字 · ${Math.floor(silence/1000)} 秒无新增内容 · ${diagnostic.firstTextMs === null ? `${attempt.progressTimeout ? '首正文前静默' : '首正文'}上限 ${Math.round(attempt.firstTextTimeoutMs/1000)} 秒（正文到达后启用停流计时） · ` : `停流上限 ${Math.round(attempt.idleTimeoutMs/1000)} 秒 · `}${attempt.progressTimeout ? '有正文或推理进展时持续接收' : `总上限 ${Math.round(timeoutMs/1000)} 秒`} · 同一次 API`, {replaceCurrent:true});
             };
             const progressTimer = options.stream === true ? window.setInterval(reportStreamProgress, 1000) : null;
             let response;
@@ -1140,6 +1145,7 @@
                 raw = forwarded.raw;
                 streamInterrupted = forwarded.interrupted;
                 diagnostic.interrupted = streamInterrupted;
+                if (streamInterrupted) diagnostic.failure = 'stream';
                 meta.interruptionReason = forwarded.interruptionReason || '';
             } catch (error) {
                 if (error?.name === 'AbortError') {

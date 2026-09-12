@@ -1223,17 +1223,17 @@
                     <p class="wsm-settings-help">只调整状态机文字，不改变面板大小和按钮的可点击范围。建议使用 80%–100%。</p>
                     <div class="wsm-grid"><label>单次输出 Tokens<input id="wsm-max-tokens" type="text" inputmode="numeric" pattern="[0-9０-９]+"></label><label>旧结构模式注入字符预算<input id="wsm-injection-max" type="number" min="500"><small>当前句子模式完整回传相关记录，通过更新和失效清理控制积累，不按字符截断。</small></label></div>
                     <p id="wsm-effective-settings" class="wsm-settings-help"></p>
-                    <p class="wsm-settings-help">Tokens 是单次返回上限。初始化使用2次调用：读取事实，再推演并补齐所有栏目。后续正文前零次，正文后1次合并结算、栏目补全和自主世界推演；只输出变化句子。截断时保留完整句子并提示未完成，不自动追加调用。</p>
+                    <p class="wsm-settings-help">Tokens 是单次返回上限。初始化通常2次调用：读取事实，再推演补全；正文后通常1次合并结算。断流或输出未完时保留完整句子并接续剩余内容，末步最多额外2次调用。持续有正文或推理进展时继续接收；原文不裁剪，重复记录不重写。</p>
                     <label class="wsm-check"><input id="wsm-enabled" type="checkbox">插件总开关</label>
                     <p class="wsm-settings-help">关闭后停止自动读取、状态 API、世界书处理与正文注入，但保留已有状态和面板；重新打开即可继续使用。打开插件或切换聊天仍不会自动初始化。</p>
                     <label class="wsm-check" hidden><input id="wsm-block-on-planner-error" type="checkbox">兼容旧设置</label>
                 </section>
                 <section class="wsm-settings-section" data-settings-section="source">
-                    <p class="wsm-settings-help">初始化固定两步：第一步自动读取全部选中世界书，结合角色卡和正文整理已有设定，可归栏内容进入栏目，其余压缩留在世界书补充；第二步结合原书与已读内容核对、推理补全。默认选中挂载书的开启条目，可在“世界书”页增减。最多 2 次 API。下方只调整正文读取范围，不裁剪世界书。</p>
+                    <p class="wsm-settings-help">初始化分两步：完整读取全部选中世界书、角色卡和正文，再结合原书与已读内容核对补全。通常2次API，末步异常时最多接续2次；仍未完成可继续初始化，无需清空。默认选中挂载书的开启条目，可在“世界书”页增减。下方只调整正文读取范围，不裁剪世界书。</p>
                     <label>聊天总结标签（留空读取全文）<input id="wsm-summary-tag" type="text" maxlength="64" placeholder="meow_FM"></label>
                     <p class="wsm-settings-help">填写标签名后采用混合读取：最近若干层读取可见正文，更早楼层只读取该总结标签；留空则全部读取正文。</p>
-                    <div class="wsm-grid"><label>普通轮次扫描最近楼层数（0=全部）<input id="wsm-recent-messages" type="number" min="0" max="200"></label><label>其中最近全文楼层数<input id="wsm-recent-full-text-messages" type="number" min="1" max="20"></label></div>
-                    <section class="wsm-rollback-panel"><b>${icon('clipboard')}<span>近层正文、远层总结</span></b><p>默认最近 5 层读取可见原文；5 层之外只读取 meow_FM（或你填写的标签），没有标签的旧楼层会跳过。这个范围用于完整初始化；普通轮次只读取刚生成的最新正文和完整旧状态。</p><small>正文一生成完成便在后台读取。重 roll 会回滚旧候选对应的状态，再读取当前新候选；发送下一条消息不会等待状态 API。</small></section>
+                    <div class="wsm-grid"><label>整理等资料读取的最近楼层数（0=全部）<input id="wsm-recent-messages" type="number" min="0" max="200"></label><label>其中最近全文楼层数<input id="wsm-recent-full-text-messages" type="number" min="1" max="20"></label></div>
+                    <section class="wsm-rollback-panel"><b>${icon('clipboard')}<span>近层正文、远层总结</span></b><p>默认最近 5 层读取可见原文；5 层之外只读取 meow_FM（或你填写的标签），没有标签的旧楼层会跳过。初始化仍读取完整资料范围；普通“读取上一轮正文”仅使用插件精简记忆和本轮完整正文推理，不重新读取角色卡、Persona、世界书原文或历史聊天，缺项和异常接续也不扩大范围。</p><small>正文一生成完成便在后台读取。重 roll 会回滚旧候选对应的状态，再读取当前新候选；发送下一条消息不会等待状态 API。</small></section>
                 </section>
                 <section class="wsm-settings-section" data-settings-section="worldbook">
                     <p class="wsm-settings-help">默认拆解当前角色、聊天、Persona 与全局挂载世界书中开启的条目。可逐本或逐条取消，也可手动加入关闭的条目、额外选择未挂载的世界书；不会改动酒馆原书开关。</p>
@@ -1317,7 +1317,7 @@
             const reading = WSM.Engine?.isReading?.() === true;
             const allowed = WSM.PlainMemory ? WSM.PlainMemory.canInitialize(WSM.Storage.load()) : !WSM.Storage.load().initialized;
             readCurrent.disabled = !enabled || (!reading && (!allowed || progress.state === 'running'));
-            readCurrent.title = reading ? '终止本次操作' : allowed ? '首次读取当前聊天并初始化（最多2次API）' : '初始化已锁定；后续用读取上一轮正文更新，清空读取后可重新初始化';
+            readCurrent.title = reading ? '终止本次操作' : allowed ? '读取或继续初始化（通常2次API，末步最多接续2次）' : '初始化已锁定；后续用读取上一轮正文更新，清空读取后可重新初始化';
         }
     }
     function renderOperationStatus(progress = WSM.Engine?.getProgress?.() || {}, state = WSM.Storage.load()) {
@@ -1370,7 +1370,7 @@
             return `<div data-state="${escape(visualState)}"><span>${marker}</span><b>${escape(step.message || '读取步骤')}</b>${step.details ? `<small>${escape(step.details)}</small>` : ''}</div>`;
         }).join('');
         const reading = WSM.Engine?.isReading?.() === true;
-        readCurrent.textContent = reading ? '终止读取' : '读取当前聊天';
+        readCurrent.textContent = reading ? '终止读取' : state.runtime?.plainInitIncomplete ? '继续初始化' : '读取当前聊天';
         readCurrent.dataset.action = reading ? 'cancel-read' : 'read-current';
         clearRead.disabled = progress.state === 'running';
         syncEnabledControls();

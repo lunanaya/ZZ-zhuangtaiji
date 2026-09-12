@@ -4386,7 +4386,7 @@
         if (interactiveRead) activeReadController = controller;
         // Worldbooks, cards and chat share one read, followed by one reasoning call.
         const fullRead = options.initialize === true || options.readFullChat === true;
-        const maximumCalls = fullRead ? 2 : ORDINARY_TURN_CALL_BUDGET;
+        const maximumCalls = fullRead ? (WSM.PlainMemory ? 1 + WSM.PlainMemory.REQUEST_ATTEMPTS : 2) : ORDINARY_TURN_CALL_BUDGET;
         const runPromise = WSM.Api.withCallBudget(maximumCalls, fullRead ? 'initialize-fact-then-reason' : 'pre-generation-reasoning', () => plan({
             ...options, signal: controller?.signal || options.signal,
         }));
@@ -4673,7 +4673,7 @@
         if (settlingPromise) return settlingPromise;
         const controller = new AbortController();
         settlingController = controller;
-        settlingPromise = WSM.Api.withCallBudget(1, 'post-generation-update', () => settle({ ...options, signal: controller.signal }))
+        settlingPromise = WSM.Api.withCallBudget(WSM.PlainMemory?.REQUEST_ATTEMPTS || 1, 'post-generation-update', () => settle({ ...options, signal: controller.signal }))
             .finally(() => {
                 if (settlingController === controller) settlingController = null;
                 settlingPromise = null;

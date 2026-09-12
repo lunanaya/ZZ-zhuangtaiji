@@ -1,5 +1,18 @@
 # 测试指南
 
+## v0.16.94 精简记忆与单轮正文
+
+- `smoke-plain-memory.mjs`：实际Engine/API/SSE路径中禁止普通读取调用buildSource，验证世界书保持开启、有空栏目、初始化不完整时均不加载原始资料；请求仅带精简记忆与完整正文及插件核验，不夹入最新用户消息，不伪造原书已读回执或初始化完成标记。
+- `smoke-read-continuation.mjs`：刻意向普通读取传入原卡、长世界书、历史和新用户消息，验证字段白名单在原请求和length接续中均排除它们；3万字正文的独有末尾与精简世界书补充逐字保留，接续使用已收记录，新提示词不超过4096字。
+- 回归 `smoke-flowing-world`、`smoke-objective-framing`、`smoke-knowledge-boundaries`、`smoke-worldbook-grounding`、`smoke-turn-read-rollback`。全部使用模拟模型，不调用真实付费API；输入缩短不等于实测远端响应时间。
+
+## v0.16.92 读取接续与速度优化
+
+- `node dev/smoke-read-continuation.mjs`：真实API封装/SSE解析下模拟断流、length、首包网络异常、连续缺回执、401、取消和聊天切换；验证完整长世界书与正文（含末尾唯一信息）在每次接续中逐字一致，已收记录有序去重、精确替换、最多两次接续且不伪造完成回执。
+- `node dev/smoke-stream-watchdog.mjs`：虚拟时钟验证连续推理超过原首正文/总时限仍可最终完成，正文90秒暂停可继续，完全停流120秒退出，心跳不续时，取消立即释放；未选择新策略的调用保留原超时合约。
+- `smoke-plain-memory.mjs`、`smoke-worldbook-merged-read.mjs`：正常初始化仍2次、正文更新仍1次；末步故障最多2次接续，刷新后可直接继续未完成阶段，原文完整，回滚、读取位置、快照与聊天隔离保持有效。
+- 回归API、流式完成/性能、诊断、世界书原文、知识边界、客观记录、持续世界、清空读取与进度提示。测试使用模拟模型和网络，不调用真实付费API，不把提示词缩短等同于实测延迟下降。
+
 ## v0.16.86 世界书语义压缩路径
 
 - `smoke-worldbook-merged-read.mjs`：模拟两步实际 HTTP/SSE 读取，验证第一步完整原书、第二步只带压缩结果，补充二次压缩通过 before 替换而不追加副本；原文不出现在第二步请求或正文注入中。截断保留有效内容，不恢复原文兜底，不增加调用。

@@ -45,10 +45,10 @@ function streamFetch() {
         return new Response(body);
     };
 }
-async function start(signal) {
+async function start(signal, options = {}) {
     let settled = false;
     const promise = api.withCallBudget(1, 'watchdog', () => api.complete('test', {task:'PLAIN_MEMORY_READ'},
-        {stream:true, singleAttempt:true, jsonContract:'sentences', timeoutMs:300000, signal}))
+        {stream:true, singleAttempt:true, jsonContract:'sentences', timeoutMs:300000, signal, ...options}))
         .then(value => { settled = true; return {value}; }, error => { settled = true; return {error}; });
     await flush();
     return {promise, settled:() => settled};
@@ -163,5 +163,36 @@ try {
     assert.equal(row().timeoutKind, '');
     released();
     assert.equal(calls, 8, 'exactly one transport call per operation; no retries');
+    // Memory reads opt into activity deadlines: real progress can outlive
+    // both the old first-text limit and the old five-minute total limit.
+    streamFetch(); run = await start(undefined, {progressTimeout:true});
+    for (let i = 0; i < 3; i++) {
+        transport.emit(thinking('仍在读取完整资料')); await flush(); await advance(170000);
+    }
+    assert.equal(run.settled(), false, 'active reasoning survives 510 seconds');
+    transport.emit(text(sentence)); await flush();
+    await advance(90000);
+    assert.equal(run.settled(), false, 'a 90-second provider pause does not cut the body');
+    transport.emit(text('{"end":true}')); await flush();
+    assert.equal((await run.promise).value.factStream.end, true);
+    assert.equal(row().timeoutPolicy, 'activity');
+    assert.equal(row().timeoutKind, '');
+    released();
+
+    streamFetch(); run = await start(undefined, {progressTimeout:true});
+    transport.emit(text(sentence)); await flush();
+    for (let i = 0; i < 3; i++) {
+        await advance(30000); transport.emit({choices:[{delta:{}}]}); await flush();
+    }
+    await advance(30000);
+    assert.equal((await run.promise).value.factStream.end, false, 'dead streams remain bounded despite heartbeat packets');
+    assert.equal(row().timeoutKind, 'idle');
+    assert.equal(row().idleTimeoutMs, 120000);
+    released();
+
+    streamFetch(); const activeAbort = new AbortController(); run = await start(activeAbort.signal, {progressTimeout:true});
+    transport.emit(thinking('读原文')); await flush(); activeAbort.abort(); await flush();
+    assert.match((await run.promise).error.message, /取消/);
+    released();
     console.log('PASS stream watchdog: silent fetch, reasoning-only, empty packets, idle recovery, total limit, live progress, cancel and lock release. Real API calls: 0.');
 } finally { Date.now = nativeNow; }

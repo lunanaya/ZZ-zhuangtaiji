@@ -490,7 +490,7 @@ assert.equal(WorldStateMachine.Dice.outcome(20), 'critical-success');
 assert.doesNotMatch(WorldStateMachine.Injection.compose(state, { diceRound }), /\[共享骰池/);
 WorldStateMachine.Settings.update({ diceEnabled: true });
 const diceInjection = WorldStateMachine.Injection.compose(state, { diceRound });
-assert.match(diceInjection, /^<WORLD_STATE>\n\[共享骰池｜可选随机源\]/);
+assert.match(diceInjection, /^<WORLD_STATE>\n<系统>\[共享骰池｜可选随机源\]/);
 assert.match(diceInjection, /骰子不决定剧情是否推进/);
 assert.match(diceInjection, /人物关系升级、知识获得、世界状态、时间线、因果影响/);
 assert.doesNotMatch(diceInjection, /剧情强度|剧情方向/);

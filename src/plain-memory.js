@@ -436,7 +436,7 @@ processes只记有具体事件和实际参与者支撑的世界变化；causalEf
         const authority = '以下是当前世界状态。完整遵守否定、条件、例外和人物知识边界。不知情者不能在台词、行动或判断中使用该信息；部分知情、怀疑和误解都不能当作掌握全部真相，必须有明确获知渠道才更新。作者或AI知道不等于人物知道。未来安排在相关、被询问或到期时提醒，不逐轮预告，不替用户决定。到期不等于完成，条件满足不等于事件已发生；待核实条件不能默认通过。后台自主活动与推测不能当作角色已经知情。本轮AI判断不能覆盖明确事实或本地受阻结论。';
         const pacing = WSM.Injection?.pacingBlock?.(settings);
         groups.set(0, [authority, pacing, ...(groups.get(0) || []), NARRATIVE_BOUNDARY].filter(Boolean));
-        return Object.fromEntries([...groups.entries()].sort((a,b) => a[0]-b[0]).map(([depth, rows]) => [depth, `<WORLD_STATE depth="${depth}">\n${rows.join('\n')}\n</WORLD_STATE>`]));
+        return Object.fromEntries([...groups.entries()].sort((a,b) => a[0]-b[0]).map(([depth, rows]) => [depth, `<WORLD_STATE depth="${depth}">\n${WSM.Defaults.tagInjectionBody(rows.join('\n'), depth === 'worldbook' ? 'worldbook' : 'system')}\n</WORLD_STATE>`]));
     }
     function createDeliveryReceipt(state, prompts) {
         const receipt = [];
@@ -627,6 +627,7 @@ localState.recentResults是历史结果，不是新待办。结束、撤销或�
         if (initialChat !== chatSignature()) throw new Error('正文在读取期间已改变，结果未覆盖当前状态');
     }
     function terminalRequestFailure(error) {
+        if (WSM.Api.isModelUnavailable?.(error)) return true;
         return /(?:\b(?:400|401|402|403|404|422|429)\b|unauthori[sz]ed|forbidden|api\s*key|密钥|认证|鉴权|权限|参数错误|invalid[_\s-]*(?:request|parameter)|quota|rate[_\s-]*limit|额度|余额不足|预扣费)/i.test(text(error?.message || error));
     }
     async function organize(options, helpers) {

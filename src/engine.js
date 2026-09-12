@@ -42,13 +42,14 @@
         // A new initialization begins a fresh, visible progress trail. Keep
         // previous stages of the active run so the user can see exactly where
         // source reading reached before it completed or failed.
-        const startsRead = /正在读取酒馆资料|正在推理并增量更新本轮状态|正在准备读取当前聊天|正在智能整理状态|正文结算、栏目补全与世界推演/.test(nextMessage);
+        const startsRead = options.newOperation === true || /正在读取酒馆资料|正在推理并增量更新本轮状态|正在准备读取当前聊天|正在智能整理状态|正文结算、栏目补全与世界推演|依据精简记忆读取上一轮正文并推理/.test(nextMessage);
         const previous = startsRead ? [] : (operationProgress.steps || []);
         const startedAt = startsRead || !Number(operationProgress.startedAt)
             ? Date.now()
             : Number(operationProgress.startedAt);
         const last = previous.at(-1);
-        const step = { state, message: nextMessage, details: nextDetails, at: Date.now(), elapsedMs: Date.now() - startedAt };
+        const operationKind = options.operationKind || (startsRead ? '' : operationProgress.operationKind || '');
+        const step = { state, message: nextMessage, details: nextDetails, at: Date.now(), elapsedMs: Date.now() - startedAt, operationKind };
         const steps = last?.message === step.message && (options.replaceCurrent === true || last?.details === step.details) && last?.state === step.state
             ? [...previous.slice(0, -1), step]
             : [...previous, step].slice(-36);

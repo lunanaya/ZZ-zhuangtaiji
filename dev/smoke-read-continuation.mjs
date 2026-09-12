@@ -39,15 +39,17 @@ globalThis.fetch = async (_url, options) => {
     const step = calls.length;
     if (mode === 'network' && step === 1) throw new TypeError('Failed to fetch');
     if (mode === 'auth') return new Response('invalid API key',{status:401});
+    if (mode === 'model-unavailable' || mode === 'partial-model-unavailable' && step > 1) return new Response(JSON.stringify({error:{code:'model_not_found',message:'No available channel for model fixture under group default (distributor)'}}),{status:503});
+    if (mode === 'busy' && step === 1) return new Response('Service temporarily unavailable',{status:503});
     if (mode === 'partial-auth' && step > 1) return new Response('invalid API key',{status:401});
     if (mode === 'empty-tail') return new Response(packet('{"module":"characters","text":"unfinished', 'stop'));
     if (step > 1) {
         assert.equal(input.continuation.attempt,step - 1);
         assert.match(input.continuation.instruction,/不是新一轮世界推演/);
-        if (mode !== 'network') assert.deepEqual(input.memory.characters,[a.text],'resume uses accepted complete records as its baseline');
+        if (!['network','busy'].includes(mode)) assert.deepEqual(input.memory.characters,[a.text],'resume uses accepted complete records as its baseline');
         assert.ok(input.localState.checks);
     }
-    if (mode === 'persistent' || mode === 'partial-auth') return response([a]);
+    if (['persistent','partial-auth','partial-model-unavailable'].includes(mode)) return response([a]);
     if (mode === 'length' && step === 1) return response([a], 'length');
     if (mode === 'drop' && step === 1) {
         let reads = 0;
@@ -89,6 +91,15 @@ assert.deepEqual(result.records,[a],'complete records survive all unsuccessful c
 
 calls=[]; mode='auth'; await assert.rejects(run(),/401/);
 assert.equal(calls.length,1,'authentication failures do not trigger automatic retries');
+calls=[]; mode='model-unavailable'; await assert.rejects(run(),/当前 API 分组没有可用通道.*不自动重试.*model_not_found/);
+assert.equal(calls.length,1,'model_not_found is terminal even under HTTP 503');
+calls=[]; mode='partial-model-unavailable'; result=await run();
+assert.equal(calls.length,2,'a missing channel stops after the failed continuation');
+assert.equal(result.complete,false);
+assert.deepEqual(result.records,[a],'records received before channel failure remain intact');
+calls=[]; mode='busy'; result=await run();
+assert.equal(result.complete,true);
+assert.equal(calls.length,2,'ordinary transient 503 remains recoverable');
 calls=[]; mode='empty-tail'; await assert.rejects(run(),/完整的事实句子/);
 assert.equal(calls.length,3,'a response containing only an unfinished row is also recoverable');
 calls=[]; mode='partial-auth'; result=await run();

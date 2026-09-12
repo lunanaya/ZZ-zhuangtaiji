@@ -585,7 +585,7 @@
         // later modules from disappearing merely because they are ordered last.
         // The dice contract is indivisible and is reserved before fair sharing.
         const body = composeWithinBudget(fixedBlock, candidates, settings.injectionMaxChars);
-        return `<WORLD_STATE>\n${body || '本轮没有需要额外注入的世界状态。'}\n</WORLD_STATE>`;
+        return `<WORLD_STATE>\n${WSM.Defaults.tagInjectionBody(body || '本轮没有需要额外注入的世界状态。')}\n</WORLD_STATE>`;
     }
 
     function composeByDepth(state, plan = {}, plannerBlocks = {}) {
@@ -654,7 +654,7 @@
             const candidates = groups.get(depth) || [];
             const fixed = depth === 0 ? [diceBlock, authorityBlock, REMINDER_RULE].filter(Boolean).join('\n\n') : '';
             const body = composeWithinBudget(fixed, candidates, budgets.get(depth));
-            prompts[depth] = `<WORLD_STATE depth="${depth}">\n${body}\n</WORLD_STATE>`;
+            prompts[depth] = `<WORLD_STATE depth="${depth}">\n${WSM.Defaults.tagInjectionBody(body)}\n</WORLD_STATE>`;
         });
         return prompts;
     }

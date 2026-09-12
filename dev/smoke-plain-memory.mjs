@@ -143,6 +143,7 @@ globalThis.fetch = async (url, options) => {
     }
     if (mode === 'stale') await new Promise(resolve => { delayedResolve = resolve; });
     if (mode === 'auth-first' && input.task === 'PLAIN_MEMORY_READ') return new Response('invalid API key',{status:401});
+    if (mode === 'channel-first' && input.task === 'PLAIN_MEMORY_READ') return new Response('{"error":{"code":"model_not_found","message":"No available channel for model test under group default"}}',{status:503});
     if (mode === 'fail-second' && input.task === 'PLAIN_MEMORY_REASON') return new Response('{"error":{"message":"simulated provider failure"}}',{status:500});
     let rows;
     if (input.task === 'PLAIN_MEMORY_READ') {
@@ -315,6 +316,12 @@ const beforeAuthCalls=requests.length;
 result=await WSM.Engine.plan({initialize:true});
 assert.equal(requests.length-beforeAuthCalls,1,'authentication and parameter-class failures stop without spending the second call');
 assert.match(result.error,/401|API key/);
+await WSM.Storage.clearAll();
+mode='channel-first';
+const beforeChannelCalls=requests.length;
+result=await WSM.Engine.plan({initialize:true});
+assert.equal(requests.length-beforeChannelCalls,1,'a model routing error cannot spend the second initialization call');
+assert.match(result.error,/当前 API 分组没有可用通道/);
 await WSM.Storage.clearAll();
 mode='normal';
 await WSM.Engine.plan({initialize:true});

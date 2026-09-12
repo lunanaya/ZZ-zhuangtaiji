@@ -524,5 +524,37 @@ stateDelta为空表示完整KEEP。update只提交变化字段并由程序合并
         };
     }
 
-    WSM.Defaults = { PLANNER_PROMPT, RECONCILER_PROMPT, STATE_SCHEMA, TRUTH_STATUSES, INFERENCE_POLICIES, INJECTION_MODULES, MODULE_OWNERSHIP, MODULE_PROMPTS, createState };
+    // Presentation-only grouping for the user's external Tavern prompt. Do not
+    // reorder, trim, re-budget, or add instructions to the existing payload.
+    function tagInjectionBody(value, initialCategory = 'system') {
+        const input = String(value ?? '');
+        if (!input) return input;
+        const names = { world: '世界', people: '人物', affairs: '事务', system: '系统', map: '场景地图', worldbook: '世界书补充' };
+        const headings = new Map(Object.entries(INJECTION_MODULES).map(([id, config]) => [config.label, id === 'map' ? 'map' : config.category]));
+        [
+            ['知识 / 秘密', 'people'], ['时间线', 'affairs'],
+            ['世界书补充', 'worldbook'], ['世界书剩余背景', 'worldbook'],
+            ['历史结果，非当前状态', 'affairs'],
+            ['本轮AI判断，受事实与本地核验约束', 'system'],
+            ['状态使用边界', 'system'], ['外置状态权威', 'system'],
+            ['共享骰池｜可选随机源', 'system'],
+        ].forEach(([heading, category]) => headings.set(heading, category));
+        let current = '';
+        let output = '';
+        // Keep newline bytes inside their original section. Removing only our
+        // outer tags must reproduce the original body byte for byte.
+        for (const line of input.match(/[^\n]*\n|[^\n]+$/g) || []) {
+            const heading = line.match(/^(?:【([^】]+)】|\[([^\]]+)\])/);
+            const category = headings.get(heading?.[1] || heading?.[2]) || current || initialCategory;
+            if (category !== current) {
+                if (current) output += `</${names[current]}>`;
+                output += `<${names[category]}>`;
+                current = category;
+            }
+            output += line;
+        }
+        return output + (current ? `</${names[current]}>` : '');
+    }
+
+    WSM.Defaults = { PLANNER_PROMPT, RECONCILER_PROMPT, STATE_SCHEMA, TRUTH_STATUSES, INFERENCE_POLICIES, INJECTION_MODULES, MODULE_OWNERSHIP, MODULE_PROMPTS, createState, tagInjectionBody };
 })();

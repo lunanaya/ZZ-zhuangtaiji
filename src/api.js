@@ -704,6 +704,9 @@
             try { Promise.resolve(reader.cancel()).catch(() => {}); } catch (_) { /* already closed */ }
         }
     }
+    function isModelUnavailable(error) {
+        return /model[_\s-]*not[_\s-]*found|no\s+available\s+channel|无可用(?:渠道|通道)/i.test(String(error?.message || error || ''));
+    }
     function providerResponseError(data) {
         if (!data || typeof data !== 'object' || Array.isArray(data) || data?.choices?.length) return '';
         if (!data.error && !data.quota_error && !data.message) return '';
@@ -1240,6 +1243,9 @@
                 : diagnostic.httpStatus >= 400 ? 'http' : 'response_or_validation';
             if (error?.name === 'AbortError') throw new Error(`任务 ${meta.task} 请求超时或已取消；输入 ${meta.inputChars} 字，本次不会自动重试`);
             const message = String(error?.message || error || '未知网络错误');
+            if (isModelUnavailable(error)) {
+                throw new Error(`所选模型在当前 API 分组没有可用通道，已停止本步读取；已有内容保留，不自动重试。请核对服务商的模型名称、分组与通道状态，恢复可用后再继续。原始错误：${message}`);
+            }
             if (/failed to fetch|load failed|networkerror|network request failed|network connection.*lost/i.test(message)) {
                 console.warn('[WorldStateMachine] 网络请求失败', {task:meta.task, durationMs:Date.now()-requestStartedAt, reason:message});
                 throw new Error(`连接中断，未取得本步可用响应（${message}）。已有状态保留；本次未确认完成，不会自动重试。请检查酒馆连接及 API/反代网络。`);
@@ -1290,9 +1296,21 @@
     }
     async function test(options = {}) {
         return withCallBudget(1, 'connection-test', async () => {
-            const result = await complete('只输出 {"ok":true}', { task: 'connection_test' }, { stream: true, ...options, singleAttempt: true });
-            return result?.ok === true;
+            // Acquire the call budget before touching progress so a rejected
+            // overlapping test cannot erase the actual reader's running state.
+            WSM.Engine?.reportProgress?.('正在测试 API 连接', 'running', '测试结束后自动恢复操作按钮',
+                {newOperation:true, operationKind:'connection-test'});
+            try {
+                const result = await complete('只输出 {"ok":true}', { task: 'connection_test' }, { stream: true, ...options, singleAttempt: true });
+                if (result?.ok !== true) throw new Error('接口已返回，但没有收到有效的连接测试确认（ok:true）');
+                WSM.Engine?.reportProgress?.('API 连接测试成功', 'success', '测试已结束，可以继续操作状态机');
+                return true;
+            } catch (error) {
+                const cancelled = options.signal?.aborted === true;
+                WSM.Engine?.reportProgress?.(cancelled ? 'API 连接测试已取消' : 'API 连接测试失败', cancelled ? 'cancelled' : 'error', String(error?.message || error));
+                throw error;
+            }
         });
     }
-    WSM.Api = { complete, test, listModels, withCallBudget, requestHeaders, getDiagnostics, recordValidation, _test: { prepareTavernStreamBody, outputTokens, quotaTokenBudgets, isQuotaReservationError, consumeCallBudget, extractJson, repairTruncatedJson, parseFactLines, parseLenientJsonObject, parseSseResponse, responseText, providerResponseError, isGptReasoningModel, contractScore } };
+    WSM.Api = { complete, test, listModels, withCallBudget, requestHeaders, getDiagnostics, recordValidation, isModelUnavailable, _test: { prepareTavernStreamBody, outputTokens, quotaTokenBudgets, isQuotaReservationError, consumeCallBudget, extractJson, repairTruncatedJson, parseFactLines, parseLenientJsonObject, parseSseResponse, responseText, providerResponseError, isGptReasoningModel, contractScore } };
 })();

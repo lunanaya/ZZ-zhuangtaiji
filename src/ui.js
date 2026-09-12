@@ -1321,9 +1321,10 @@
         }
     }
     function renderOperationStatus(progress = WSM.Engine?.getProgress?.() || {}, state = WSM.Storage.load()) {
-        if (WSM.PlainMemory?.isPlain(state) && state.runtime?.plainReadIncomplete && !['running','cancelled'].includes(progress.state) && !/^智能整理/.test(progress.message || '')) {
+        if (WSM.PlainMemory?.isPlain(state) && state.runtime?.plainReadIncomplete && progress.operationKind !== 'connection-test' && !['running','cancelled'].includes(progress.state) && !/^智能整理/.test(progress.message || '')) {
             const legacyReceipt = /等待完整结束回执/.test(state.planner?.error || '');
-            progress = {...progress, state:'error', message:'本次读取已结束，已保存内容仍有待修正项', details:legacyReceipt
+            const modelUnavailable = WSM.Api?.isModelUnavailable?.(state.planner?.error);
+            progress = {...progress, state:'error', message:modelUnavailable ? 'API 模型无可用通道，读取未完成；已有内容保留' : '本次读取已结束，已保存内容仍有待修正项', details:legacyReceipt
                 ? '本次请求已结束。旧版未区分结束标记缺失与旧句替换校验失败，无法仅凭旧提示确定原因；不会继续等待或自动重试。'
                 : state.planner?.error || '本次已结束，现有内容保留。'};
         }

@@ -81,8 +81,11 @@ assert.equal(L.evaluate('资源(夏寻樨/银两)>=6 || 位置(守卫)=院门',s
 assert.equal(L.parse('测试｜条件：资源(夏寻樨/银两)>=6 || 位置(守卫)=院门').get('条件'),'资源(夏寻樨/银两)>=6 || 位置(守卫)=院门');
 assert.equal(L.evaluate('看起来已经准备好了',state).status,'unknown');
 assert.match(L.annotate(state,'tasks',state.memory.tasks[0]),/未确认玩家明确接受/);
-assert.match(inject(state),/约束仍有效/); assert.match(inject(state),/主角是否出行仍由玩家决定/);
-assert.match(inject(state),/待剧情推进确认/);
+assert.match(inject(state),/约束仍有效/);
+assert.doesNotMatch(inject(state),/主角是否出行仍由玩家决定/,'planner notes stay local');
+assert.deepEqual(state.planner.notes,['主角是否出行仍由玩家决定。']);
+assert.doesNotMatch(inject(state),/可能出现刺客/,'unrelated new risks are not automatically narrated');
+user='刺客事件有什么条件？'; assert.match(inject(state),/待剧情推进确认/); user='继续';
 const trigger='守门事件｜实施者：守卫｜准备条件：资源(夏寻樨/银两)>=5｜到场条件：位置(守卫)=院门｜时间条件：2026-09-10 11:00';
 assert.equal(L.trigger(state,trigger).status,'blocked');
 state.memory.world[0]='时间：2026-09-10 11:00';
@@ -116,7 +119,9 @@ assert.match(hookHtml,/<dt>可能影响<\/dt><dd>可能遭遇刺客\/眼线。/)
 assert.match(hookHtml,/<details class="wsm-mv-legacy-notes"><summary>查看条件核验/,'checks collapsed by default');
 assert.doesNotMatch(hookHtml,/待核实|实施者：未明确|条件未明确/);
 assert.equal((hookHtml.match(/待剧情推进确认/g) || []).length,1);
-assert.ok(inject(hookState).includes(compactHook),'actual AI injection receives compact summary');
+user='灵隐寺的触发条件是什么？';
+assert.ok(inject(hookState).includes(compactHook),'recalled AI injection receives complete compact summary');
+user='继续';
 state.memory.map=['路线：书房 → 小院｜开放：是｜耗时分钟：5','路线：小院 ↔ 院门｜开放：是｜耗时分钟：3'];
 assert.equal(L.route(state,'书房','院门').minutes,8);
 assert.equal(L.route(state,'院门','书房').status,'unknown','directed routes stay directed');

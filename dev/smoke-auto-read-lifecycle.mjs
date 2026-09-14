@@ -67,6 +67,13 @@ await reset();
 const incomplete=W.Storage.load();incomplete.memory.schedules=[];
 await W.Storage.save(incomplete,'empty-schedules',{snapshot:false});
 await eventSource.emit('received',1,'normal');await W.Engine._test.waitForPostGenerationReads();
+assert.equal(settlements.at(-1).outcome,'complete','no current schedule is valid');
+assert.deepEqual(W.Storage.load().memory.schedules,[],'do not fabricate a successor');
+
+await reset();
+const missingCore=W.Storage.load();missingCore.memory.world=[];
+await W.Storage.save(missingCore,'missing-world',{snapshot:false});
+await eventSource.emit('received',1,'normal');await W.Engine._test.waitForPostGenerationReads();
 assert.equal(settlements.at(-1).outcome,'incomplete');
 assert.equal(settlements.at(-1).reason,'missing_modules');
 assert.equal(settlements.at(-1).saved,true,'空栏校验与写入保护失败必须分开记录');

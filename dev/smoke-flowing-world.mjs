@@ -42,7 +42,7 @@ user='灵隐寺的风景真好'; assert.match(inject(state),/灵隐寺出行/); 
 for(let i=0;i<40;i++){state=save(state,state,`related-${i}`);assert.doesNotMatch(inject(state),/灵隐寺出行/);}
 user='灵隐寺出行什么时候？'; assert.match(inject(state),/灵隐寺出行/); user='继续';
 
-state=fresh(); before='巡夜事件｜实施者：守卫｜条件：夜间开放'; state.memory.triggers=[before]; deliver(state);
+state=fresh(); state.memory.world=['位置：城门']; before='巡夜事件｜实施者：守卫｜条件：夜间开放'; state.memory.triggers=[before]; deliver(state);
 const reordered='巡夜事件｜条件：夜间开放｜实施者：守卫';
 assert.equal(P.apply(state,[{module:'triggers',before,text:reordered}]).changed,0);
 assert.deepEqual(P.apply(state,[{module:'triggers',text:reordered}]).state.memory.triggers,[before]);
@@ -65,7 +65,7 @@ assert.ok(!P._test.missingAfterCleanup(state,next).includes('schedules'));
 state=save(state,next,'parallel-2'); assert.equal(state.memory.schedules.length,2);
 assert.match(JSON.stringify(L.context(state).recentResults),/已交付/);
 next=P.apply(state,state.memory.schedules.map(before=>({module:'schedules',before,text:''}))).state;
-assert.ok(P._test.missingAfterCleanup(state,next).includes('schedules'),'empty column still requires completion');
+assert.ok(!P._test.missingAfterCleanup(state,next).includes('schedules'),'ended schedules may leave an empty column without inventing a successor');
 const successor='修缮库房｜状态：候选｜依据：推测，雨后检查职责｜条件：有空闲且工具齐备';
 next=P.apply(next,[{module:'schedules',text:successor}]).state;
 assert.ok(!P._test.missingAfterCleanup(state,next).includes('schedules'));

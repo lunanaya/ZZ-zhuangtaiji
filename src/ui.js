@@ -1082,9 +1082,11 @@
     }
     function renderInjectionModuleSettings(settings) {
         const modules = settings.injectionModules || WSM.Defaults.INJECTION_MODULES;
+        const plain = WSM.PlainMemory?.isPlain(WSM.Storage.load());
         $('#wsm-injection-module-list').innerHTML = Object.entries(categories).map(([categoryId, category]) => {
             const rows = Object.entries(WSM.Defaults.INJECTION_MODULES).filter(([id, module]) => id !== 'map' && module.category === categoryId).map(([id, defaultModule]) => {
                 const config = Object.assign({}, defaultModule, modules[id] || {});
+                if (plain && id === 'planner') return `<div class="wsm-injection-row"><span>${escape(config.label)}<small>仅在本地面板查看，不自动注入正文</small></span></div>`;
                 const placement = id === 'worldbook' ? '使用本页设置的世界书补充位置' : `注入深度 ${config.depth ?? defaultModule.depth ?? 2}`;
                 return `<label class="wsm-injection-row"><input type="checkbox" data-module-enabled="${id}" ${config.enabled !== false ? 'checked' : ''}><span>${escape(config.label)}<small>${escape(placement)}</small></span></label>`;
             }).join('');

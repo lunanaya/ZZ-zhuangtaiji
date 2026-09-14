@@ -57,7 +57,7 @@ for(const {system,payload} of prompts) {
     assert.ok(system.includes('不能换个栏目继续保存带方向的强化叙事'));
     assert.ok(system.includes('不能因旧条未变就KEEP错误解释'));
     assert.ok(system.includes('不能用温和词把限制改成同意或普通照顾'));
-    assert.ok(system.includes('全栏目必填不授权编造因果'));
+    assert.ok(system.includes('全栏目检查不授权编造因果'));
     assert.ok(system.includes('用before逐字替换或删除错误部分'));
     }
     assert.equal(payload.memory.resourceConstraints[0],restriction);

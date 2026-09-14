@@ -134,7 +134,8 @@ globalThis.fetch = async (url, options) => {
     }
     assert.match(body.messages[0].content,/正文已写的地点必须落到对应人物概况和活动记录/);
     assert.match(body.messages[0].content,/推演阶段才.*标明“推测”/);
-    assert.match(body.messages[0].content,/所有栏目必须读取并填写，不允许空栏目/);
+    assert.match(body.messages[0].content,/全部栏目都要检查/);
+    assert.match(body.messages[0].content,/确无对应事项时允许为空/);
     assert.match(body.messages[0].content,/知识\/秘密栏以“不知道的边界”为重点/);
     assert.match(body.messages[0].content,/告诉甲不自动告诉乙/);
     assert.match(body.messages[0].content,/全栏目客观记录规则/);
@@ -156,14 +157,14 @@ globalThis.fetch = async (url, options) => {
         assert.ok(input.source.character.description.includes('城门守卫'),'second call has original premises for autonomous simulation');
         rows = input.missingModules.map(module => ({module,text:samples[module] || `${WSM.PlainMemory.LABELS[module]}已有当前有效记录。`}));
         rows.push({module:'planner',text:'李四尚未取得许可，不能直接进入内院。'});
-        if (mode === 'missing-required') rows=[];
+        if (mode === 'missing-required') rows=[{module:'world',before:input.memory.world[0],text:''}];
         if (mode === 'invalid-before') rows.push({module:'characters',before:'不存在的旧句',text:'不能覆盖'});
     } else if (input.task === 'PLAIN_MEMORY_SETTLE') {
         assert.equal(input.source,undefined,'body reads carry no cards, original worldbooks or historical chat');
         assert.equal(input.userMessage,undefined,'a newer user message must not contaminate settlement of the previous body');
         assert.equal(input.assistantMessage.content,assistantText,'the entire selected body is sent without trimming');
         assert.doesNotMatch(body.messages[0].content,/source\.worldbooks|完整source仍在/,'settlement instructions cannot require missing originals');
-        assert.match(body.messages[0].content,/先结算.*再按既有状态推进NPC自主活动/);
+        assert.match(body.messages[0].content,/先结算.*再检查同一时段的NPC活动和世界状态/);
         assert.ok(input.localState?.checks,'local validation is included in the existing single request');
         assert.match(body.messages[0].content,/玩家明确接受/);
         rows = [{module:'characters',before:input.memory.characters[0],text:mode === 'stale' ? '过期响应不应覆盖用户编辑' : '张三已搬到杭州'},
@@ -365,7 +366,7 @@ assert.equal((await WSM.Engine.organizeState()).changedModules.length,0);
 assert.equal(WSM.Storage.load().revision,unchangedRevision,'noop does not create an empty revision');
 await WSM.Storage.rollbackPreviousGeneration();
 assert.deepEqual(WSM.Storage.load().memory.characters,beforeOrganize.memory.characters);
-for (const failureMode of ['truncated','organize-invalid','organize-locked','organize-empty']) {
+for (const failureMode of ['truncated','organize-invalid','organize-locked']) {
     mode = failureMode;
     const before = WSM.Storage.load();
     const calls = requests.length;
@@ -374,6 +375,9 @@ for (const failureMode of ['truncated','organize-invalid','organize-locked','org
     assert.deepEqual(WSM.Storage.load().memory,before.memory,'invalid output cannot partially delete or move facts');
     assert.equal(WSM.Storage.load().revision,before.revision);
 }
+mode='organize-empty';
+await WSM.Engine.organizeState();
+assert.deepEqual(WSM.Storage.load().memory.schedules,[],'organization can remove a finished last schedule');
 mode = 'normal';
 active='b';
 assert.deepEqual(WSM.Storage.load().memory.characters,[]);
@@ -384,7 +388,7 @@ const emptyCalls=requests.length;
 await WSM.Engine.plan({initialize:true});
 assert.equal(requests.length-emptyCalls,2);
 assert.equal(WSM.Storage.load().runtime.plainReadIncomplete,true,'empty required columns must make initialization incomplete');
-assert.match(WSM.Storage.load().planner.error,/待补栏目.*资源/);
+assert.match(WSM.Storage.load().planner.error,/待补栏目.*世界状态/);
 assert.equal(WSM.Storage.load().runtime.lastReadFloor,0,'missing columns cannot advance the read receipt');
 assert.deepEqual(WSM.Storage.load().memory.resourceConstraints,[],'code cannot fabricate filler to claim complete coverage');
 mode='normal';
@@ -405,11 +409,11 @@ mode='normal'; await WSM.Engine.plan({initialize:true});
 for (const failureMode of ['settle-empty','settle-terminal']) {
     mode=failureMode;
     const before=WSM.Storage.load(), calls=requests.length;
-    assert.equal(await WSM.Engine.settle({force:true,latestOnly:true}),null);
+    assert.ok(await WSM.Engine.settle({force:true,latestOnly:true}));
     assert.equal(requests.length-calls,1,'missing column does not add a second API call');
-    assert.equal(WSM.Storage.load().runtime.plainReadIncomplete,true);
-    assert.equal(WSM.Storage.load().runtime.lastReadFloor,before.runtime.lastReadFloor);
-    assert.match(WSM.Storage.load().planner.error,/已有安排/,'coverage is checked after lifecycle cleanup');
+    assert.equal(WSM.Storage.load().runtime.plainReadIncomplete,false);
+    assert.deepEqual(WSM.Storage.load().memory.schedules,[],'finished or removed schedules need no filler');
+    assert.equal(WSM.Storage.load().planner.error,'');
     mode='normal';
     assert.ok(await WSM.Engine.settle({force:true,latestOnly:true}),'the next single read can fill missing columns');
     assert.ok(WSM.PlainMemory.MODULES.filter(module=>module !== 'worldbook').every(module=>WSM.Storage.load().memory[module].length));

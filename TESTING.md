@@ -1,5 +1,11 @@
 # 测试指南
 
+## v0.16.99 按需注入与自然活动
+
+- `node dev/smoke-light-autonomy.mjs`：502 人记忆、80 次送达循环、点名召回与共同名称歧义、场外主动联系、位置和活动替换、独立 NPC 保留、任务自然结束、全部栏目仍存在、面板空态不注入、后台备注仅本地、显式节奏与栏目深度保持。请求沿用 JSONL 与原字段白名单，普通规则少于 4096 字，无额外 API。
+- 更新既有用例：允许确无事项的栏目为空；缺少世界快照/人物概况、无效替换、未结束响应、锁定及过期写入仍失败。玩家已接受任务的结果仍提醒一次；无关新风险不自动注入，主动查询能召回完整条件。
+- 回归 `smoke-plain-memory`、`smoke-flowing-world`、`smoke-state-logic`、`smoke-auto-read-lifecycle`、`smoke-objective-framing`、`smoke-knowledge-boundaries`、`smoke-injection`、`smoke-memory-delivery`、`smoke-read-continuation`、`smoke-worldbook-merged-read`、`smoke-turn-read-rollback`、`smoke-block-tags`。这些使用模拟模型或本地数据，验证机制与请求约束，不证明真实模型必然产生特定自主行为，也不测量远程延迟。
+
 ## v0.16.98 自动读取与消息收尾
 
 - `node dev/smoke-auto-read-lifecycle.mjs`：复现稳定消息手动读取成功、自动读取遭元数据更新误判的差异；验证后续消息事件正文整理、重复完成事件去重，以及真实正文编辑、隐藏、换候选、空楼层新增、删除、聊天切换和状态版本更新保护。使用真实 Context/Storage/PlainMemory/Engine，模型响应为本地模拟，无真实 API 调用。

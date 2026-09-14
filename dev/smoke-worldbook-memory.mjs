@@ -69,7 +69,7 @@ assert.ok(!W.Injection.compose(state).includes('海上礼俗'),'unrelated supple
 const html = W.UI._test.renderSectionForTest(state,'worldbook');
 assert.ok(html.includes('已接管 3 条'));
 assert.ok(html.includes('畏惧雷声'));
-assert.ok(html.includes('待拆解压缩') && html.includes('本地原文备份'),'UI keeps originals local and collapsed');
+assert.ok(html.includes('待按精简规则读取') && html.includes('本地原文备份'),'UI keeps originals local and collapsed');
 
 let restored = await W.WorldbookMemory.restoreSource(state,{worldbooks:[]});
 assert.deepEqual(restored.worldbooks,[],'unmounted originals cannot be restored from cache');
@@ -102,7 +102,9 @@ assert.deepEqual(corrupt.memory.worldRules,[]);
 const unchanged = W.PlainMemory.apply(corrupt,[{module:'characters',before:'真实人物设定',text:'KEEP'}]);
 assert.deepEqual(unchanged.state.memory.characters,['真实人物设定'],'KEEP never replaces a fact');
 assert.equal(unchanged.changed,0);
-assert.ok(W.PlainMemory.apply(corrupt,[{module:'worldRules',text:'keep'}]).errors.length);
+const keptEmpty=W.PlainMemory.apply(corrupt,[{module:'worldRules',text:'keep'}]);
+assert.equal(keptEmpty.errors.length,0,'KEEP is a no-op, not a requirement to invent a rule');
+assert.deepEqual(keptEmpty.state.memory.worldRules,[],'KEEP cannot become a stored fact');
 assert.deepEqual(W.PlainMemory.apply(corrupt,[{module:'worldRules',before:'keep',text:'夜间城门关闭。'}]).state.memory.worldRules,['夜间城门关闭。']);
 assert.ok(W.PlainMemory._test.missingModules(corrupt).includes('worldRules'),'KEEP cannot count as filled');
 await import('../src/facts.js');

@@ -668,11 +668,11 @@
             const originals = WSM.WorldbookMemory?.originals(state) || [];
             const supplement = WSM.PlainMemory.rows(state, 'worldbook');
             const config = WSM.Settings.get().injectionModules?.worldbook;
-            return `<section class="wsm-board"><h4>已接管 ${originals.length} 条世界书</h4><p>${config?.enabled === false ? '世界书补充注入已关闭。' : '首次读取自动将选中世界书拆解到对应栏目，其余设定压缩保留在这里。插件读取时始终可见选中原文；正文 AI 接收栏目与压缩补充，原文保留本地备份。'}</p><button data-action="worldbook-settings">选择世界书 / 拆解条目</button>${!originals.length ? '<p>这里统计已读取并保存的原文备份；当前挂载与待拆解条目请打开选择列表查看。</p>' : ''}</section>
+            return `<section class="wsm-board"><h4>已接管 ${originals.length} 条世界书</h4><p>${config?.enabled === false ? '世界书补充注入已关闭。' : '选中原文在初始化、世界书读取和智能整理时供插件核对，逐项精简后保存在各栏目与补充中。普通正文结算只读取精简记忆和上一轮正文；正文 AI 按需接收记忆，不接收原文备份。读取标记表示请求已完成，不代表逐项信息已经自动验全。'}</p><button data-action="worldbook-settings">选择世界书 / 拆解条目</button>${!originals.length ? '<p>这里统计已读取并保存的原文备份；当前挂载与待拆解条目请打开选择列表查看。</p>' : ''}</section>
                 ${supplement.map(row => `<article class="wsm-memory-card"><p>${escape(row)}</p></article>`).join('')}
                 ${originals.map(entry => {
                     const read = WSM.WorldbookSemantic?.hasRead(state,entry);
-                    return `<details class="wsm-game-card"><summary>${escape(entry.bookName)} · ${escape(entry.title || '世界书条目')} · ${read ? '已拆解压缩' : '待拆解压缩'} · 本地原文备份 ${entry.content.length} 字符</summary><div class="wsm-card-body"><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${escape(entry.content)}</pre></div></details>`;
+                    return `<details class="wsm-game-card"><summary>${escape(entry.bookName)} · ${escape(entry.title || '世界书条目')} · ${read ? '已按精简规则读取' : '待按精简规则读取'} · 本地原文备份 ${entry.content.length} 字符</summary><div class="wsm-card-body"><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${escape(entry.content)}</pre></div></details>`;
                 }).join('')}`;
         }
         const memoryView = WSM.MemoryView?.render(state, active);

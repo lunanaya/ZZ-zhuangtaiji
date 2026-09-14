@@ -1,5 +1,11 @@
 # 测试指南
 
+## v0.16.100 世界书精简保真规则
+
+- `node dev/smoke-worldbook-fidelity.mjs`：选中原文及长文本末尾例外完整进入一次读取；详细人物、城市与独立规则通过现有句子协议保存、序列化和更新；旧概括记录可精确替换；更新位置后保留其他设定。检查初始化/世界书读取/整理共享精简规则，普通结算仍只带精简资料与正文，没有新增格式、覆盖报告或调用。
+- `smoke-worldbook-semantic` 新增旧 `logic-v2` 回执不代表新规则完成，以及界面准确说明原文/普通结算可见范围。其他挂载、关闭、失败、保存与聊天隔离检查保持。
+- 回归 `smoke-worldbook-merged-read`、`smoke-worldbook-grounding`、`smoke-worldbook-memory`、`smoke-worldbook-scope`、`smoke-plain-memory`、`smoke-read-continuation`、`smoke-light-autonomy` 及此前注入/结算检查。模型响应均为模拟，只证明协议与保存机制，不证明真实模型必然保留全部语义信息。
+
 ## v0.16.99 按需注入与自然活动
 
 - `node dev/smoke-light-autonomy.mjs`：502 人记忆、80 次送达循环、点名召回与共同名称歧义、场外主动联系、位置和活动替换、独立 NPC 保留、任务自然结束、全部栏目仍存在、面板空态不注入、后台备注仅本地、显式节奏与栏目深度保持。请求沿用 JSONL 与原字段白名单，普通规则少于 4096 字，无额外 API。
